@@ -1,5 +1,7 @@
 # Boss Battle — special game mode
 
+<p align="center"><b>English</b> · <a href="BOSS.zh-CN.md">简体中文</a></p>
+
 A co-op mode: every squidkid in the room (humans + bots filling to 8) is one squad against one giant boss. Chaotic,
 readable, fair. Works offline (you + bots) and online (the host simulates the boss, like it simulates bots).
 

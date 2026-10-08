@@ -1,5 +1,7 @@
 # Game event bus
 
+<p align="center"><b>English</b> · <a href="EVENTS.zh-CN.md">简体中文</a></p>
+
 `import { on, emit, G } from '../core/ctx.js'` — `on(name, fn)` returns an unsubscribe function. Effects, HUD and
 screen-FX modules should subscribe to these instead of editing gameplay code.
 

@@ -1,5 +1,7 @@
 # Squidkid rig contract
 
+<p align="center"><b>English</b> · <a href="RIG.zh-CN.md">简体中文</a></p>
+
 The kid is one SkinnedMesh rig. Bones are defined in `src/game/character-geo.js` → `BODY_BONES` (name, parent, rest
 position in metres), with `BONE_NAMES`, `BONE_INDEX`, `BONE_PARENT`, `REST`, `getRestPositions(style)`,
 `getBoneInverses(style)`. Hair strands (HAIR_MAX × HAIR_SEGS) and the squid form are driven by character.js.

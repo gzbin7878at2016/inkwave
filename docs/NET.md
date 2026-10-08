@@ -1,5 +1,7 @@
 # Online play — session contract (`G.net`)
 
+<p align="center"><b>English</b> · <a href="NET.zh-CN.md">简体中文</a></p>
+
 Private rooms with a 5-character code, up to 8 players (4 v 4, empty slots optionally filled with bots). The room
 creator is the **host**: their browser runs the bots, the match clock and the final judge. Every player simulates their
 own squidkid locally (instant controls) and streams it to the others, who render it through the same animation system

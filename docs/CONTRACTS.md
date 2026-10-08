@@ -1,5 +1,7 @@
 # INKWAVE — module contracts
 
+<p align="center"><b>English</b> · <a href="CONTRACTS.zh-CN.md">简体中文</a></p>
+
 INKWAVE is an original, Splatoon-inspired 4v4 turf-war shooter built on three.js r186 (plain ES modules, no bundler).
 Everything is procedural: no external models, textures or audio files. Fonts are vendored.
 
