@@ -9,8 +9,12 @@ const ROOT = path.join(__dirname, '..');
 
 // GPU: run WebGL through ANGLE's Metal backend (instead of the deprecated OpenGL one),
 // prefer the discrete GPU on dual-GPU Macs, and never fall back to software rendering.
-app.commandLine.appendSwitch('use-angle', 'metal');
-app.commandLine.appendSwitch('force_high_performance_gpu');
+// Metal is macOS-only; on Windows/Linux forcing it makes ANGLE fall back to software
+// rendering (SwiftShader), which tanks the frame rate — so gate it to darwin.
+if (process.platform === 'darwin') {
+  app.commandLine.appendSwitch('use-angle', 'metal');
+  app.commandLine.appendSwitch('force_high_performance_gpu');
+}
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 
 const CSP = [
