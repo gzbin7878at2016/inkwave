@@ -28,18 +28,32 @@
 import * as THREE from 'three';
 import { G } from '../core/ctx.js';
 
-const MAX_QUADS = 6000;
-const RIP_N = 24;
+// 【中文导读】墨水系统 = GPU/CPU 双轨架构:
+//  · GPU 轨:所有可涂墨的 3D 面被"剪开摊平"塞进一张大图集(渲染目标,见 _layout),
+//    每滴墨作为一个 quad 画进图集,fragment shader 用 SDF(有符号距离场)现场"长"出墨团形状
+//    (主体/射线/卫星液滴/飞溅/墙面滴流 5 层),玩家看到的是把这张图集贴回 3D 表面的结果。
+//  · CPU 轨:每个面对应一张 0.25m 的粗网格(见 _initGrid),记录每格属于哪队,
+//    回答"脚下是敌墨吗""涂地面积多少"等玩法问题——O(1) 查询,从不读 GPU。
+//  · 两条轨用同一个 blobWobble() 轮廓公式,保证"看见的"和"判定的"是同一条边界。
+//  · 联机:每滴墨只有 (中心, 半径, 队伍, 种子) 四个数,种子决定形状(纯函数),
+//    其他端收到后重放同一个 splat() 即得到逐像素一致的墨。
+// 配套阅读:docs/INK.zh-CN.md(新手图解)、src/world/inkShading.js(图集如何被着色消费)。
+
+const MAX_QUADS = 6000;   // 每帧墨滴实例上限:一个 6000 quad 的大 BufferGeometry 一次 draw call 画完
+const RIP_N = 24;         // 涟漪槽位数:脚步/跳跃/墨滴落水都会在墨面激起波纹(着色器见 inkShading.js)
 const _rel = new THREE.Vector3();
 
+// 墨滴类型 → 整数编号:不同武器只是同一套 SDF 形状系统的不同参数(见 fragment shader 里的 kindShape)
 const K = { shot: 0, line: 1, blast: 2, bomb: 3, trail: 4, drop: 5, roll: 6, speck: 7 };
 const K_SHOT = 0, K_LINE = 1, K_BLAST = 2, K_BOMB = 3, K_TRAIL = 4, K_DROP = 5, K_ROLL = 6, K_SPECK = 7;
-// quad half-extent in footprint radii (satellites / spatter reach) and the extra reach below wall splats (drips)
+// quad 半宽(以墨滴足迹半径为单位):射线/液滴/飞溅会溅到多远;DRIP_REACH 是墙面墨滴额外向下流多远
 const REACH = [2.45, 2.1, 2.7, 2.75, 2.3, 1.9, 1.25, 1.35];
 const DRIP_REACH = 3.9;
 
-// Main-blob outline: organic lobes + two narrow "fingers" thrown out by the impact. The GPU splat shader evaluates the
-// identical function (wob), so the gameplay grid and the rendered ink agree on the edge.
+// 墨团主体轮廓:几个正弦项画出有机波浪边,两个高次幂余弦项画出"甩出去的手指"。
+// 【关键】GPU 的 splat shader(PAINT_FS 里的 wob)逐行复刻了同一公式,
+// 所以 CPU 判定网格和渲染出来的墨在边界上完全 agree——看见的就是判定的。
+// seed 由 splat 传入(联机时由网络层固定),同一种子永远长出同一形状的墨团。
 export function blobWobble(ang, seed) {
   return 1 + 0.12 * Math.sin(3 * ang + seed * 6.2831) + 0.08 * Math.sin(5 * ang + seed * 17.0) +
     0.05 * Math.sin(7 * ang + seed * 41.0) + 0.03 * Math.sin(11 * ang + seed * 73.0) + 0.018 * Math.sin(17 * ang + seed * 29.0) +
@@ -49,6 +63,9 @@ const WOB_MAX = 1.5;   // upper bound of blobWobble (reach of the CPU cell loop)
 // roller band segment (face space, along = roll direction): half length / half width / corner rounding, × radius
 const BAND_L = 0.55, BAND_W = 0.62, BAND_R = 0.1;
 
+// ============================================================ GPU 轨:墨滴顶点着色器
+// 不做任何矩阵变换:quad 的位置直接就是图集上的 NDC 坐标(-1..1),把"画贴图"当成全屏 2D 绘制。
+// 每个顶点携带的参数原样传给 fragment shader,真正的形状在那里用数学"长"出来。
 const PAINT_VS = /* glsl */`
 attribute vec2 aPos;
 attribute vec3 aLocal;
@@ -64,26 +81,33 @@ void main() {
   gl_Position = vec4(aPos, 0.0, 1.0);
 }`;
 
+// ============================================================ GPU 轨:墨滴片元着色器
+// 输入是"我在图集上的哪个像素",输出是"这个像素属于墨团的哪一部分、覆盖率多少"。
+// 每一层形状(主体/射线/液滴/飞溅/滴流)都是一个距离场:距离 < 0 在形状内,> 0 在形状外,
+// 最后用 smoothstep 把 0 附近约 3 个纹素宽的过渡变成平滑覆盖率。
+// 形状完全由 (seed, 时间 tn) 决定,无任何历史状态——所以同一滴墨每帧重画结果不变(幂等)。
 const PAINT_FS = /* glsl */`
 precision highp float;
 varying vec3 vLocal;     // metres from the splat centre in face space; z = centre's distance from the face plane
 varying vec4 vSplat;     // final radius, team, seed, flags (isWall + 2 × kind)
 varying vec3 vStretch;   // travel direction in face space, smear amount (0 = none)
 varying vec4 vGrow;      // x: age / spread time (runs on past 1) · y: drip progress 0..1 · z: 1 = drips only
-float hsh(float n) { return fract(sin(n) * 43758.5453123); }
+float hsh(float n) { return fract(sin(n) * 43758.5453123); }   // 一维哈希:同一种子 → 同样的"随机"形状参数
+// 【与 CPU 的 blobWobble 逐行一致】墨团主体的有机轮廓
 float wob(float a, float s) {
   return 1.0 + 0.12 * sin(3.0 * a + s * 6.2831) + 0.08 * sin(5.0 * a + s * 17.0) + 0.05 * sin(7.0 * a + s * 41.0)
     + 0.03 * sin(11.0 * a + s * 73.0) + 0.018 * sin(17.0 * a + s * 29.0)
     + 0.17 * pow(max(cos(a - s * 37.7), 0.0), 28.0) + 0.12 * pow(max(cos(a - s * 53.3 - 2.1), 0.0), 36.0);
 }
+// smin:平滑最小值,把两个距离场柔和地融合(墨滴主体和射线/液滴衔接处不生硬棱角)
 float smin(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0); return mix(b, a, h) - k * h * (1.0 - h); }
-// thin tapered ray from a (radius ra) to b (radius rb)
+// 锥形射线:从 a(半径 ra)到 b(半径 rb)的渐细线条——墨滴"星芒"的基本件
 float sdRay(vec2 p, vec2 a, vec2 b, float ra, float rb) {
   vec2 pa = p - a, ba = b - a;
   float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
   return length(pa - ba * h) - mix(ra, rb, h);
 }
-// per kind: rays, satellite droplets, spatter dots, drips
+// 每种墨滴类型 4 个数 = (射线数, 卫星液滴数, 细密飞溅数, 滴流数):炸弹最全,滚筒/墨点没有
 vec4 kindShape(float k) {
   if (k < 0.5) return vec4(5.0, 7.0, 8.0, 3.0);     // shot
   if (k < 1.5) return vec4(3.0, 4.0, 5.0, 2.0);     // charger line
@@ -95,31 +119,32 @@ vec4 kindShape(float k) {
 }
 void main() {
   float R = vSplat.x, team = vSplat.y, seed = vSplat.z;
-  float isWall = mod(vSplat.w, 2.0);
+  float isWall = mod(vSplat.w, 2.0);          // flags 编码:bit0 = 是否墙面,其余位 = 墨滴类型
   float kind = floor(vSplat.w * 0.5 + 0.01);
-  float dn = vLocal.z;
+  float dn = vLocal.z;                         // 墨滴球心到这个面的垂直距离
   float r2 = R * R - dn * dn;
-  if (r2 <= 0.0) discard;
-  float r = sqrt(r2);                                    // footprint radius on this face
-  float fall = clamp(r / max(R, 1e-3), 0.0, 1.0);        // 1 on the face the blob hit, smaller on faces it grazes
+  if (r2 <= 0.0) discard;                      // 球够不着这个面,整个 quad 丢弃
+  float r = sqrt(r2);                          // 3D 墨球在这个 2D 面上留下的"圆形足迹"半径
+  // fall = 足迹相对完整半径的比例:球心离面越远的邻面墨印越小越淡(墨水绕过墙角时外侧自然变淡)
+  float fall = clamp(r / max(R, 1e-3), 0.0, 1.0);
   vec2 p0 = vLocal.xy;
   float tx = max(max(abs(dFdx(p0.x)), abs(dFdy(p0.x))), max(abs(dFdx(p0.y)), abs(dFdy(p0.y))));   // metres per texel
   vec2 dir = vStretch.xy; float sa = vStretch.z;
   vec2 p = p0;
-  if (sa > 0.0) {                                        // shots: smeared forward along the travel direction
+  if (sa > 0.0) {                              // 射击类:沿飞行方向前向涂抹(拖尾感)
     float a = dot(p, dir); vec2 perp = p - a * dir;
-    float s = a > 0.0 ? 1.0 + sa : 1.0 + 0.25 * sa;
+    float s = a > 0.0 ? 1.0 + sa : 1.0 + 0.25 * sa;   // 前方拉长多、后方略拉长
     p = perp + dir * (a / s);
   }
-  float tn = vGrow.x;
+  float tn = vGrow.x;                          // 归一化时间:0=刚落地,1=主体扩散完,>1=液滴/飞溅陆续落地
   vec4 ks = kindShape(kind);
-  float sd = 1e3;
+  float sd = 1e3;                              // 累计距离场:所有形状取(平滑)最小值合并进来
   if (vGrow.z < 0.5) {
-    // ---- body: floods out from ~40 % with a strong ease-out; its final edge is the CPU gameplay edge
+    // ---- 【第①层 主体】从 40% 涨大到 100%,强烈 ease-out;它的最终边缘就是 CPU 判分用的那条边界
     float tb = 1.0 - pow(1.0 - clamp(tn, 0.0, 1.0), 4.0);
     float grow = mix(0.4, 1.0, tb);
     if (kind > 5.5 && kind < 6.5) {
-      // roller band: a straight-edged segment across the drum, edges gently wavy
+      // 滚筒:直边矩形带(压过去的痕迹),长边带轻微波浪
       vec2 bx = vec2(-dir.y, dir.x);
       vec2 q = vec2(dot(p0, dir), dot(p0, bx));
       float wv = r * (0.03 * sin(q.x / r * 9.0 + seed * 30.0) + 0.018 * sin(q.x / r * 23.0 + seed * 11.0));
@@ -133,8 +158,7 @@ void main() {
     float dirAng = sa > 0.0 ? atan(dir.y, dir.x) : 0.0;
     float spread = mix(6.2831, 2.5, clamp(sa * 1.2, 0.0, 1.0));
     bool big = kind > 1.5 && kind < 3.5;
-    // ---- rays: short tapered streaks shot out ahead of the body (the splat's "star"), mostly stubby with the odd
-    // long one, each ending in a bead where the ink collected as it flew
+    // ---- 【第②层 射线】比主体先伸出去的短粗星芒:多数钝、偶尔一条长,末端结一颗"墨珠"
     float tsp = 1.0 - pow(1.0 - clamp(tn * 1.4, 0.0, 1.0), 3.0);
     for (int k = 0; k < 10; k++) {
       float fk = float(k);
@@ -150,8 +174,8 @@ void main() {
       float ray = min(sdRay(p, u * edge * 0.72, tip, wB, tipR), length(p - tip) - tipR * (1.6 + 1.4 * h2));
       sd = smin(sd, ray, r * 0.06);
     }
-    // ---- satellite droplets flung off the crown: they land a beat after the body (the farthest last), streaked
-    // along their flight line; on walls gravity drags the spray down a little
+    // ---- 【第③层 卫星液滴】被主体冠部甩出去的小滴,落地比主体晚一拍(越远越晚),
+    //      沿飞行线拉成椭圆;在墙上会被重力向下拽偏 32%
     for (int k = 0; k < 12; k++) {
       float fk = float(k);
       if (fk >= ks.y) break;
@@ -169,7 +193,7 @@ void main() {
       q -= u * dot(q, u) * (1.0 - 1.0 / el);
       sd = smin(sd, length(q) - rad, rad * 0.8);
     }
-    // ---- fine spatter: tiny dots sprayed farther out, landing last
+    // ---- 【第④层 细密飞溅】更远处的小点,最晚落地;半径下限钳到 ~1 纹素,再远缩略也不消失
     for (int k = 0; k < 14; k++) {
       float fk = float(k);
       if (fk >= ks.z) break;
@@ -182,8 +206,7 @@ void main() {
       sd = min(sd, length(p - u * r * (1.3 + 1.2 * h2)) - rad);
     }
   }
-  // ---- drips on walls: the lower edge sags into streams that keep running; each thins as its bulbous head carries
-  // the ink down, meandering a little
+  // ---- 【第⑤层 墙面滴流】仅墙面:墨团下缘垂成细流,头部膨大带着墨往下走,中途轻微蜿蜒,随时间越流越长
   if (isWall > 0.5 && fall > 0.3 && ks.w > 0.0) {
     float dT = vGrow.y;
     float nD = min(6.0, ks.w + floor(R * 1.2));
@@ -207,16 +230,18 @@ void main() {
       sd = smin(sd, smin(stream, bulb, w * 0.9), w * 1.2);
     }
   }
+  // 距离 → 覆盖率:边界附近 ~3 纹素宽的平滑过渡(fwidth 自适应,任何缩放下边缘都不锯齿)
   float fw = max(fwidth(sd), 1e-5);
   float a = 1.0 - smoothstep(-1.5 * fw, 1.5 * fw, sd);
   if (a <= 0.002) discard;
+  // 写入图集(premultiplied by coverage,R 队伍份额 G 湿度=1 新墨 B 单滴随机色调 A 覆盖率)
   gl_FragColor = vec4(team, 1.0, hsh(seed * 1.73), a);   // premultiplied by the blend: team share, wet, tone
 }`;
 
-// Region floods (Zone Control): one quad per face the region's cells lie on (their cell bounds + a cell, in atlas
-// space), carrying the world position. A texel is flooded when it passes the region's own cell test — inside one of
-// its outlines and within [y0, y1] — and the front (r0 < r ≤ r1 from the centre) is crossing it this frame.
-const FLOOD_MAXV = 64, FLOOD_MAXP = 6;
+// ============================================================ 区域灌注(区域控制模式 Zone Control)
+// 用一道从中心向外跑的"波前"把整块区域涂成某队颜色(team -1 = 擦除回裸地面)。
+// 每个被波前扫过的面画一个 quad,片元用自己的世界坐标判断是否落在区域轮廓内。
+const FLOOD_MAXV = 64, FLOOD_MAXP = 6;   // 轮廓顶点/部件数上限(超出部分丢弃并告警)
 const FLOOD_VS = /* glsl */`
 attribute vec2 aPos;
 attribute vec3 aW;
@@ -264,31 +289,34 @@ void main() {
 }`;
 
 export class PaintSystem {
+  // atlasSize: 图集边长(像素);maxDensity: 目标分辨率(像素/米),打包失败会自动降;cell: CPU 判定网格边长(米)
   constructor(renderer, level, { atlasSize = 4096, maxDensity = 30, cell = 0.25 } = {}) {
     this.renderer = renderer;
     this.level = level;
     this.size = atlasSize;
     this.cell = cell;
     this.pad = 8;            // ≥ 2^maxInkLod texels so mip levels never bleed between faces
-    this._layout(maxDensity);
-    this._initGrid();
+    this._layout(maxDensity);    // 先把所有可涂墨面摆进图集
+    this._initGrid();            // 再建 CPU 判定网格
     this._q = [];
-    this.growing = [];            // splats still spreading / dripping on screen (the gameplay grid is already updated)
-    this.version = 0;          // bumps whenever the CPU grid changes (minimap polling)
-    this.clock = 0;
+    this.growing = [];            // 正在扩散/滴落的墨滴(GPU 动画用;CPU 网格在 splat 时已记为最终形状)
+    this.version = 0;          // CPU 网格版本号,变化时小地图等轮询方知道要刷新
+    this.clock = 0;            // 墨水系统的内部时钟(涟漪出生时间以它为基准)
     this.frame = 0;
-    this.viewPos = null;       // camera position (setView) — ripples far from it are skipped / evicted first
-    // ripple table read by the level shader (inkShading.js): xyz + birth (paint clock) · amp, wavelength, speed, life
+    this.viewPos = null;       // 相机位置(setView 每帧更新):太远的涟漪直接跳过/优先淘汰
+    // 涟漪表:被关卡着色器(inkShading.js)读取,xyz + 出生时刻 · 振幅/波长/速度/寿命
     this.rip = new Float32Array(RIP_N * 4);
     this.ripP = new Float32Array(RIP_N * 4);
-    this._ripS = new Float32Array(RIP_N);
-    this._dryAcc = 0;
-    this._floods = [];         // region floods in progress (flood())
-    this._floodPrep = new Map();   // region → its cells sorted by distance from the front's centre + atlas quads
+    this._ripS = new Float32Array(RIP_N);   // 每个槽位的"重要性"评分(振幅÷距离),淘汰最差的
+    this._dryAcc = 0;                       // 干燥累积器:攒够 1/40s 才做一次减法 pass
+    this._floods = [];         // 进行中的区域灌注
+    this._floodPrep = new Map();   // region → 预算数据(按离波前中心距离排序的格子 + 图集 quads)
     this._initGPU();
   }
 
-  // ------------------------------------------------------------ atlas layout (shelf packing)
+  // ------------------------------------------------------------ 图集布局(货架式打包 shelf packing)
+  // 把所有可涂墨的面按真实尺寸换算成矩形,从高到低排序,一行一行摆进 size×size 的图集;
+  // 摆不下就整体降分辨率(ppm ×0.92)重试,最多 30 次,直到放下为止。
   _layout(maxDensity) {
     const faces = this.level.faces.filter((f) => f.paintable);
     this.paintFaces = faces;
@@ -300,6 +328,7 @@ export class PaintSystem {
     }
     this.ppm = ppm;
   }
+  // 单行货架摆放:当前行放不下就开新一行;任何一行超出图集高度即宣告失败(返回 false 让 _layout 降分辨率)
   _tryPack(faces, ppm, S) {
     const pad = this.pad;
     const rects = faces.map((f) => ({ f, w: Math.ceil(f.su * ppm) + pad * 2, h: Math.ceil(f.sv * ppm) + pad * 2 }));
@@ -318,7 +347,11 @@ export class PaintSystem {
     return true;
   }
 
-  // ------------------------------------------------------------ CPU grid
+  // ------------------------------------------------------------ CPU 判定网格
+  // 每个可涂墨面 → 一个 nu×nv 的格子数组(格子边长 this.cell,默认 0.25m),全部格子
+  // 连续存放在一个大的 Uint8Array 里(面的 grid 字段是它在数组里的起始下标)。
+  // 同时做两件初始化:1) 把格心往面内推 6cm 问关卡"是否埋进别的几何体",埋了的记为 dead
+  // (柱子、台阶内部永不计分);2) 统计 turf 格总数与总面积,作为涂地百分比分母。
   _initGrid() {
     let total = 0;
     const lvl = this.level;
@@ -345,7 +378,13 @@ export class PaintSystem {
     }
   }
 
-  // ------------------------------------------------------------ GPU
+  // ------------------------------------------------------------ GPU 资源
+  // 1) 图集渲染目标 rt:一张可以"往上面画"的贴图(RGBA8,带 mipmap,无深度)。
+  //    R=队伍份额 G=湿度 B=单滴色调 A=覆盖率,详见文件头注释与 docs/INK.zh-CN.md。
+  // 2) 一个常驻的 BufferGeometry 大缓冲(MAX_QUADS 个 quad),所有墨滴往里面填属性,
+  //    每帧一次 draw call 全部画进图集。
+  // 3) dryMesh:覆盖图集已用区域的小 quad,用"反向减法混合"把 G(湿度)一点点扣掉 → 墨水变干。
+  // 4) flood 网格/材质:区域控制模式的整块灌注(单独的场景里画)。
   _initGPU() {
     const S = this.size;
     this.rt = new THREE.WebGLRenderTarget(S, S, {
@@ -373,6 +412,10 @@ export class PaintSystem {
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
     this.geo = g;
+    // 【混合规则是这个系统的精妙处】
+    //   RGB 用 "over" 合成(新墨颜色按覆盖率盖在旧墨上,谁后画谁赢——两队墨水边界是覆盖渐变)
+    //   A   用 "max"  合成(覆盖率取最大值,墨滴并集——扩散中的墨每帧重画不会越叠越深)
+    // 两条规则各管一件事:over 管"队伍归属",max 管"形状并集"。
     this.mat = new THREE.ShaderMaterial({
       vertexShader: PAINT_VS, fragmentShader: PAINT_FS,
       transparent: true, depthTest: false, depthWrite: false,
@@ -386,9 +429,10 @@ export class PaintSystem {
     this.mesh.frustumCulled = false;
     this.scene = new THREE.Scene();
     this.scene.add(this.mesh);
-    // drying: subtract a few 1/255 steps of wetness (G) from the used part of the atlas, drawn in the same pass as the
-    // splats so the mip chain is rebuilt once per frame
-    const yTop = Math.min(1, ((this.usedHeight + 2) / S) * 2 - 1);
+    // drying: 1/255 of wetness (G) from the used part of the atlas, drawn in the same pass as the splats so the mip chain is rebuilt once per frame
+    // 干燥 pass:每帧从图集已用区域的 G 通道(湿度)里减掉几级 1/255(≈6.4 秒干透)。
+    // 和墨滴画在同一个渲染 pass 里,这样 mipmap 链每帧只重建一次。
+    const yTop = Math.min(1, ((this.usedHeight + 2) / S) * 2 - 1);   // 图集只用到底部 usedHeight,上面全空不用画
     const dg = new THREE.BufferGeometry();
     dg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 1, -1, 0, 1, yTop, 0, -1, yTop, 0]), 3));
     dg.setIndex([0, 1, 2, 0, 2, 3]);
@@ -427,6 +471,7 @@ export class PaintSystem {
     this.clear();
   }
 
+  // 清空图集与全部状态(换地图/重开比赛时调用)。version 递增,通知小地图等轮询方整体重画。
   clear() {
     const r = this.renderer;
     const prev = r.getRenderTarget();
@@ -460,9 +505,10 @@ export class PaintSystem {
     return K_TRAIL;
   }
 
-  // ------------------------------------------------------------ splat
-  // center: Vector3, radius (m), team 0|1, opts: { stretch: Vector3 dir, stretchAmt, seed, kind, instant, cosmetic }
-  // Returns the area (m²) newly claimed by `team` (for turf points / special gauge).
+  // ------------------------------------------------------------ splat:一滴墨落地
+  // center: 世界坐标墨滴中心;radius: 墨球半径(米);team: 0|1;opts: { stretch 飞行方向, stretchAmt, seed,
+  // kind, instant(立即成型,不做扩散动画), cosmetic(纯装饰,不记判分) }
+  // 返回值:本滴墨新涂下的面积 m²(涂地得分 / 大招充能用)。
   splat(center, radius, team, opts = {}) {
     // online: other players' ghost rounds never paint (their owner's splats arrive instead); yours are recorded
     const nm = G.netm;
@@ -485,6 +531,7 @@ export class PaintSystem {
     for (const bid of ids) {
       const b = this.level.blocks[bid];
       // quick reject by AABB distance
+      // AABB 快速排除:墨球够不到这个方块就跳过(纯距离比较,便宜)
       if (center.x < b.aabbMin.x - reach || center.x > b.aabbMax.x + reach ||
           center.y < b.aabbMin.y - reach || center.y > b.aabbMax.y + reach ||
           center.z < b.aabbMin.z - reach || center.z > b.aabbMax.z + reach) continue;
@@ -492,7 +539,11 @@ export class PaintSystem {
         const fid = b.faces[fi];
         if (fid < 0) continue;
         const f = this.level.faces[fid];
-        if (!f.atlas) continue;
+        if (!f.atlas) continue;                    // 这个面不参与涂墨(不可涂面没有图集格子)
+        // —— 球面与平面的相交:dn = 球心到面的垂直距离 ——
+        //    dn > R   球在面外,够不着;dn < −0.12 球钻到面背后去了
+        //    否则足迹半径 rr = √(R² − dn²):球心离面越远,这个面上留下的墨印越小越淡
+        //    (这就是墨滴"绕过墙角"时外侧自然变淡的原理)
         _rel.copy(center).sub(f.origin);
         const dn = _rel.dot(f.n);
         if (dn > radius || dn < -0.12) continue;
@@ -501,6 +552,7 @@ export class PaintSystem {
         const ext = rr * (reachK + 1.4 * sAmt);
         if (lu < -ext || lu > f.su + ext || lv < -ext - (f.wall ? rr * DRIP_REACH : 0) || lv > f.sv + ext) continue;
         // stretch / band direction projected into face space
+        // 飞行方向投影到这个面的 2D 坐标系(u,v),决定墨滴的前向涂抹/滚筒朝向
         let sdu = 0, sdv = 0, sa = 0;
         if (st) {
           sdu = st.dot(f.u); sdv = st.dot(f.v);
@@ -515,6 +567,8 @@ export class PaintSystem {
     if (entries.length) {
       // an older splat of the other team still spreading underneath this one finishes instantly, so the newer ink
       // always ends up on top (matching the gameplay grid)
+      // 被这滴墨压住的"敌方正在扩散的墨"立刻催熟(把剩余动画一次性画完再移除),
+      // 保证新的永远盖在旧的上面,与 CPU 网格的"后涂覆盖先涂"一致
       if (!cosmetic) {
         for (let i = this.growing.length - 1; i >= 0; i--) {
           const g = this.growing[i];
@@ -525,9 +579,11 @@ export class PaintSystem {
         }
       }
       const drips = wall && kind !== K_SPECK && kind !== K_ROLL ? 1 : 0;
+      // 生成一条"生长记录":CPU 网格此刻已按最终形状记完判分,GPU 动画交给 growing 队列在 flush 里逐帧推进
       const g = {
         entries, R: radius, team, seed, kind, age: 0,
         // the body floods out in ≈ 0.1–0.3 s (bigger = heavier), droplets land up to ~1.3× that later; drips run on
+        // 动画时长:主体扩散 0.085~0.3s(越大越"沉"),液滴/飞溅在 1.7× 时长内陆续落地;dripDur 是墙面滴流总时长(1.1~3.3s)
         dur: kind === K_SPECK ? 0.05 : 0.085 + Math.min(0.22, radius * 0.075),
         dripDur: drips ? 1.1 + Math.min(2.2, radius * 1.5) : 0,
         cx: center.x, cy: center.y, cz: center.z,
@@ -537,18 +593,21 @@ export class PaintSystem {
       if (!cosmetic && radius >= 0.15 && !this._rippledNear(center, radius)) {
         // a ripple runs out across the wet ink from the impact (one per cluster: a roller stroke or a burst of trail
         // drips does not turn the ink into rain)
+        // 落点在湿墨上激起一圈涟漪(半径够大才触发;0.16s 内附近的涟漪会去重——
+        // 滚筒一行或一串 trail 不会把墨面打成"下雨")
         this.ripple(center, 0.0038 + 0.0036 * Math.min(radius, 3), 0.1 + 0.05 * Math.min(radius, 3), 0.85 + 0.35 * Math.min(radius, 3), 0.55 + 0.2 * Math.min(radius, 3));
       }
     }
     return claimed;
   }
 
-  // Cosmetic micro-splat where a flying droplet lands: GPU only (finer than the gameplay grid, never claims turf).
+  // 装饰性微墨点:飞行中的小液滴落地时调用。只画 GPU,半径上限 0.12m,比 0.25m 判定网格细,永不计分。
   speck(center, radius, team, seed = Math.random()) {
     return this.splat(center, Math.min(radius, 0.12), team, { seed, kind: 'speck', cosmetic: true });
   }
 
   // A ripple of at least this size already started nearby within the last ~0.16 s?
+  // 0.16 秒内在附近已有不小于该振幅的涟漪?(落点簇去重:连续打在一个地方的子弹只激起一圈)
   _rippledNear(pos, radius) {
     const R = this.rip, P = this.ripP, reach = 0.55 + radius * 0.6;
     for (let i = 0; i < RIP_N; i++) {
@@ -560,8 +619,9 @@ export class PaintSystem {
     return false;
   }
 
-  // A ripple across the ink surface at pos (only visible where there is ink). amp in metres (≈ 0.003–0.015),
-  // wavelength in metres, speed m/s, life s. Keeps the RIP_N most important live ripples (size × nearness × life left).
+  // 在 pos 处的墨面激起一圈涟漪(只在有墨的地方可见)。amp 振幅(米,≈0.003–0.015)、wavelength 波长(米)、
+  // speed 波速(m/s)、life 寿命(s)。24 个槽位用"振幅÷(1+距离²衰减)"评分,只保留最重要的一批;
+  // 相机 38m 外的涟漪直接不要(看不见)。
   ripple(pos, amp = 0.006, wavelength = 0.14, speed = 1.2, life = 0.7) {
     let d2 = 0;
     const vp = this.viewPos;
@@ -586,9 +646,9 @@ export class PaintSystem {
     this._ripS[best] = score;
   }
 
-  // Draw one growth step of a splat. tn = age / spread time (the body spreads over [0,1], droplets + spatter land up to
-  // ≈ 1.7), dT = drip progress 0..1, dripOnly = the body is done: redraw only the running drips on walls. The atlas
-  // alpha is max-blended and the colour "over" blended with the same shape, so redrawing every frame is idempotent.
+  // 画墨滴的一次生长步骤。tn = 年龄/扩散时长(主体在 [0,1] 内涨大,液滴/飞溅在 ≈1.7 内陆续落地),
+  // dT = 滴流进度 0..1,dripOnly = 主体已结束:只在墙上补画仍在流淌的滴流。
+  // 图集 A 是 max 混合、RGB 是 over 混合且形状是时间的纯函数,所以每帧重画完全幂等(不会叠深)。
   _emitGrowth(g, tn, dT, dripOnly) {
     const E = g.entries, R = g.R, kind = g.kind;
     const reachK = REACH[kind];
@@ -607,10 +667,17 @@ export class PaintSystem {
     }
   }
 
+  // ------------------------------------------------------------ CPU 判分:墨滴在一个面上涂了哪些格子
+  // f: 面;lu/lv: 墨滴中心在面坐标系中的位置;r: 该面上的足迹半径(=√(R²−dn²));
+  // sdu/sdv/sa: 涂抹方向与强度(射击拖尾);返回新涂面积 m²。
+  // 【一致性核心】格心判定用与 GPU 完全相同的公式:
+  //   滚筒 → 直边矩形带的 SDF;其他 → 格心到中心距离 ÷ blobWobble(角度, 种子) ≤ 0.97。
+  // 装饰层(射线/液滴/飞溅/滴流)比格子细,刻意不参与判分。
   _cpuSplat(f, lu, lv, r, team, seed, sdu, sdv, sa, kind) {
     if (r <= 0.02) return 0;
-    const val = team + 1;
+    const val = team + 1;                     // 格值编码:0 无墨,1 = 队伍0,2 = 队伍1
     const roll = kind === K_ROLL;
+    // 扫描范围:普通墨按 wob 最大包络 WOB_MAX(1.5×r)加涂抹伸长;滚筒按矩形带对角线
     const ext = roll ? r * (Math.hypot(BAND_L, BAND_W) + BAND_R + 0.05) : r * (1 + sa) * WOB_MAX;
     const i0 = Math.max(0, Math.floor((lu - ext) / f.cu)), i1 = Math.min(f.nu - 1, Math.floor((lu + ext) / f.cu));
     const j0 = Math.max(0, Math.floor((lv - ext) / f.cv)), j1 = Math.min(f.nv - 1, Math.floor((lv + ext) / f.cv));
@@ -619,28 +686,30 @@ export class PaintSystem {
     const cellA = f.cu * f.cv;
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
-        let px = (i + 0.5) * f.cu - lu, py = (j + 0.5) * f.cv - lv;
+        let px = (i + 0.5) * f.cu - lu, py = (j + 0.5) * f.cv - lv;   // 格心相对墨滴中心
         if (roll) {
+          // 滚筒带:旋转到带坐标系后做圆角矩形 SDF(与 GPU 同一组 BAND_L/BAND_W/BAND_R 参数)
           const qa = Math.abs(px * sdu + py * sdv) - r * BAND_L, qb = Math.abs(-px * sdv + py * sdu) - r * BAND_W;
           const sd = Math.hypot(Math.max(qa, 0), Math.max(qb, 0)) + Math.min(Math.max(qa, qb), 0) - r * BAND_R;
           if (sd > -0.03 * r) continue;
         } else {
-          if (sa > 0) {
+          if (sa > 0) {   // 前向涂抹:与 GPU 相同的坐标变换(前方拉长 1+sa,后方 1+0.25sa)
             const a = px * sdu + py * sdv;
             const qx = px - a * sdu, qy = py - a * sdv;
             const s = a > 0 ? 1 + sa : 1 + 0.25 * sa;
             px = qx + sdu * (a / s); py = qy + sdv * (a / s);
           }
           const d = Math.hypot(px, py);
-          if (d > r * WOB_MAX) continue;
+          if (d > r * WOB_MAX) continue;   // 粗筛:肯定在最大包络外
+          // 精判:距离 ÷ 该角度上的轮廓半径 ≤ 0.97 才算在墨内(0.97 留一点与 GPU smoothstep 边界的容差)
           if (d / (r * blobWobble(Math.atan2(py, px), seed)) > 0.97) continue;
         }
         const k = f.grid + j * f.nu + i;
         const prev = this.grid[k];
-        if (prev === val) continue;
+        if (prev === val) continue;          // 已经是本队墨,跳过
         this.grid[k] = val;
-        claimed += cellA;
-        if (f.turf && !this.dead[k]) {
+        claimed += cellA;                    // 后涂覆盖先涂:重新涂对方的地同样计入"新涂面积"(抢分)
+        if (f.turf && !this.dead[k]) {       // 只有活 turf 格参与涂地百分比统计
           if (prev) this.counts[prev - 1]--;
           this.counts[team]++;
         }
@@ -650,6 +719,9 @@ export class PaintSystem {
     return claimed;
   }
 
+  // 把一条 quad(墨滴在某个面上的一次绘制)写进大缓冲。
+  // u0..v1: quad 在"面空间"(米)中的范围;其他参数原样打包给 shader。
+  // 坐标换算:面空间(米)→ 图集像素 → NDC(-1..1);范围钳在面的图集格子内(含 pad)。
   _pushQuad(f, u0, u1, v0, v1, lu, lv, dn, R, team, seed, kind, sdu, sdv, sa, tn, dT, dripOnly) {
     if (this.quads >= MAX_QUADS) this._drawQuads();
     const a = f.atlas, S = this.size;
@@ -658,32 +730,35 @@ export class PaintSystem {
     v0 = Math.max(-padM, v0); v1 = Math.min(f.sv + padM, v1);
     if (u1 <= u0 || v1 <= v0) return;
     const q = this.quads++;
-    const flags = (f.wall ? 1 : 0) + 2 * kind;
+    const flags = (f.wall ? 1 : 0) + 2 * kind;   // flags 编码:bit0 = 墙面,其余 = 墨滴类型
+    // 4 个顶点各填一份完整参数(shader 里逐像素插值;quad 覆盖的范围就是形状可能触及的最大范围)
     for (let c = 0; c < 4; c++) {
       const cu = c === 1 || c === 2 ? u1 : u0, cv = c >= 2 ? v1 : v0;
       const vi = q * 4 + c;
       const px = a.x + a.pad + cu * a.ppm, py = a.y + a.pad + cv * a.ppm;
-      this.aPos[vi * 2] = (px / S) * 2 - 1;
+      this.aPos[vi * 2] = (px / S) * 2 - 1;         // aPos: 图集上的 NDC 位置(画在哪)
       this.aPos[vi * 2 + 1] = (py / S) * 2 - 1;
-      this.aLocal[vi * 3] = cu - lu; this.aLocal[vi * 3 + 1] = cv - lv; this.aLocal[vi * 3 + 2] = dn;
-      this.aSplat[vi * 4] = R; this.aSplat[vi * 4 + 1] = team; this.aSplat[vi * 4 + 2] = seed; this.aSplat[vi * 4 + 3] = flags;
-      this.aStretch[vi * 3] = sdu; this.aStretch[vi * 3 + 1] = sdv; this.aStretch[vi * 3 + 2] = sa;
-      this.aGrow[vi * 4] = tn; this.aGrow[vi * 4 + 1] = dT; this.aGrow[vi * 4 + 2] = dripOnly; this.aGrow[vi * 4 + 3] = 0;
+      this.aLocal[vi * 3] = cu - lu; this.aLocal[vi * 3 + 1] = cv - lv; this.aLocal[vi * 3 + 2] = dn;  // aLocal: 相对墨滴中心(米)+ 球心到面的距离
+      this.aSplat[vi * 4] = R; this.aSplat[vi * 4 + 1] = team; this.aSplat[vi * 4 + 2] = seed; this.aSplat[vi * 4 + 3] = flags;  // aSplat: 半径/队伍/种子/flags
+      this.aStretch[vi * 3] = sdu; this.aStretch[vi * 3 + 1] = sdv; this.aStretch[vi * 3 + 2] = sa;   // aStretch: 涂抹方向 + 强度
+      this.aGrow[vi * 4] = tn; this.aGrow[vi * 4 + 1] = dT; this.aGrow[vi * 4 + 2] = dripOnly; this.aGrow[vi * 4 + 3] = 0;         // aGrow: 生长时间/滴流进度/是否只画滴流
     }
   }
 
-  // Advance spreading / dripping splats, dry the ink a little, and draw everything into the atlas. Call once per frame.
+  // ------------------------------------------------------------ 每帧主循环
+  // 推进正在扩散/滴落的墨滴动画 → 干燥湿度 → (区域控制模式)推进灌注波前 → 把所有 quad 画进图集。
   flush(dt = 1 / 60) {
     this.clock += dt;
     this.frame++;
     for (let i = 0; i < this.growing.length; i++) {
       const g = this.growing[i];
       g.age += dt;
-      const tn = g.age / g.dur;
+      const tn = g.age / g.dur;                 // 主体生长进度(>1 表示液滴/飞溅还在陆续落地)
       const td = g.dripDur ? Math.min(1, g.age / g.dripDur) : 1;
-      const dT = 1 - Math.pow(1 - td, 2.2);            // viscous: runs fast, then creeps to a stop
-      const bodyDone = tn >= 1.75;
+      const dT = 1 - Math.pow(1 - td, 2.2);     // 滴流进度:粘性流体的缓动——先快后慢地停下来
+      const bodyDone = tn >= 1.75;              // 1.75 = 连最晚的飞溅都落地了
       if (bodyDone && td >= 1) {
+        // 彻底结束:最后再画一次(把滴流画到终点),从队列移除。用 swap-and-pop 保持 O(1)
         this._emitGrowth(g, 3, 1, !!g.dripDur);
         this.growing[i] = this.growing[this.growing.length - 1]; this.growing.pop(); i--;
         continue;
@@ -691,15 +766,17 @@ export class PaintSystem {
       this._emitGrowth(g, Math.min(tn, 3), dT, bodyDone);
     }
     // drying: 1/255 of wetness every 1/40 s (≈ 6.4 s from landing to dry), applied in steps of ≥ 2
+    // 干燥:每 1/40 秒扣 1/255 的湿度(约 6.4 秒干透),攒够 ≥2 级才触发一次减法 pass(太少不值得画一次)
     this._dryAcc += dt;
     const n = Math.floor(this._dryAcc * 40);
     if (n >= 2) {
-      const k = Math.min(n, 12);
+      const k = Math.min(n, 12);                // 单帧最多扣 12 级(掉帧时不会一口气全干)
       this._dryAcc -= k / 40;
       this._dryU.uDry.value = k / 255;
       this.dryMesh.visible = true;
     }
     const floods = this._floods.length > 0;
+    // 灌注期间关掉 mipmap 自动生成,等灌注 pass 结束后由 _floodStep 重建(mip 链每帧只重建一次)
     if (floods) { this._floodSettle(); this.texture.generateMipmaps = false; }   // (one mip rebuild: after the floods)
     this._drawQuads();
     this.dryMesh.visible = false;
@@ -714,6 +791,10 @@ export class PaintSystem {
   // picked with (inside an outline, y0 ≤ y ≤ y1), and the gameplay grid, the coverage counts and `version` (→ the
   // minimap) change with it as the front passes each cell, so what you see and what you swim in agree. Nobody is
   // credited: no turf points, no special gauge. A new flood of a region replaces one still running there.
+  // 区域灌注(区域控制模式):把整块区域一次性涂成某队颜色(team 0|1)或擦除(team -1),
+  // 表现为从 center 向外跑的一道"波前"(半径 = reach × ease(t/dur))。
+  // CPU 网格随波前推进逐格翻转(所见即所游),图集用同样的轮廓/高度测试画同样的波前环带;
+  // 不计个人得分、不涨大招槽。同一区域的新灌注会顶掉未完成的旧灌注。
   flood(region, team, opts = {}) {
     if (!region || !region.cells || !region.cells.length) return null;
     const c = opts.center || [0, 0];
@@ -730,7 +811,9 @@ export class PaintSystem {
     return J;
   }
 
-  // a region's cells (live turf only) sorted by distance from the front's centre, plus its atlas quads + outlines
+  // 区域的预算数据:1) 活 turf 格按到波前中心的距离排序(波前推进时按距离批量翻转格子);
+  // 2) 每个涉及的面一个覆盖其 cell 包围盒(±1 格)的图集 quad(带着世界坐标);
+  // 3) 轮廓多边形顶点(上传给 flood shader 做点在多边形内测试)。同一 region+中心可复用缓存。
   _floodPrepFor(region, cx, cz) {
     let P = this._floodPrep.get(region);
     if (P && P.cx === cx && P.cz === cz) return P;
@@ -787,8 +870,8 @@ export class PaintSystem {
     return P;
   }
 
-  // splats still spreading where a front is running finish now, so they are drawn before (under) the flood and never
-  // keep growing over it after the front has passed (the grid already holds their final shape)
+  // 灌注开始前:把波前即将经过之处"还在扩散的墨滴"全部催熟(一次性画到最终形状并移除),
+  // 保证它们被画在灌注层下面,且不会在波前过去之后继续长到灌注的墨水上面。
   _floodSettle() {
     for (let i = this.growing.length - 1; i >= 0; i--) {
       const g = this.growing[i];
@@ -804,7 +887,8 @@ export class PaintSystem {
     }
   }
 
-  // advance every front: flip the cells it reached (grid + counts), then draw the band it crossed into the atlas
+  // 推进所有波前:半径从 J.r 涨到 rad 的格子的 CPU 状态翻转(网格 + 两队计数),
+  // 同时把"这一帧波前跨过的环带"画进图集(flood shader 只画 r0 < r ≤ r1 的像素)。
   _floodStep(dt) {
     const r = this.renderer, prev = r.getRenderTarget(), ac = r.autoClear, U = this._floodU;
     r.autoClear = false;
@@ -841,6 +925,8 @@ export class PaintSystem {
     if (changed) this.version++;
   }
 
+  // 把本帧攒下的所有 quad(+干燥 pass)一次 draw call 画进图集渲染目标,然后清空队列。
+  // 只上传 0..n 区间的缓冲(addUpdateRange),不整 buffer 重传。
   _drawQuads() {
     if (!this.quads && !this.dryMesh.visible) return;
     const g = this.geo, n = this.quads * 4;
@@ -864,8 +950,8 @@ export class PaintSystem {
     this.dryMesh.visible = false;
   }
 
-  // ------------------------------------------------------------ queries
-  // Team at face-local (u,v): 0 none, 1 = team0, 2 = team1
+  // ------------------------------------------------------------ 查询接口(都是 O(1) 数组下标)
+  // 面局部坐标 (u,v) 处的队伍:0 无墨,1 = 队伍0,2 = 队伍1
   sample(faceId, u, v) {
     if (faceId < 0) return 0;
     const f = this.level.faces[faceId];
@@ -883,12 +969,13 @@ export class PaintSystem {
     return this.sample(faceId, _rel.dot(f.u), _rel.dot(f.v));
   }
 
-  // Turf coverage fractions [team0, team1] of all live turf cells.
+  // 两队涂地百分比(裁判/计分板用)。分母是初始化时统计的"活 turf 格总数"。
   coverage() {
     return [this.counts[0] / this.turfTotal, this.counts[1] / this.turfTotal];
   }
 
-  // Fractions of turf cells within radius of (x, z) near height y: { own, enemy, empty } relative to `team`.
+  // 区域控制模式:以 (x, z, 高≈y) 为圆心 radius 范围内的 turf 格统计 { 己方, 敌方, 空白 } 份额。
+  // 隔 2 格采样一格(精度够用、速度快);跳过 dead 格与高度差超过 2.5m 的面。
   regionStats(x, y, z, radius, team, out = { own: 0, enemy: 0, empty: 0, n: 0 }) {
     out.own = out.enemy = out.empty = out.n = 0;
     const ids = this.level.queryBlocks(x - radius, z - radius, x + radius, z + radius, this._qr || (this._qr = []));
