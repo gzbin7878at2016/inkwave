@@ -187,4 +187,4 @@ flowchart TB
 | [tools/](../tools/) | 实验台、截图录像、测试、仿真 |
 | [build/](../build/) | 资源管线脚本(AO 烘焙、音乐清单) |
 | [vendor/three/](../vendor/three/) | vendored three.js r186 |
-| [docs/](../docs/) | NET / CONTRACTS / EVENTS / RIG / BOSS 契约文档 |
+| [docs/](../docs/) | NET / CONTRACTS / EVENTS / RIG / BOSS 契约文档 · [INK](INK.zh-CN.md)(墨水系统) · [RENDERING-UE4](RENDERING-UE4.zh-CN.md)(渲染系统 vs UE4 新手对比) · [BOOT](BOOT.zh-CN.md)(启动加载全流程新手导读) |
