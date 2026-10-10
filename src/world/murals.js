@@ -1,3 +1,24 @@
+// ========================================================================================
+// 程序化壁画/招牌模块 —— 用 Canvas 2D API "画"出关卡里的涂鸦与标识,而不是加载贴图文件
+//
+// 【它在渲染管线中的位置】产出一张 2048×2048 的 CanvasTexture(图集 atlas),
+// 由 levelMaterial.js 在"墨水下层"采样——壁画永远画在墨的下面,被涂地盖住。
+//
+// 【图集布局】(首行英文注释的图解版)
+//   行 0-3   四条 2048×256 可平铺条带(id 0-3):INKWAVE 大横幅 / 箭头警示带 /
+//            商店招牌 / 航运标志,像素固定不变
+//   行 4 以下  当前关卡定制的"贴合某张脸的贴花"(id 4…11),随关卡重画
+//
+// 【两张关键的数据表】(都挂在 texture.userData 上,随纹理一起旅行)
+//   setStage(id)   重画"关卡区"的函数——换图时 _buildWorldNow 调它,材质读到新表
+//   murals[]       贴花放置表,levelMaterial.js 消费,每项:
+//     rect  图集内的 UV 矩形
+//     place 贴在面上的位置(米);xLen<0 = 条带每隔 |xLen| 个面高平铺;yLen≤0 = 通高
+//     fx    [风化, 剥落]——表面的油漆斑驳/掉皮在多大程度上"咬"进壁画
+//
+// 【新手亮点】wear() 函数:用 destination-out 合成模式 + 确定性随机数,
+//   模拟"油漆磨损"——它只擦薄已画的内容,是程序化做旧的标准手法。
+// ========================================================================================
 // Procedural wall murals / signage, drawn into one canvas atlas that the level shader samples underneath the ink
 // layer. Rows 0-3 are the original tileable 2048x256 strips (ids 0-3, unchanged pixels); below them sit face-fitted
 // decals for the loaded stage (ids 4…11, redrawn by texture.userData.setStage(id): Halyard Marina's ferry car-deck
@@ -36,6 +57,11 @@ const STAGE_MURALS = {
 for (const [id, s] of Object.entries(STAGES)) if (s.drawMurals) STAGE_MURALS[id] = s.drawMurals;
 
 export async function createMuralTexture(stageId = 'halyard') {
+  // 【壁画图集工厂】boot() 在建造世界前调用。步骤:
+  //   ① 等艺术字字体加载完(否则 Canvas 用回退字体画,风格不对;失败也只影响字形)
+  //   ② 创建 2048×2048 画布,画四条常驻条带
+  //   ③ 包装成 CanvasTexture,挂好颜色空间/各向异性/mipmap
+  //   ④ 定义 setStage(id) 并立即对默认关卡执行一次
   try { await Promise.all([document.fonts.load('120px "Titan One"'), document.fonts.load('800 100px Rubik')]); } catch { /* fallback font */ }
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
@@ -57,6 +83,9 @@ export async function createMuralTexture(stageId = 'halyard') {
   const kit = { font, fontB, NAVY, CORAL, TEAL, MUSTARD, CREAM, SKY, squid, blob };
   let cur = null;
   // (re)draw the stage region for `id` and rebuild the placement table; call before building the level material
+  // 【换关卡 = 重画一个区域】图集里只有 y≥1040 的"关卡区"会被擦掉重画,四条常驻条带不动。
+  // 四条默认条带的 place=[0,-8,0,0]:xLen=-8 表示"每隔 8 个面高平铺一次"——这就是墙面
+  // 上反复出现同款横幅的原因。画完置 tex.needsUpdate,GPU 纹理才会重新上传。
   tex.userData.setStage = (id) => {
     if (id === cur) return;
     cur = id;
@@ -185,6 +214,8 @@ function roundRect(g, x, y, w, h, r) {
 const K = { navy: '#2f3a57', hull: '#3f5372', teal: '#3f9f97', tealDk: '#2c7a74', white: '#f1ede4', coral: '#df7c66', yellow: '#e2b64c', black: '#2a2c31' };
 
 // small deterministic RNG for the wear passes
+// 【确定性随机数】同样的种子 → 同样的"磨损"分布。好处:每次启动画面一致,
+// 且排障时可以复现"那一块锈斑"的位置(数学上是 mulberry32 变体)。
 function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 // Paint wear inside a rect: many small erase flecks (worn, chipped paint), a few bigger soft scuffs, and optional long

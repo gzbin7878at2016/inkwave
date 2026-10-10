@@ -1,3 +1,16 @@
+// ========================================================================================
+// INKWAVE 桌面壳(Electron)—— 双击 play.bat 后第一个运行的文件
+//
+// 【它解决什么问题】Electron = "自带 Chrome 的桌面程序壳"。游戏本体是网页(index.html),
+// 但浏览器不允许 file:// 加载 ES Modules(import 会被 CORS 拦截),所以:
+//   ① 注册一个自定义 app:// 协议,把磁盘文件包装成"请求-响应"(下方 protocol.handle)
+//   ② 开一个原生窗口加载 app://inkwave/index.html
+// 从此游戏代码里的 import()/fetch() 一行不用改——协议层在背后翻译成磁盘读取。
+// 配套阅读:docs/BOOT.zh-CN.md 第 1 节。
+//
+// 【职责清单】app:// 伺服(带 CSP) · 窗口状态记忆 · 全屏控制(IPC) ·
+//            防系统休眠节流 · 菜单栏 · GPU 后端选择
+// ========================================================================================
 // Electron shell for INKWAVE: serves the static game over a privileged app:// scheme
 // (ES modules + import maps don't load from file://) and opens it in a native window.
 const { app, BrowserWindow, Menu, protocol, net, shell, powerSaveBlocker, ipcMain, screen, nativeTheme } = require('electron');
@@ -11,12 +24,18 @@ const ROOT = path.join(__dirname, '..');
 // prefer the discrete GPU on dual-GPU Macs, and never fall back to software rendering.
 // Metal is macOS-only; on Windows/Linux forcing it makes ANGLE fall back to software
 // rendering (SwiftShader), which tanks the frame rate — so gate it to darwin.
+// 【GPU 后端选择——踩过的大坑】macOS 上强制走 ANGLE/Metal(废弃的 OpenGL 太慢)+ 双显卡 Mac 强制独显;
+// ⚠️ Metal 只在 macOS 有效:Windows/Linux 上强行指定会退化成 SwiftShader 软件渲染,帧率崩坏——
+// 所以用 process.platform 门禁。这个教训的另一半在 src/core/renderer.js 开头的苹果专用路径注释里。
 if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('use-angle', 'metal');
   app.commandLine.appendSwitch('force_high_performance_gpu');
 }
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 
+// 【内容安全策略】只允许加载游戏自带的资源('self'),禁一切远程源——
+// 即使窗口被注入恶意内容也无处取数;两处 'unsafe-inline' 例外是给 index.html 里的
+// import map 和淡入小脚本(它们内联在 HTML 里)开的口子。
 const CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",   // index.html's import map + fade-in snippet are inline
@@ -28,11 +47,15 @@ const CSP = [
   "worker-src 'self' blob:",
 ].join('; ');
 
+// 【协议注册】把 app:// 声明为"标准、安全、支持 fetch、可流式"——
+// 四个开关告诉 Chromium:把这个 scheme 当 http 一样对待(游戏代码里的 fetch/import 原样可用)。
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
 // ---- window state (size + fullscreen), remembered between launches; first launch opens fullscreen
+// 【窗口状态记忆】尺寸/全屏写进 userData/window-state.json;启动时若保存的位置已不在任何
+// 屏幕内(比如拔掉了外接显示器),回落到默认 1440×900——防止窗口"丢"在看不见的屏幕上。
 const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
 function loadState() {
   try { return { fullscreen: true, ...JSON.parse(fs.readFileSync(stateFile(), 'utf8')) }; } catch { return { fullscreen: true }; }
@@ -48,6 +71,8 @@ function onScreen(b) {
 }
 
 function createWindow() {
+  // 【开窗口】sandbox + contextIsolation = 预加载脚本之外没有网页能碰 Node 能力,安全性对标浏览器。
+  // 背景色 #0d1020 与游戏底色一致,窗口出现的瞬间不闪白。
   const state = loadState();
   const bounds = onScreen(state.bounds) ? state.bounds : { width: 1440, height: 900 };
   const win = new BrowserWindow({
@@ -67,6 +92,10 @@ function createWindow() {
   // Fullscreen. macOS ignores requests made mid-transition, so remember the wanted state and re-apply it once the
   // animation ends. Shortcuts are caught before the page sees them, so the game's key handling / pointer lock can't eat them.
   // `ours` marks a transition we started; any other (green button, View menu) just becomes the new wanted state.
+  // 【全屏状态机——macOS 的坑】macOS 全屏动画期间会忽略新的切换请求,所以用 want/ours 两个变量:
+  // want = 期望状态,ours = 是否我们发起的;动画结束(settled)后若实际 ≠ 期望就补一刀。
+  // 快捷键在页面看到按键之前被这里截获(F11 / Ctrl+Cmd+F / Cmd+Enter),防止游戏里的
+  // 键鼠处理(尤其鼠标指针锁定)把全屏键"吃掉"。
   let want = win.isFullScreen(), ours = false;
   const setFs = (on) => { want = !!on; if (win.isFullScreen() !== want) { ours = true; win.setFullScreen(want); } };
   const settled = () => {
@@ -97,12 +126,17 @@ function createWindow() {
   win.on('close', () => saveState(win));
 
   // Stop App Nap from throttling the game loop while it's focused; release when in the background.
+  // 【防系统省电搅局】macOS 的 App Nap 会在后台节流计时器;游戏聚焦时申请"阻止挂起"电源锁,
+  // 失焦立即释放(不白占系统资源)。
   let blocker = null;
   win.on('focus', () => { if (blocker === null) blocker = powerSaveBlocker.start('prevent-app-suspension'); });
   win.on('blur', () => { if (blocker !== null) { powerSaveBlocker.stop(blocker); blocker = null; } });
   return win;
 }
 
+// 【HTTP 断点续传( Range 请求)】音乐播放器拖动进度条时,浏览器会发来 bytes=a-b 请求;
+// 必须回 206 Partial Content,否则 <audio> 后续加载会整个失败。
+// 手写而非让静态伺服库代劳,因为 app:// 协议本来就是我们自己实现的。
 const MIME = { '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.wav': 'audio/wav', '.flac': 'audio/flac' };
 async function rangeResponse(file, header) {
   let size;
@@ -139,6 +173,11 @@ function buildMenu() {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  // 【app:// 协议的"伺服核心"】这就是那个把磁盘文件包装成 HTTP 的翻译器:
+  //   收到标准 Request → URL 路径映射到 ROOT 下的文件(越界返回 403,防目录穿越)
+  //   → 歌曲在 asar 包外(打包配置刻意 unpack,媒体文件需要可寻址)→ 处理 Range →
+  //   读文件返回标准 Response;对 .html 额外注入 CSP 响应头(上面那张白名单)。
+  // 至此游戏里的 import()/fetch() 全程无感:单机不出网卡,但语法/缓存/安全规则原样保留。
   protocol.handle('app', async (req) => {
     const { pathname } = new URL(req.url);
     let file = path.normalize(path.join(ROOT, decodeURIComponent(pathname)));

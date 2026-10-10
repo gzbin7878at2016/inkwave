@@ -1,3 +1,20 @@
+// ========================================================================================
+// INKWAVE 菜单系统 —— 全部前端界面的总装(loading/title/main/loadout/… 共 14 个屏幕)
+//
+// 【这个文件是什么】一份"契约驱动"的 UI 模块:对外接口只有文件头英文注释那几行
+// (show/setLoading/update/handleKey…),内部怎么画完全不关引擎的事。引擎(main.js)只负责
+// 调用,界面的渲染/动画/导航都在本文件自给自足。
+//
+// 【新手要懂的三个机制】
+//   ① 屏幕 = 函数:每个 _scr_xxx() 返回 { el, tick, setLabel… } 的"屏幕对象",
+//      show(name) 按需创建并挂载,屏幕自己声明每帧要做什么(tick)
+//   ② 进度条的"表演":_loading.target(目标)与 _loading.shown(显示)双变量,
+//      _tick() 里做指数缓动追赶——所以百分比是写死的里程碑,但动画丝滑
+//   ③ 墨水转场:屏幕切换默认瞬时,特定组合(见 WIPES 表)触发全屏"墨 wipe"动画
+//
+// 【与 BOOT 文档的关系】docs/BOOT.zh-CN.md 第 3 节讲的"加载条秒出现",
+//    就是本文件的 show('loading') + setLoading() + _scr_loading() 三件套。
+// ========================================================================================
 // INKWAVE — front-end menus (contract: docs/CONTRACTS.md §3).
 //   const menus = new Menus(rootEl, api);
 //   menus.show(screen) · menus.current · menus.setLoading(p, label) · menus.showResults(data)
@@ -251,6 +268,9 @@ export class Menus {
     this._binds = new WeakMap();
     this._modal = null;
     this._loading = { target: 0, shown: 0, label: 'Mixing the ink…' };
+    // 【进度条双变量】target = boot() 推进的目标值;shown = 屏幕上实际显示的值。
+    // 两者不直接相等——_tick() 每帧让 shown 指数逼近 target(1 - e^(-6dt)),
+    // 这就是"百分比是写死的里程碑,但滚动丝滑"的秘密。
     this._results = null;
     this._resultsDirty = false;
     this._input = 'kbm';
@@ -308,6 +328,8 @@ export class Menus {
   }
 
   setLoading(p, label) {
+    // 【boot() 唯一调用的进度接口】只更新"目标值",动画在 _tick 里自己追;
+    // 标签变化时立刻推给当前屏幕(若正在显示 loading 屏)做入场动画。
     this._loading.target = clamp(+p || 0, 0, 1);
     if (label != null) this._loading.label = String(label);
     if (this.current === 'loading' && this._scr && this._scr.setLabel) this._scr.setLabel(this._loading.label);
@@ -455,6 +477,7 @@ export class Menus {
     dt = this._frozen() ? 0 : dt * (this.timeScale > 0 ? this.timeScale : 1);
     this.wipe.timeScale = this.timeScale > 0 ? this.timeScale : 1;
     const L = this._loading;
+    // 【进度条缓动】指数衰减逼近:dt 越大追得越快,永不超调;小于 0.001 直接对齐省浮点尾差。
     L.shown += (L.target - L.shown) * (1 - Math.exp(-dt * 6));
     if (Math.abs(L.target - L.shown) < 0.001) L.shown = L.target;
     // layout reads (cursor) first, then the screen's style writes — no forced reflow between them
@@ -844,6 +867,9 @@ export class Menus {
   _panel(cls, ...kids) { return h('div', { class: `iw-panel ${cls || ''}` }, ...kids); }
 
   // ================================================================ SCREEN: loading
+  // 【加载屏幕】BOOT 流程的"脸面":标志 + 进度条 + 阶段标签 + 轮换提示(TIP)+ 版本号。
+  // 结构是屏幕对象三件套:el(DOM 本体)、setLabel(标签换装,带入场动画)、
+  // tick(每帧把缓动值 shown 翻译成 CSS transform —— 填充条位移 + 百分比文字)。
   _scr_loading() {
     const fill = h('div', { class: 'iw-progress__fill' }, h('i', { class: 'iw-progress__wave' }), h('i', { class: 'iw-progress__edge' }));
     const pctEl = h('span', { class: 'iw-progress__pct' }, '0%');

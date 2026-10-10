@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """INKWAVE dev/LAN server: static files from the repo root on 0.0.0.0 (reachable from other machines on the network).
 
+【中文导读】浏览器形态(非 Electron)的启动方式:python3 tools/serve.py → 打开 http://localhost:8490。
+本项目是"零构建"的 ES Modules——几十个 JS 文件各是一次 HTTP 请求,所以缓存策略必须正确:
+
 Every response carries `Cache-Control: no-cache`, so browsers revalidate each module on load (cheap 304s via
 Last-Modified) and can never mix a fresh main.js with a stale cached module — plain `python -m http.server` sends no
 cache headers and browsers apply heuristic caching to ES modules.

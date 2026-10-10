@@ -1,3 +1,19 @@
+// ========================================================================================
+// INKWAVE 渲染器模块 —— WebGL 渲染器 + HDR 后处理链的总装车间
+//
+// 【一句话架构】(首行英文注释即全部):
+//   MSAA HDR 目标 → (可选)GTAO 环境光遮蔽 → Bloom 泛光 → Grade 调色 → Output 输出
+//
+// 【新手要建立的三个概念】
+//   ① 前向渲染:three.js 默认管线,画每个物体时顺带算光照(所以全游戏只有一盏真灯——太阳)
+//   ② HDR 半浮点:中间帧缓冲用 HalfFloatType,像素亮度可以超过 1.0,
+//      泛光(bloom)才有"高亮溢出"可提取;最后 OutputPass 统一做色调映射 + sRGB
+//   ③ 后处理链 = 一串"全屏滤镜",每个 pass 吃上一 pass 的图、吐出新图(EffectComposer 负责串联)
+//
+// 【著名的平台坑】Apple 芯片(M 系列)的 ANGLE/Metal 后端上,多重采样半浮点目标慢到
+//   30ms/帧(1920×1200 M1 Pro)。因此苹果机上:samples=0(单采样)+ 用 SMAA 后处理抗锯齿
+//   代替 MSAA + GTAO 半分辨率跑。运行时经 isAppleGPU() 检测分支。
+// ========================================================================================
 // Renderer + post stack (MSAA HDR target → optional GTAO → bloom → grade/vignette → output).
 // Apple GPUs (ANGLE's Metal backend): multisampled half-float targets cost ~30 ms/frame at 1920×1200 on an M1 Pro,
 // so there the HDR target is single-sampled and edges are smoothed by SMAA after output, and GTAO runs at half res.
@@ -14,6 +30,10 @@ import { G } from './ctx.js';
 
 const BLOOM = [0.28, 0.45, 2.4];   // default bloom: strength, radius, HDR threshold
 
+// 【自定义调色 shader】60 行 GLSL ≈ UE4 里 PostProcess Volume 一整个面板的手写等价物。
+// 处理顺序(与代码对应):曝光 → 饱和度/vibrance(已饱和的队伍墨几乎不动,只提灰部)→
+// 对数空间对比度(HDR 高光不失序)→ 冷阴影/暖高光分离色调 → 暗角 → 低血量去饱和+压边 → 闪白。
+// 全程在线性 HDR 空间进行,色调映射在最后的 OutputPass 才发生。
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null },
@@ -63,6 +83,10 @@ const GradeShader = {
 
 // r186's PCF filter uses a 5-tap rotated Vogel disk with per-pixel noise, which reads as grainy stipple on every soft
 // shadow edge. Swap it for a noise-free 3×3 grid of hardware-compared (bilinear) taps: smooth and temporally stable.
+// 【阴影滤波补丁】three.js r186 的 PCF 软阴影用"旋转 Vogel 盘 5 采样 + 逐像素随机",
+// 阴影边缘全是颗粒噪点;这里全局替换 ShaderChunk(模块加载时执行一次,改的是 three.js 的公共源码),
+// 换成 3×3 硬件双线性比较——边缘平滑且时间上稳定(不闪)。
+// ⚠️ 这是"改厂商变速箱"式操作:three.js 升级后正则失配会打印警告并保持原厂行为。
 (function patchShadowFilter() {
   const chunk = THREE.ShaderChunk.shadowmap_pars_fragment;
   const re = /shadow = \(\s*texture\( shadowMap, vec3\( shadowCoord\.xy \+ vogelDiskSample\( 0, 5, phi \) \* radius, shadowCoord\.z \) \)[\s\S]*?\) \* 0\.2;/;
@@ -74,12 +98,20 @@ const GradeShader = {
 })();
 
 function isAppleGPU(gl) {
+  // 【平台检测】读 WebGL 渲染器名字;含 "Apple" 且不含 Intel/AMD/NVIDIA 才认(排除"Apple Intel"这类双显卡机型)。
+  // 结果决定本文件开头说的苹果专用路径:单采样 HDR 目标 + SMAA + 半分辨率 GTAO。
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   const name = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
   return /Apple/i.test(name) && !/Intel|AMD|Radeon|NVIDIA/i.test(name);
 }
 
 export class Renderer {
+  // 【构造】创建 WebGL 上下文 + 基本配置;真正的后处理链在 setScene() 里才搭(_buildComposer)。
+  // 三个关键开关:
+  //   antialias: false —— 不依赖画布的默认 MSAA,抗锯齿由我们自己的 HDR 渲染目标接管(质量档可调)
+  //   checkShaderErrors 默认关 —— 同步编译检查会让游戏中途首次编译时卡死一切;
+  //     只有带 ?shadercheck 参数(冒烟测试/开发)才打开,让坏着色器响亮报错
+  //   info.autoReset = false —— 渲染统计由 _frame() 每帧手动清零,方便统计单帧 DrawCall
   constructor(container, settings) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
     // Shader status checks make every compile synchronous (the main thread waits on the GPU process for the link
@@ -108,6 +140,19 @@ export class Renderer {
     this._buildComposer();
   }
 
+  // 【搭建后处理链】渲染目标与 pass 的顺序就是首行注释那张图,逐个说:
+  //   HalfFloat 渲染目标 —— HDR 的画布;带 MSAA 采样数(苹果机上为 0)
+  //   RenderPass        —— 真正画 3D 场景的那一 pass,之后全是全屏滤镜
+  //   GTAOPass(可选)  —— 屏幕空间环境光遮蔽:从深度图推算缝隙/接触阴影
+  //     · blendIntensity 0.8:最暗处也留 20% 光,隧道口不至于死黑
+  //     · radius 1.1m = 接触尺度(米级),只让箱子/柱子"坐"在地面上,不给向阳墙抹黑晕
+  //     · PD = 降噪 pass;苹果机上半分辨率跑(套了个 setSize 包装,输入尺寸砍半)
+  //   UnrealBloomPass   —— 泛光:提取亮度超过阈值的像素,高斯扩散成辉光(日/黄昏参数由主题换装)
+  //   GradeShader       —— 上面的自定义调色
+  //   extraPass(可选)  —— 屏幕特效模块(fx/screenfx.js)注入位,跑在 HDR 线性空间
+  //   OutputPass        —— 终点:色调映射(NeutralToneMapping)+ 转 sRGB
+  //   SMAAPass(条件)  —— 只有"配置要 MSAA 但实际没开成"(=苹果机)才补这个后处理抗锯齿
+  // 画质档/阴影开关变化时整个链由 applySettings() 重建。
   _buildComposer() {
     const r = this.renderer, q = this.q;
     if (this.composer) { this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose(); }
@@ -158,6 +203,8 @@ export class Renderer {
     if (this.scene) this._buildComposer();
   }
 
+  // 【画质档应用】质量档变了或阴影开关变了 → 重建整条后处理链,并给场景里每个材质打 needsUpdate
+  // (逼 three.js 用新配置重编着色器——这正是 levelMaterial.js 里 customProgramCacheKey 要变的原因)。
   applySettings(settings) {
     const prevQ = this.q;
     this.settings = settings;
@@ -178,6 +225,8 @@ export class Renderer {
   }
 
   // Dynamic resolution (never on ultra): scale the render density between dynFloor() and 1 of the quality preset.
+  // 【动态分辨率执行端】主循环 _dynRes() 决定"该降到几档",这里真正改 pixelRatio。
+  // 改动极小(±0.125)且钳在 dynFloor 之上,Retina 屏的物理像素密度先折算再缩放。
   setDynamicScale(s) {
     s = Math.max(this.dynFloor(), Math.min(1, s));
     if (Math.abs(s - this.dynScale) < 0.01) return;
@@ -200,6 +249,8 @@ export class Renderer {
   }
 
   render() {
+    // 【每帧渲染入口】先补窗口尺寸变化;再检查环境主题(白天/黄昏)是否换了调色配方——
+    // 换了就把 GradeShader 的饱和度/对比度/分离色调/曝光和 bloom 三参数整体换装,最后交给合成器出图。
     this.resize();
     // colour grade recommended by the environment theme (day / dusk)
     const gr = G.env && G.env.grade;

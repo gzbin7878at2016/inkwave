@@ -1,3 +1,26 @@
+// ========================================================================================
+// 【中文导读】程序化纹理库 —— 在 GPU 上"烘"出全部关卡表面材质,零贴图文件
+//
+// 上面的大段英文注释是这个模块的完整 API 契约(建议精读,写得极好)。这里是给新手的地图:
+//
+// 【它产出什么】一组 三维纹理数组(WebGLArrayRenderTarget,层 = 材质):
+//   albedo / normal / orm 三张,每层一种表面(混凝土、木板、橡胶…共 25 层),
+//   由 levelMaterial.js 在片元着色器里按"面数据"选层采样。
+//
+// 【怎么造出来的 —— 全项目最巧妙的工程之一】
+//   1. 每种表面不是图片,而是一对 GLSL 函数:prep()(申报要哪些噪声)+ surf()(算颜色/高度)
+//   2. 按"材质组"拼成 uber-shader,用 uniform switch 选层——N 种表面只编译一次驱动程序
+//   3. 每组一个全屏四边形,逐层 setRenderTarget(数组第 i 层) 渲染一遍:每纹素做 2×2 子采样
+//      (等于预滤波),法线从子采样高度梯度解析求出(高度以米为单位 → 倒角/砖缝有真实坡度)
+//   4. 全在 GPU 上完成,CPU 只发命令;噪声用整数 PCG 哈希,任何显卡上结果逐像素一致
+//   5. 冷启动的大头是驱动编译 uber-shader,所以 compileAsync 尽早并行编(见文件头注释)
+//
+// 【anti-tiling(防平铺重复感)三模式】TEXLIB_MODE: plain 直接平铺 / grid 每格随机镜像翻转 /
+//   hex 六边形随机旋转混合(Mikkelsen 2022)——远看不重复,接缝处用 textureGrad 保 mipmap 正确。
+//
+// 【消费端在哪】levelMaterial.js 的纹理库采样段 + texlibDetail/texlibSpecularAA 等辅助函数,
+//   那一带的 GLSL 注入就是对着这里的 API 写的。
+// ========================================================================================
 // INKWAVE texture library — procedural, GPU-generated, tileable PBR surface layers.
 //
 //   import { createTextureLibrary, TEXLIB_GLSL, TEXLIB_MODE } from './texlib.js';
@@ -1330,6 +1353,12 @@ float texlibCoverage(float a, vec2 uv, float texSize) {
 // ---------------------------------------------------------------------------------------------------------------
 
 export async function createTextureLibrary(renderer, { size = 512 } = {}) {
+  // 【纹理库工厂】boot() 在世界建造前调用。流程四步:
+  //   ① 建三维数组渲染目标(三层附件 MRT:albedo sRGB / normal / orm 线性),循环重用三张附件的采样参数
+  //   ② 按材质组拼 uber-shader → compileAsync 并行预编译(冷启动大头)
+  //   ③ 逐层渲染:每层把"该层的 prep/surf"通过 uniform switch 选中,画进数组第 i 层;
+  //      mip 链最后只生成一次(中途关掉 generateMipmaps,省 24 次全链重算)
+  //   ④ 读回 1 像素"等 GPU"——让 stats.ms 的计时是真实耗时而非命令提交耗时,然后收拾现场
   const t0 = performance.now();
   const L = MATERIALS.length;
   const aniso = Math.min(16, renderer.capabilities.getMaxAnisotropy());

@@ -1,4 +1,22 @@
-// INKWAVE — boot, main loop and game-flow orchestration (menus ⇄ attract mode ⇄ matches ⇄ results).
+// ========================================================================================
+// INKWAVE 主控模块 —— 启动(boot)、主循环(_loop/_frame)与游戏流程编排
+// (菜单 ⇄ 吸引模式 ⇄ 对局 ⇄ 结算 的状态切换中枢)
+//
+// 【这个文件是什么】
+//   整个游戏的"总装配工":它不负责具体玩法(那是 game/ 目录的职责),
+//   而是决定"什么时候创建谁、按什么顺序、失败怎么降级"。
+//   配套阅读:docs/BOOT.zh-CN.md(启动加载全流程新手导读,本文档的叙事版)。
+//
+// 【三条主线】
+//   1. boot()              —— 启动加载全流程:渲染器创建 → 世界建造 → 着色器预热 → 标题画面
+//   2. _buildWorld*()      —— 世界建造/重建:换图、换模式时重演的九零件装配线
+//   3. _loop() / _frame()  —— 主循环:每一帧的完整旅程(rAF 驱动)
+//
+// 【新手阅读提示】
+//   · 加载条上的每句俏皮话("调配墨水中…"等)都对应 boot() 里一次 progress() 调用
+//   · 每个 G.xxx 都是注册到全局上下文单例(core/ctx.js)的系统,供各层随时取用
+//   · 模块加载失败不致命:loadModule() 会降级到 dev/stubs.js 的假实现
+// ========================================================================================
 import * as THREE from 'three';
 import { G, on, emit, clamp, damp } from './core/ctx.js';
 import { Renderer } from './core/renderer.js';
@@ -39,6 +57,8 @@ const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const REFRESH_RATES = [30, 48, 50, 60, 75, 90, 100, 120, 144, 165, 240]; // common display rates (Hz)
 
 // ------------------------------------------------------------------------------------------ persistence
+// 【持久化小工具】设置/档案都存在浏览器的 localStorage(一个网页专用的键值小仓库)。
+// 读取时与默认值合并({...def, ...v}):旧版本存档缺新字段时自动补默认,不会崩。
 function loadJSON(key, def) { try { const v = JSON.parse(localStorage.getItem(key)); return v ? { ...def, ...v } : { ...def }; } catch { return { ...def }; } }
 function saveJSON(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 const DEFAULT_PROFILE = { name: 'Player', level: 1, xp: 0, wins: 0, matches: 0, totalTurf: 0, weapon: 'shooter' };
@@ -52,10 +72,26 @@ async function loadModule(path, stubName) {
   }
 }
 
+// ========================================================================================
+// Game —— 整个游戏只有一个实例(文件末尾 new Game()),它是所有系统的"装配车间 + 调度员"
+// ========================================================================================
 class Game {
+  // ----------------------------------------------------------------------------------------
+  // boot() —— 启动加载全流程(异步)。
+  // 阶段与进度条标签的对应关系(每行末尾是你在加载条上看到的中文):
+  //   0.05 调配墨水中…   → 设置/档案、语言、渲染三件套、输入
+  //   0.15 搭建广场中…   → 动态 import 五大模块(角色/特效/环境/音频/音乐)
+  //   0.40 灌注海港中…   → 程序化纹理 + _buildWorld 九零件装配线(最重的一段)
+  //   0.55 教鱿鱼游泳中… → 环境光照(天空/太阳/环境反射)
+  //   0.70 调校触手中…   → 弹道/副武器/大招/特效池/展示台/联网模块
+  //   0.85 预热中…       → 屏幕外放遍特效 + compileAsync 全场景着色器编译
+  //   1.00 就绪!         → 模拟 3 帧 → 标题画面 → 主循环接管
+  // 每个 await progress(...) 之间就是一个"工作区间",想深挖就顺着函数名往里跳。
+  // ----------------------------------------------------------------------------------------
   async boot() {
     const t0 = performance.now();
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
+    // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
     this.settings = G.settings = loadJSON('inkwave.settings', DEFAULT_SETTINGS);
     setLang(this.settings.lang || 'en');   // before any menu renders (src/i18n/strings.js)
@@ -74,6 +110,8 @@ class Game {
     this.fadeEl = document.getElementById('fade');
 
     // UI first so the loading screen shows immediately
+    // 【UI 优先策略】先加载最小的 UI 模块、立刻亮出加载条,再在加载条的掩护下干所有重活——
+    // 原则是"让'正在加载'本身尽快可见",玩家永不对着白屏。
     const [menusMod, hudMod] = await Promise.all([loadModule('./ui/menus.js'), loadModule('./ui/hud.js')]);
     this.menus = G.menus = menusMod.Menus ? new menusMod.Menus(this.uiRoot, this._menuApi()) : null;
     this.hud = G.hud = hudMod.HUD ? new hudMod.HUD(this.uiRoot, { playSound: (n, o) => G.audio?.play(n, o) }) : null;
@@ -83,10 +121,15 @@ class Game {
     this.hud?.setVisible(false);
     this.menus?.show('loading');
     this.bootMarks = [];
+    // progress() —— 进度条推进器:记录里程碑耗时(供控制台 __inkwave.bootMarks 调试)→
+    // 通知 UI 更新标签 → 等一帧(nextFrame)让浏览器把加载画面真的画出来再继续。
+    // 注意:百分比是写死的里程碑,不是实测值——条条的丝滑动画在 menus.js 里做。
     const progress = async (p, label) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); this.menus?.setLoading(p, label); await nextFrame(); };
     await progress(0.05, 'Mixing ink…');
 
     // renderer / scene
+    // 【渲染三件套】Renderer=胶卷+冲印厂(core/renderer.js,含 HDR 后处理链)、Scene=舞台、Camera=镜头。
+    // 相机四参数:视野角(设置里可调)/画面宽高比/0.15=近裁剪(贴脸多近开始可见)/6500=远裁剪(天际线)。
     this.R = new Renderer(app, this.settings);
     G.renderer = this.R.renderer;
     const scene = (G.scene = new THREE.Scene());
@@ -102,6 +145,8 @@ class Game {
     });
 
     // modules built by other authors
+    // 【第二梯队下载】静态 import 之外,这五个大模块用 import() 动态加载——运行到这一行才发 HTTP 请求,
+    // Promise.all 并行下载。模块由不同作者维护、允许缺席:加载失败自动降级到 dev/stubs.js 假实现。
     const [charMod, fxMod, envMod, audioMod, musicMod] = await Promise.all([
       loadModule('./game/character.js', true), loadModule('./fx/fx.js', true), loadModule('./world/environment.js', true),
       loadModule('./audio/audio.js', true), loadModule('./audio/music.js', true),
@@ -112,6 +157,8 @@ class Game {
     await progress(0.15, 'Building the plaza…');
 
     // world
+    // 【选图】URL ?map= 参数 > 默认第一张图;纯单机启动时,仅联机可用的图自动降级到第一张单机图。
+    // q = 画质档(QUALITY 表:决定墨图集尺寸、阴影分辨率等所有"按质量伸缩"的数值)
     // (old ?map=sunset links = Tidewater at dusk)
     const pm = params.get('map') === 'sunset' ? 'tidewater' : params.get('map');
     let map = MAPS.find((m) => m.id === pm) || MAPS[0];
@@ -119,21 +166,32 @@ class Game {
     this.time = params.get('time') === 'dusk' || params.get('map') === 'sunset' ? 'dusk' : (this.settings.timeOfDay === 'dusk' ? 'dusk' : 'day');
     this.theme = mapTheme(map, this.time);
     const q = QUALITY[this.settings.quality] || QUALITY.high;
+    // 【先画"皮肤"再建"身体"】本项目没有贴图文件,两张核心纹理都是此刻用代码现画的:
+    //   murals  —— 壁画图集:关卡涂鸦/招牌,Canvas 逐笔画成(画在墨水下层的贴图)
+    //   texlib  —— 纹理库:混凝土/防滑槽/锈痕…逐纹素 2×2 子采样烘焙(texlib.js)
+    // 画失败不致命:texlib 为 null 时材质走内置程序化兜底。
     this.murals = await createMuralTexture();
     try {
       const { createTextureLibrary } = await import('./world/texlib.js');
       this.texlib = await createTextureLibrary(G.renderer, { size: q.paintAtlas >= 4096 ? 512 : 256 });
     } catch (e) { console.error('[inkwave] texture library failed — procedural fallback', e); this.texlib = null; }
+    // 【建造世界】加载条背后最重的一段:九零件装配线(道具→关卡→物理→光照图→墨水→材质→网格→装饰→导航)。
+    // 详见 _buildWorldNow() 的中文导读。换地图/换模式时会重演;同图重赛则短路跳过。
     await this._buildWorld(map);
     this.zoneMarks = new ZoneMarks(scene);   // Zone Control ground markings: build / clear themselves on 'match:state'
+    // 【0.40 灌注海港中…】世界本体已建成
     await progress(0.4, 'Filling the harbor…');
     const B = G.level.bounds;
+    // 【环境光照】天空穹顶、太阳平行光、环境反射贴图(envMap 挂到 scene.environment 后,
+    // 所有 PBR 材质的"间接光/反射"都由它供);曝光 0.94 是阳光下的基准值。
     G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level) });
     if (G.env.envMap) scene.environment = G.env.envMap;
     // sky-fill balance (scene.environmentIntensity, hemisphere) + per-theme exposure are the environment theme's job
     // (Environment.setTheme), so a stage/time looks the same booted into or switched to mid-session
     G.renderer.toneMappingExposure = 0.94;
     await progress(0.55, 'Teaching squids to swim…');
+    // 【0.55 教鱿鱼游泳中…】以下系统的共同模式:构造时只搭骨架(对象池/场景挂点),不造弹药不造粒子——
+    // 加载期建池,运行期复用,游戏中永不因新建对象而分配内存。
     G.projectiles = new Projectiles(scene);
     G.subs = new SubSystem(scene);
     G.specials = new SpecialSystem(scene);
@@ -163,6 +221,11 @@ class Game {
     this._bindEvents();
     this._startAttract();
     // warm up: compile every shader now so the first shot/splat never hitches
+    // 【预热:把卡顿消灭在加载条里】着色器是"第一次被用到"时才编译的;不处理的话,
+    // 比赛中第一颗炸弹出手瞬间 GPU 要现场编译,画面冻结几十到几百毫秒。
+    // 对策两层:① _warmup() 在屏幕外把每种特效放一遍,逼出所有惰性创建的对象与材质;
+    //          ② compileAsync 借 KHR_parallel_shader_compile 并行编译全场景着色器,
+    //            编译期间加载动画照常跑(否则浏览器冻结,进度条假死)。
     await progress(0.85, 'Warming up…');
     this._warmup();
     // compile in parallel (KHR_parallel_shader_compile) so the loading screen keeps animating instead of freezing
@@ -170,15 +233,18 @@ class Game {
     for (const m of this._warmMeshes || []) { G.scene.remove(m); }
     this._warmMeshes?.[0]?.geometry.dispose(); this._warmMeshes = null;
     await progress(0.93, 'Warming up…');
+    // 【收尾】先跑 3 帧再宣布就绪:让所有系统的"第一帧初始化"(纹理上传、首帧模拟)
+    // 发生在玩家看见标题之前,而不是标题渲染到一半突然卡一下。
     for (let i = 0; i < 3; i++) { this._frame(1 / 60); await nextFrame(); }
     await progress(1, 'Ready!');
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 250));   // 停 250ms,让你看清"就绪!"(纯节奏设计)
 
     this.timer = new THREE.Timer(); this.timer.connect?.(document);
     this.fpsAcc = 0; this.fpsN = 0; this.fps = 60;
     G.mode = 'menu';
     this.menus?.show(params.has('skipTitle') ? 'main' : 'title');
     // the online hub / lobby set loads in the background once the menus are idle (no arena flash on the first visit)
+    // 【后台预载大厅】菜单闲置 2.5 秒后偷偷预建联机大厅场景——第一次进大厅才不闪加载条
     if (!params.has('autostart')) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
     this._applyAudioVolumes();
     requestAnimationFrame((t) => this._loop(t));
@@ -211,6 +277,9 @@ class Game {
   // Build (or rebuild) everything that depends on the stage layout: level, collision, paint atlas, surface material,
   // decor, navigation graph and minimap. Environment/FX/projectiles persist across stages.
   // mode: 'turf' | 'zones' — a stage with Zone Control-only pieces (variants.js) builds a separate world for that mode
+  // 【世界建造入口】换图/换模式时重演装配线;同图重赛走 worldKey 短路直接返回(秒进)。
+  // _building 标志位:重建期间的 await(光照图下载)会让新旧世界短暂不一致,
+  // 主循环每帧开头检查它并暂停模拟,防止"用新关卡射线、采样旧墨图集"的错位帧。
   async _buildWorld(map, mode = 'turf') {
     const scene = G.scene;
     const layoutId = map.layout || map.id;
@@ -222,6 +291,12 @@ class Game {
     try { await this._buildWorldNow(map, scene, layoutId, mode, worldKey); } finally { this._building = false; }
   }
   async _buildWorldNow(map, scene, layoutId, mode = 'turf', worldKey = layoutId) {
+    // 【九零件装配线——顺序本身就是设计】
+    //   ① 道具先行:它们交还碰撞盒,必须赶在关卡定型之前(否则箱子没碰撞)
+    //   ② Level 关卡几何(面/块/坡) ③ Physics 物理加速结构 ④ 烘焙 AO 光照图(唯一网络下载)
+    //   ⑤ PaintSystem 墨水图集(GPU 视觉 + CPU 判定双轨) ⑥ createLevelMaterial 缝合材质
+    //   ⑦ 关卡网格上桌(普通版 + 镂空格栅版两份) ⑧ Decor 装饰 ⑨ NavGraph 导航 + Minimap 小地图
+    // 先拆旧:旧网格/材质/道具/墨图集全部 dispose,显存不留残骸。
     this.zoneMarks?.clear();   // zone markings belong to the old stage's faces
     if (this.levelMesh) { scene.remove(this.levelMesh, this.grateMesh); this.levelMesh.geometry.dispose(); this.grateMesh?.geometry.dispose(); this.levelMat.dispose(); this.grateMat?.dispose(); }
     if (this.decor) { scene.remove(this.decor.group); }
@@ -269,6 +344,10 @@ class Game {
   }
 
   // Baked AO (tools/bake-ao.mjs). Applied only when the bake matches this exact layout.
+  // 【烘焙光照图加载——全项目唯一像样的"资产下载"】
+  // 两张小文件:json(每米像素数 ppm + 布局 hash)+ png(预烘焙的环境光遮蔽)。
+  // 两个工程细节:① hash 校验——关卡布局改过,旧烘焙图直接作废降级,绝不显示错误光影;
+  //              ② 失败优雅降级——没有光照图就用全亮,游戏照样跑。
   async _loadLightmap(level, layoutId) {
     try {
       const meta = await (await fetch(`assets/lightmaps/${layoutId}.json`, { cache: 'no-cache' })).json();
@@ -295,6 +374,9 @@ class Game {
   }
 
   _warmup() {
+    // 【预热】在屏幕外(y=-30,玩家看不见)把每种特效各放一遍:爆炸/涟漪/枪口焰/出生闪光……
+    // 副作用 = 所有"第一次创建"的对象与着色器此刻全部触发;再给懒创建的炸弹材质挂两个替身球,
+    // 确保后面的 compileAsync 把它们的着色器也编进去。编完即拆,不留残骸。
     // trigger one of each effect off-screen so shaders + pools exist
     const p = new THREE.Vector3(0, -30, 0), n = new THREE.Vector3(0, 1, 0);
     const c = G.teamColors[0];
@@ -1066,6 +1148,10 @@ class Game {
   // ---------------------------------------------------------------------------------------- loop
   // ts is the rAF (vsync) timestamp: stepping the sim by vsync-to-vsync intervals instead of callback times keeps motion
   // even on 120 Hz displays. settings.fpsCap (0 = display rate) skips vsyncs so frames land on a steady cadence.
+  // 【主循环】浏览器的 requestAnimationFrame(简称 rAF)= "每帧叫我一次",与显示器刷新同步(60Hz 屏每秒 60 次)。
+  // 每轮:先预约下一帧(循环的发动机)→ 可选 FPS 上限(没到间隔直接 return)→ 算 dt(距上帧的真实秒数)
+  // → 冻结/换世界期间暂停 → 动态分辨率 → 交 _frame() 干正活。
+  // dt 是全部游戏逻辑的"时间货币":30 帧和 144 帧下手感一致,靠的就是所有移动都乘 dt。
   _loop(ts) {
     requestAnimationFrame((t) => this._loop(t));
     this._trackVsync(ts);
@@ -1083,6 +1169,8 @@ class Game {
 
   // Display refresh estimate: 10th percentile of raw rAF intervals (rAF fires every vsync while frames keep up, and
   // keeps doing so under an fps cap because capped frames are skipped here, not in the browser).
+  // 【显示器刷新率估算】收集 90 个 rAF 间隔,取第 10 百分位(抗抖动)再吸附到常见档位(30/60/120/144…)。
+  // 用途:动态分辨率和 FPS 上限都要知道"目标帧间隔"才能判断是否掉帧。
   _trackVsync(ts) {
     if (ts === undefined) return;
     const v = this._vs || (this._vs = { last: ts, buf: [], ms: 1000 / 60 });
@@ -1106,6 +1194,8 @@ class Game {
   // on a 120 Hz display reads as 8/16 ms judder), drop render density one notch. Stepping back up needs 12 s locked
   // at the target and happens at most twice, so the image never pumps between sizes (re-sizing every couple of
   // seconds read as flicker).
+  // 【动态分辨率】4 秒窗口内平均帧时超过目标的 112% → 渲染精度降一档;回升需要稳定 12 秒且最多两次,
+  // 防止画面尺寸来回"呼吸"造成闪烁。掉帧自保的核心思想:宁可略糊,不可卡。
   _dynRes(dt) {
     if (dt <= 0 || dt > 0.25) return;
     const d = this._dyn || (this._dyn = { acc: 0, n: 0, t: 0, fast: 0, ups: 0 });
@@ -1121,6 +1211,9 @@ class Game {
     else d.fast = 0;
   }
 
+  // 【一帧的全部工作】boot() 结束后,游戏从此只剩这一函数的循环往复。流水线:
+  // 输入轮询 → 网络 → 比赛模拟(帧太慢自动拆 2 个子步,物理不跳步)→ 弹道/副武器/大招 →
+  // 特效/环境音/相机跟随 → 渲染出图。dt 全程参与换算。
   _frame(dt) {
     const tA = performance.now();
     G.renderer.info.reset();
@@ -1411,6 +1504,8 @@ class Game {
   }
 }
 
+// 【发动机点火】整个游戏从这里启动:浏览器加载完本模块就执行这两行。
+// boot() 失败(比如 WebGL 不可用)不会白屏——抓住异常,显示 index.html 里预留的红底 #boot-error 框。
 const game = new Game();
 game.boot().catch((e) => {
   console.error(e);
