@@ -1,3 +1,32 @@
+// ============================================================================
+// 【中文导读】程序化音效引擎(零音频文件)
+//
+// 【模块定位】INKWAVE 的 SFX(音效)侧:整个项目没有任何 .wav/.mp3 采样,
+//   约 150 个音效全部由 Web Audio API 在【每次播放时实时合成】。
+//   音乐侧在 ./music.js(文本乐谱 + 合成器),本文件只管短音效(SFX)。
+//
+// 【核心机制】
+//   1.【SFX 注册表】下方几百行 def(名字, { build 或 loop, gain, max, jitter ... })
+//      全是声明式配方:只描述用什么波形、什么频率包络,播放时才建节点。
+//   2.【audio.play() 六步流水线】minGap 合并连发 → 每名字/全局 voice 上限
+//      (超限偷最老的)→ jitter 随机变调 → _voice() 搭节点图(3D 时含 Panner
+//      + 距离低通)→ build() 烹制 → 播完 onended 自动拆图回收。
+//   3.【节点链】SFX voice →(距离低通 → HRTF Panner)→ sfxIn → sfxBus → master
+//      → 25Hz 高通(去次声/直流)→ glue 压缩 → 限制器 → 输出;
+//      湿声支路:voice → 共享 convolver(广场混响 IR)→ sfxBus。
+//   4.【3D 定位】air absorption 用距离低通 distCut(d):10 m 内不削,之后频点
+//      每 13 m 减半;听者位置每帧由 setListener() 跟相机更新。
+//
+// 【新手阅读地图】(不写行号,会漂移,按区段找)
+//   - 常量与听感工具(taper / distCut / 限额):文件最上方
+//   - texture():湿声循环的离线颗粒纹理(气泡/雨/嘶声)
+//   - class AudioEngine:引擎本体(init/play/loop/_voice/_steal/duck)
+//   - def(...) 音效配方:按 UI / 武器 / 墨汁 / 鱿鱼 / 战斗 / 大招 /
+//     对局 / 区域控制 / 脚步与环境 / BOSS 分组,每组有中文组头
+//   - SFX_GROUPS / SFX_NAMES / LOOP_NAMES:分组清单,测试工具据此遍历
+//
+// 【配套阅读】docs/ASSETS-AUDIO.zh-CN.md §1(总架构)、§2(一条音效的一生)
+// ============================================================================
 // INKWAVE — procedural SFX engine (Web Audio). No audio files: every sound is synthesized per play.
 //
 //   import { audio } from './audio.js';
@@ -23,6 +52,9 @@ import {
   kick, snare, crash, tom, brass, bell, pad, bass,
 } from './music.js';
 
+// 【播放限额与听感工具】MAX_VOICES 是全局并发上限,超限偷最老的 voice;
+// taper 把 0..1 的界面音量做 1.5 次幂压感(贴合人耳对数特性);
+// distCut 是【空气吸收低通】:10 m 内不削,之后频点每 13 m 减半,最低钳到 900 Hz。
 const MAX_VOICES = 48;   // one-shots alive at once (oldest stolen beyond this)
 const MAX_LOOPS = 24;
 const taper = (v) => Math.pow(Math.min(1, Math.max(0, +v || 0)), 1.5);
@@ -32,6 +64,8 @@ const distCut = (d) => (d < 10 ? 22000 : Math.max(900, 22000 * Math.pow(0.5, (d 
 /* ------------------------------------------------------------------------------------------------------------
  * Grain textures for wet loops (bubbles, squelch, rain, sizzle): JS-rendered, seamlessly looping buffers.
  * ----------------------------------------------------------------------------------------------------------*/
+// 【湿声颗粒纹理】水泡/咕叽/雨/嘶声这类循环底噪不实时算,而是按种子
+// 【离线渲染成无缝循环 Buffer】再循环播放;按 ctx 缓存(WeakMap),同图复用。
 const TEX = {
   bubbles: { dur: 3, rate: 46, f: [230, 950], d: [0.018, 0.065], amp: [0.25, 1], rise: [1.35, 2.3] },
   bubbles_bright: { dur: 2.5, rate: 60, f: [650, 2300], d: [0.01, 0.035], amp: [0.2, 1], rise: [1.4, 2.4] },
@@ -40,6 +74,10 @@ const TEX = {
   sizzle: { dur: 2, rate: 450, crackle: true, d: [0.0006, 0.003], amp: [0.05, 1] },
 };
 const texCache = new WeakMap();
+// 【渲染一段颗粒纹理 Buffer】把 TEX[kind] 配方烹制成音频数据:按率撒 n 个
+// 随机短音粒(频率上滑的正弦小泡;crackle 模式则撒白噪脉冲),再整体去直流、
+// 按 RMS 与峰值双约束归一化到安全电平。种子由 kind 名字符串哈希而来,
+// 【同一种类必渲染出同一段图】,可复现、可测试。
 export function texture(ctx, kind) {
   let m = texCache.get(ctx);
   if (!m) { m = new Map(); texCache.set(ctx, m); }
@@ -69,6 +107,7 @@ export function texture(ctx, kind) {
       }
     }
   }
+    // 【归一化】先减均值去直流,再按 RMS 与峰值双约束缩放,防爆音。
   let ss = 0, pk = 0, mean = 0;
   for (let i = 0; i < len; i++) mean += d[i];
   mean /= len;
@@ -84,9 +123,15 @@ export function texture(ctx, kind) {
  * ----------------------------------------------------------------------------------------------------------*/
 const NOOP_HANDLE = Object.freeze({ set() {}, stop() {}, playing: false });
 
+// 【引擎本体】持有 AudioContext、总线节点、voice 注册表与听者状态。
+// 两个设计要点:AudioContext【惰性创建】(必须等首次用户手势,否则被浏览器
+// 自动播放策略静音);所有 builder 只依赖 BaseAudioContext 接口,因此能用
+// OfflineAudioContext 离线渲染(见 tools/audio-test.mjs)做确定性测试。
 export class AudioEngine {
   // opts: { context (use an existing/offline ctx), seed (deterministic randomness), music: false (don't attach
   //         the music singleton), raw: true (no master dynamics — used by the test to measure raw levels), hrtf }
+  // 【构造】只记配置不建图;ctx 留空,init() 时才真正创建音频图。
+  // opts.seed 让随机数可复现(测试用);opts.raw 跳过母带压缩链(测原始电平)。
   constructor(opts = {}) {
     this.opts = opts;
     this.ctx = null; this.ready = false; this.offline = false;
@@ -100,6 +145,10 @@ export class AudioEngine {
     this.music = musicSingleton;
   }
 
+  // 【惰性建图】幂等;首次调用(应来自用户手势)才真正创建 AudioContext 并搭
+  // 整套节点图:master → 25Hz 高通 → glue 压缩 → 限制器 → 输出,外加共享
+  // 混响 convolver 挂在 sfxBus 上;同时把 music 单例接到 musicBus。
+  // offline 模式(离线渲染测试)跳过解锁监听与预热。
   init() {
     if (this.ctx) { this.resume(); return this; }
     let ctx = this.opts.context;
@@ -143,6 +192,8 @@ export class AudioEngine {
     return this;
   }
 
+  // 【解锁与恢复】浏览器自动播放策略下 ctx 可能 suspended:
+  // 任何手势、回到前台都要尝试 resume(_installUnlock 负责挂监听)。
   resume() {
     const c = this.ctx;
     if (c && !this.offline && c.state !== 'running' && c.state !== 'closed' && c.resume) c.resume().catch(() => {});
@@ -155,6 +206,8 @@ export class AudioEngine {
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (!document.hidden) h(); });
   }
 
+  // 【预热】空闲时错峰渲染颗粒纹理(每 40ms 烘一种),
+  // 避免首次游泳/翻滚时要现场烘图造成卡顿。
   // pre-render grain textures in idle slices so the first swim/roll doesn't hitch
   _warm() {
     const kinds = Object.keys(TEX);
@@ -162,6 +215,7 @@ export class AudioEngine {
     setTimeout(step, 60);
   }
 
+  // 【音量】master/music/sfx 三路,各 0..1;经 taper 压感后平滑逼近(时间常数 0.04s)。
   setVolumes(v = {}) {
     for (const k of ['master', 'music', 'sfx']) if (v[k] != null && Number.isFinite(+v[k])) this.vol[k] = Math.min(1, Math.max(0, +v[k]));
     if (!this.ctx) return;
@@ -171,6 +225,8 @@ export class AudioEngine {
     this.sfxBus.gain.setTargetAtTime(taper(this.vol.sfx), t, 0.04);
   }
 
+  // 【听者跟相机】每帧由相机位置/朝向调用;优先用 positionX 等 AudioParam
+  // 平滑逼近(常数 0.01s),老浏览器回退 setPosition/setOrientation。
   setListener(pos, forward, up) {
     if (!this.ctx || !validPos(pos)) return;
     this.L.x = pos.x; this.L.y = pos.y; this.L.z = pos.z;
@@ -191,6 +247,8 @@ export class AudioEngine {
 
   _dist(p) { const dx = p.x - this.L.x, dy = p.y - this.L.y, dz = p.z - this.L.z; return Math.sqrt(dx * dx + dy * dy + dz * dz); }
 
+  // 【3D 声像器】HRTF 双耳模型 + inverse 距离衰减;ref 是参考距离(米),
+  // 巨大声源(BOSS)给大 ref,保证全场都听得见;位置每帧由 _setPos 更新。
   // ref: the def's reference distance (m) — giant sources (the boss) stay loud across the arena
   _panner(pos, ref = 3) {
     const ctx = this.ctx;
@@ -215,6 +273,9 @@ export class AudioEngine {
 
   _sendScale(d) { return Math.sqrt(3 / (3 + 1.2 * Math.max(0, d - 3))); }
 
+  // 【搭节点图】为一次发声建整条链:out(音量)→ [淡出 gain(循环用)] →
+  // 3D 时插入 距离低通(air absorption)→ HRTF Panner → sfxIn;
+  // 湿声另开 send 支路进共享混响。所有节点登记进 v.nodes,播完统一拆图回收。
   _voice(def, t, pos, vol, withFade) {
     const ctx = this.ctx;
     const out = ctx.createGain(); out.gain.value = vol;
@@ -241,6 +302,8 @@ export class AudioEngine {
     return voice;
   }
 
+  // 【偷最老 voice】并发上限已满时抢占:撤掉已排的包络点,25ms 内线性淡出
+  // 到 0 再 kill(被挤掉的一下不会咔哒爆音);burst voice 从当前电平起滑,防跳变。
   _steal(voice, now) {
     if (!voice || voice.v.dead || voice.stolen) return;
     voice.stolen = true; this.counts.stolen++;
@@ -255,6 +318,10 @@ export class AudioEngine {
     return d;
   }
 
+  // 【播放单发音效】六步流水线:①minGap 窗口内同名连发合并丢弃;②查配方;
+  // ③每名字 max 与全局 MAX_VOICES 上限,超限偷最老;④jitter 随机变调
+  // (高速连发不机械重复);⑤_voice() 搭图;⑥build() 烹制——loop 型配方
+  // 当短爆发播(oneShot 时长 + 淡入淡出)。全程 try/catch,失败即拆图返回 null。
   play(name, o = {}) {
     if (!this.ctx) return null;
     const d = this._def(name);
@@ -263,6 +330,7 @@ export class AudioEngine {
     const now = this.ctx.currentTime;
     const t = Math.max(now, o.at ?? now) + (o.delay || 0);
     // same sound within a few ms (e.g. 8 droplets landing together) collapses into one
+    // 【合并连发】几毫秒内的同名音(如 8 滴墨同时落地)并成一个,防爆点。
     const lt = this.last.get(name);
     if (lt !== undefined && t >= lt && t - lt < (d.minGap ?? 0.018)) { this.counts.dropped++; return null; }
     const vol = Math.max(0, o.volume ?? 1) * (d.gain ?? 0.5);
@@ -272,17 +340,21 @@ export class AudioEngine {
     let list = this.byName.get(name);
     if (!list) this.byName.set(name, (list = []));
     for (let i = list.length - 1; i >= 0; i--) if (list[i].v.dead || list[i].stolen) list.splice(i, 1);
+    // 【每名字上限】超了偷最老的一条。
     while (list.length >= (d.max ?? 6)) this._steal(list.shift(), now);
     if (this.voices.length >= MAX_VOICES) {
       for (let i = this.voices.length - 1; i >= 0; i--) if (this.voices[i].v.dead || this.voices[i].stolen) this.voices.splice(i, 1);
+      // 【全局上限 48】同样偷最老的一条。
       while (this.voices.length >= MAX_VOICES) this._steal(this.voices.shift(), now);
     }
+    // 【jitter 变调】在调用方请求的变调基础上再叠加配方级随机 ±jitter。
     const pitch = Math.max(0.05, o.pitch ?? 1) * (1 + (this.rng() * 2 - 1) * (d.jitter ?? 0.06));
     const voice = this._voice(d, t, o.pos, vol);
     const v = voice.v;
     try {
       if (d.build) d.build(v, pitch, o);
       else if (d.loop) {
+        // 【loop 配方当单发】播 oneShot 时长的短爆发,淡入淡出后 kill。
         // loop sound fired as a one-shot: short burst with a fade out
         const len = d.oneShot ?? 1.2;
         voice.burst = true;
@@ -303,6 +375,9 @@ export class AudioEngine {
     return voice;
   }
 
+  // 【循环音】返回句柄 h:set() 改音量/变调/参数/位置(带平滑),
+  // stop(fade) 淡出拆图;循环同样走 _voice() 搭图,build 型配方则包一层
+  // finish 直接播完。超 MAX_LOOPS 时偷最早那条循环。
   loop(name, o = {}) {
     if (!this.ctx) return NOOP_HANDLE;
     const d = this._def(name);
@@ -353,6 +428,9 @@ export class AudioEngine {
     return h;
   }
 
+  // 【音乐闪避(duck)】爆炸等大事时压低 musicBus。包络不交给 AudioParam 排程,
+  // 而是在 JS 里记录折线点、按当前时刻插值(_duckAt)——重叠的 duck 永远从
+  // 【当前实际值】继续,不会出现增益跳变。
   // duck envelope is tracked in JS (linear points) so overlapping ducks always continue from the exact current value
   _duckAt(t) {
     const P = this._duckPts;
@@ -377,6 +455,8 @@ export class AudioEngine {
     p.linearRampToValueAtTime(1, until + 0.6);
   }
 
+  // 【急停】所有循环淡出、所有单发 voice 立即偷掉;
+  // stats() 顺带清理死 voice,并回报存活数与 played/dropped/stolen 计数。
   stopAll(fade = 0.1) {
     for (const h of [...this.loops]) h.stop(fade);
     if (!this.ctx) return;
@@ -396,9 +476,14 @@ export class AudioEngine {
  * v.t = start time, v.out = voice output. gain = voice level, max = voices per name, jitter = random pitch ±,
  * reverb = plaza send, minGap = merge window.
  * ----------------------------------------------------------------------------------------------------------*/
+// 【SFX 注册表】全部音效配方都注册进这个表;def() 只是 SFX[name]=o 的简写。
+// 字段速查:gain=音量档,max=同名并发上限,jitter=随机变调幅度,reverb=湿声发送量,
+// minGap=连发合并窗口,oneShot=loop 配方当单发时的爆发时长,ref=3D 参考距离(米)。
 export const SFX = {};
 const def = (name, o) => { SFX[name] = o; };
 
+// 【共享湿声层】一组可复用的配方小函数:bloops=成串下坠咕泡,plips=高频小水滴,
+// bigSplat=大溅落(低频拍击+湿噪+泡),uiNote=UI 提示音(下滑音+高八度泛音)。
 // shared wet layers
 function bloops(v, t0, n, spread, fr, peak, p = 1) {
   for (let i = 0; i < n; i++) {
@@ -422,6 +507,7 @@ function uiNote(v, t, m, p, peak) {
   v.tone({ t, type: 'triangle', f: f * 2, a: 0.001, d: 0.07, peak: peak * 0.18 });
 }
 
+// ===== UI 音效(轻、柔,2D 播放)=====
 /* ---- UI (quiet, pleasant) ---- */
 def('ui_hover', {
   gain: 0.14, max: 3, jitter: 0.02, reverb: 0, minGap: 0.03,
@@ -468,6 +554,7 @@ def('ui_error', {
   },
 });
 
+// ===== 武器音效:射击/蓄力/滚刷,多层波形叠加出"墨弹"质感 =====
 /* ---- Weapons ---- */
 def('shoot_shooter', {
   gain: 0.72, max: 8, jitter: 0.05, reverb: 0.07, minGap: 0.02,
@@ -612,6 +699,7 @@ def('roll', {
   },
 });
 
+// ===== 武器库第二组:双枪·重桶·旋转炮 =====
 // ---- Arsenal: dualies · slosher · splatling
 // Dualies: lighter, snappier than the shooter (smaller nozzle) — a tight "tik-pff" with a slide clack; weapons.js
 // alternates the pitch per hand (0.97 / 1.05) so the rhythm reads left-right.
@@ -722,6 +810,7 @@ def('splatling_wind', {
   },
 });
 
+// ===== 墨汁命中与炸弹 =====
 /* ---- Ink ---- */
 def('splat_small', {
   gain: 0.42, max: 8, jitter: 0.07, reverb: 0.08, minGap: 0.03,
@@ -771,6 +860,7 @@ def('bomb_explode', {
   },
 });
 
+// ===== 鱿鱼形态:变身/游动/攀爬/跳落(swim/climb 是湿声纹理循环)=====
 /* ---- Squid ---- */
 def('squid_in', {
   gain: 0.4, max: 3, jitter: 0.06, reverb: 0.05,
@@ -838,9 +928,12 @@ def('land', {
   },
 });
 
+// ===== 战斗反馈:命中音/受击/击杀 =====
 /* ---- Combat feedback ---- */
 // Consecutive hits climb 1.5 semitones a step (up to an octave) and swell slightly — the rhythm of landing a stream.
 // Combo state is per AudioContext, so offline renders (tools/audio-test) stay independent.
+// 【连击命中音】连续命中每次升 1.5 半音、渐响,模拟"连成一串"的爽感;
+// 状态挂在 WeakMap 上按 AudioContext 隔离,离线渲染互不串场。
 const _hitCombo = new WeakMap();
 def('hit_marker', {
   gain: 0.48, max: 4, jitter: 0, reverb: 0, minGap: 0.035,
@@ -928,6 +1021,7 @@ def('enemy_ink_sizzle', {
   },
 });
 
+// ===== 状态提示与通用大招音效(低墨/蓄满/复活/风暴等)=====
 /* ---- Status / specials ---- */
 def('low_ink', {
   gain: 0.38, max: 1, jitter: 0, reverb: 0.04, minGap: 0.4,
@@ -1037,10 +1131,15 @@ def('super_jump', {
   },
 });
 
+// ===== 特殊武器大招:每种武器一整套(启动/循环/发射/收尾)=====
 /* ---- Special weapons ----
  * Loop pitch conventions: tornado pitch ≈ intensity (1..2); blower_inflate pitch ≈ bubble size (1..2);
  * booyah_charge pitch = 1 + charge (1..2, rises an octave); crab_move / crab_roll pitch ≈ speed factor (≈0.5..1.6);
  * wail_blast / jet_loop pitch ≈ 1 (small variations ok). */
+// 【特殊武器共享件】clank=金属敲击(非谐波自由棒泛音列+触点咔哒),
+// whoosh=带通噪声风声(频点走 f0→fm→f1 弧线,电平按 env 折线),
+// inkBoom=重度墨爆核心(次声下潜+裂响+驱动噪声),
+// vox=共振峰"人声"(锯齿波源过并行带通,类语音合成器原理)。
 // struck metal: inharmonic free-bar partials + a contact click
 function clank(v, t, f, peak, d, p = 1, n = 4, to) {
   const P = [[1, 1, 1], [2.76, 0.55, 0.65], [5.4, 0.3, 0.4], [8.93, 0.15, 0.25]];
@@ -1742,6 +1841,7 @@ def('crab_break', {
   },
 });
 
+// ===== 对局流程:开场/倒计时/读秒/胜负/升级 =====
 /* ---- Match flow ---- */
 def('ready', {
   gain: 0.4, max: 1, jitter: 0, reverb: 0.25,
@@ -1812,6 +1912,7 @@ def('times_up', {
     crash(v, t2, 0.4); tom(v, t2, 70, 0.8); kick(v, t2, 0.7);
   },
 });
+// ===== 区域控制(Zone)事件音:占领/失守/警报/加时 =====
 /* ---- Zone Control (src/ui/hud.js plays the control / penalty / shift / overtime cues on the zones:* events;
  *      src/fx/zoneMarks.js plays the zones' own positional sounds: the hum, the flood / wipe, the contested warnings) ---- */
 // shared: a wet ink-flood burst (low slosh swelling into a bright spray) under the control cues
@@ -1954,6 +2055,8 @@ def('zone_final', {
 // neutral: an open fifth, airy; ours: a warm major third, brighter; theirs: a buzzy, beating tritone, darker — and
 // tension (0..1, a flip coming) quickens the pulse, lifts the pitch and opens the filter.
 //   h = audio.loop('zone_hum', { pos, volume }); h.set({ pos, volume, params: { mode: 'neutral'|'ours'|'theirs', tension } })
+// 【区域底噪音色表】中立=空灵五度,我方=明亮大三度,敌方=阴暗打拍三全音;
+// tension(0..1,即将易主)会加快脉冲、抬升音高、打开滤波。
 const HUM = {
   neutral: { f: 196, iv: 1.5, hard: 0, det: 4, cut: 1300, rate: 0.7, depth: 0.18, air: 0.05 },
   ours: { f: 220, iv: 1.26, hard: 0.1, det: 5, cut: 2300, rate: 1.1, depth: 0.2, air: 0.02 },
@@ -2133,6 +2236,7 @@ def('level_up', {
   },
 });
 
+// ===== 脚步(干地/墨地/敌方)+ 海港环境音 =====
 /* ---- Footsteps + world ambience (lead additions) ---- */
 def('step_dry', {
   gain: 0.16, max: 6, jitter: 0.08, reverb: 0.02, minGap: 0.05,
@@ -2214,6 +2318,7 @@ def('harbor_ambience', {
   },
 });
 
+// ===== BOSS 战(破壳者):吼叫/脚步/重击/阶段转换,带大 ref 全场可闻 =====
 /* ---- Boss mode: HULLBREAKER (played by src/audio/bossAudio.js from the boss:* events; `ref` = reference distance,
  * so a 6 m crab stays loud across the arena) ---- */
 def('boss_roar', {
@@ -2475,6 +2580,7 @@ def('boss_sunk', {
   },
 });
 
+// ===== 分组清单:SFX_GROUPS 供测试工具按组遍历离线渲染校验 =====
 /* ------------------------------------------------------------------------------------------------------------ */
 export const SFX_GROUPS = {
   UI: ['ui_hover', 'ui_click', 'ui_back', 'ui_confirm', 'ui_toggle', 'ui_slider', 'ui_error'],
@@ -2499,7 +2605,10 @@ export const SFX_GROUPS = {
     'boss_dizzy', 'boss_frenzy', 'crablet_chitter', 'crablet_pop', 'boss_hit', 'boss_crit', 'boss_phase', 'boss_title', 'boss_defeat', 'boss_sunk'],
 };
 export const SFX_NAMES = Object.values(SFX_GROUPS).flat();
+// 【循环清单】筛出带 loop 配方的名字,离线渲染测试据此逐一校验循环音。
 export const LOOP_NAMES = SFX_NAMES.filter((n) => SFX[n] && SFX[n].loop);
 
+// 【模块默认导出】全局音效引擎单例(惰性建图,首次手势后可用);
+// music 单例来自 music.js,在此再导出一次方便业务侧 import。
 export const audio = new AudioEngine();
 export { musicSingleton as music };

@@ -21,12 +21,41 @@
 //
 // audio.init() attaches the singleton to the real AudioContext's music bus (music._init(ctx, bus)).
 
+// ============================================================================================================
+// 【中文导读】程序化音乐引擎 + 共享 Web Audio DSP 核心
+// ------------------------------------------------------------------------------------------------------------
+// 本模块是一条「文本乐谱 → 编译 → 音序器现场合成」的流水线,没有任何音频文件:
+//
+//   文本乐谱(SONGS,如 'X.....x.X.x.....' / 'R.RR..O.R.RR..5n' / 'B4/2 E5/2 r/1')
+//     │  compileSong()          【编译期】把字符串展开成 bars[bar].ev[step] 事件表,
+//     │                         顺便算好循环点、riser、跨小节的引导音(n)等
+//     ▼
+//   事件表(bars / ev)
+//     │  MusicEngine._tick()    【运行时】25ms 定时器 + 0.16s lookahead:
+//     │  Player.pump()          把时间窗口内的事件逐个交给乐器函数现场合成
+//     ▼
+//   乐器函数(kick/snare/bass/guitar/pad/lead/…) → V voice 构建器 → 音乐总线
+//
+// 核心概念:
+//   · V 类 —— "一个音符/一个声音"的节点容器:osc/noise/filter/gain… 链式搭建,最后一个音源结束时自动销毁
+//   · 包络 —— perc/ahr/adsr/pts/sweep,全部从 0 起、精确回到 0(不爆音)
+//   · pattern DSL —— 鼓是 16 字符字符串(字符→力度表 VEL);贝斯字符即和声指令(R=根音、5=五度…);
+//     旋律用 parsePhrase('B4/2 E5/2 r/1') 文本记谱
+//   · MusicEngine —— 游戏侧只调 music.play()/setIntensity()/stop();Boss 模式用 remap 钩子劫持选曲
+//   · 录音轨 —— songs/manifest.json 里有的曲目改走 <audio> 元素,进同一总线(音量/闪避一致),无录音的回落合成版
+//
+// 配套阅读:docs/ASSETS-AUDIO.zh-CN.md §3(音序器与乐谱 DSL 详解)。
+// ============================================================================================================
+
 /* ============================================================================================================
  * Shared DSP core
  * ==========================================================================================================*/
 
+// 【midi 音号 → 频率(Hz)】国际标准 A4=69→440Hz,每 +12 个音号频率翻倍。乐谱里全是 midi 号,靠它换算。
 export const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
+// 【确定性伪随机数】mulberry32:同一种子必然产生同一序列。音乐里用它给每个 Player 一个 rng,
+// 让"同一首歌每次播放的微小随机(力度抖动、噪声相位、镲片闪烁)"既可复现又不死板。
 export function mulberry32(a) {
   a = a >>> 0;
   return function () {
@@ -37,6 +66,8 @@ export function mulberry32(a) {
   };
 }
 
+// 【按 AudioContext 缓存共享资源】噪声缓冲、脉冲波表等很贵且与 ctx 绑定,
+// 用 WeakMap<ctx, Map> 缓存:同一 ctx 重复要同一份,ctx 被回收时缓存自动释放。
 const perCtx = new WeakMap();
 function cache(ctx) {
   let m = perCtx.get(ctx);
@@ -44,7 +75,8 @@ function cache(ctx) {
   return m;
 }
 
-// Seamlessly looping 2 s mono noise buffers: 'white' | 'pink' | 'brown'. RMS-normalised to ~0.3.
+// 【可无缝循环的 2 秒单声道噪声缓冲】'white' 白噪声 | 'pink' 粉红 | 'brown' 布朗,均归一化到约 0.3 振幅。
+// 为什么强调"无缝":振荡器噪声源的 loop=true,若缓冲首尾不衔接会周期性"咔哒"一声。
 export function noiseBuffer(ctx, kind = 'white') {
   const c = cache(ctx);
   const key = 'noise:' + kind;
@@ -94,7 +126,8 @@ export function noiseBuffer(ctx, kind = 'white') {
   return b;
 }
 
-// Stereo reverb impulse: early reflections + exponentially decaying, darkening diffuse tail.
+// 【立体声混响脉冲响应(IR)】前若干毫秒是早期反射(模拟 plaza 墙面回声),之后是随时间变暗的指数衰减弥散尾音。
+// 用它喂给 ConvolverNode,任何声音只要 send 过去就获得"空间感"。可自定义时长/衰减/明暗/反射点。
 export function makeImpulse(ctx, seconds = 1.6, decay = 3.2, opt = {}) {
   const sr = ctx.sampleRate, len = Math.max(1, Math.floor(sr * seconds));
   const buf = ctx.createBuffer(2, len, sr);
@@ -121,7 +154,8 @@ export function makeImpulse(ctx, seconds = 1.6, decay = 3.2, opt = {}) {
   return buf;
 }
 
-// tanh drive curve (odd length so 0 maps exactly to 0)
+// 【tanh 失真曲线】k 越大压得越狠(软削波),长度取奇数且归一化,保证 0 输入精确映射 0 输出(无直流偏移)。
+// 曲线按 k 缓存——WaveShaperNode 的 curve 一旦生成可复用,是吉他/贝斯" drive "音色的来源。
 const curves = new Map();
 export function driveCurve(k) {
   const key = Math.round(k * 100);
@@ -135,7 +169,8 @@ export function driveCurve(k) {
   return c;
 }
 
-// Pulse-wave PeriodicWave (duty 0..1), band-limited by construction.
+// 【脉冲波(方波的广义)PeriodicWave】duty 0..1 控制占空比(0.25≈窄方波,音色更"蜂鸣")。
+// 用傅里叶系数合成而非 type='square',先天带限——高频不混叠。
 export function pulseWave(ctx, duty = 0.25) {
   const c = cache(ctx), key = 'pulse:' + duty;
   let w = c.get(key);
@@ -150,7 +185,7 @@ export function pulseWave(ctx, duty = 0.25) {
   return w;
 }
 
-// A decaying pulse train shape (for snare-roll amplitude modulation): sharp attack, exponential fall.
+// 【衰减脉冲串 PeriodicWave】(军鼓滚奏的幅度调制用):急起 + 指数衰减的周期形状,谱峰集中、听感"哒哒哒"清晰。
 export function strokeWave(ctx, sharp = 7) {
   const c = cache(ctx), key = 'stroke:' + sharp;
   let w = c.get(key);
@@ -170,7 +205,13 @@ export function strokeWave(ctx, sharp = 7) {
 }
 
 const fmin = 1e-4;
-// Envelopes. All start from 0 and end at exactly 0 (never click). Return the end time.
+// 【包络家族】所有包络都从 0 起、最后精确落在 0(尾音收干净,绝不爆音),返回值是该音符的结束时刻。
+//   perc —— 打击式:线性起到 peak,指数衰减(鼓、镲、拨弦)
+//   ahr  —— attack/hold/release:起到 peak 后平台一段再释放(踩镲等短保持音)
+//   adsr —— 经典四段:attack→decay→sustain(平台)→release;gate 是"从起点到开始释放"的秒数,
+//            支持 gate 短于 decay 时在衰减中途提前释放(贝斯断奏靠这个)
+//   pts  —— 分段线性:传入 [[dt, value], ...] 折点,自由画任意形状(riser 的包络)
+//   sweep—— 不是包络,是参数扫频(频率从 f0 滑到 f1,指数或线性):底鼓"扑"的下扫、上滑音都靠它
 export function perc(p, t, a, peak, d) {
   peak = Math.max(peak, fmin);
   p.setValueAtTime(0, t);
@@ -214,7 +255,10 @@ export function sweep(p, t, f0, f1, dur, lin) {
   else p.exponentialRampToValueAtTime(Math.max(f1, 1e-3), t + dur);
 }
 
-// Voice builder: creates + tracks nodes for one note / one sound, disposes them when the last source ends.
+// 【Voice 构建器——本模块的心脏】一个 V 实例 = 一个音符/一个音效的全部节点。
+// 职责:① 链式创建节点(osc/noise/filter/gain/shaper/pan/delay)并自动登记;
+//       ② 记录每个音源的结束时刻,最后一个音源停掉时一次性 disconnect 全部节点(防内存泄漏);
+//       ③ 提供 tone/nz/bub 复合积木,一行合成一个常见音效。所有乐器函数都由它拼出来。
 export class V {
   constructor(ctx, out, t, rng) {
     this.ctx = ctx; this.out = out; this.t = t; this.rng = rng || Math.random;
@@ -293,6 +337,8 @@ export class V {
     return { osc: o, depth: g };
   }
   // ---- compound one-liners (times: `at` absolute, else `t` relative to this.t) ----
+  // 【单音积木】一条命令 = 包络 + 振荡器(可扫频 f0→f1),最常用。
+  // 参数:o.f 频率, o.f1 扫频目标, o.a 起音, o.h 保持(给了就走 ahr,否则 perc), o.d 衰减, o.peak 峰值, o.at 绝对时刻
   tone(o) {
     const T = o.at ?? this.t + (o.t || 0);
     const g = this.gain(0, o.to || this.out);
@@ -303,6 +349,7 @@ export class V {
     if (o.detune) x.detune.value = o.detune;
     return x;
   }
+  // 【噪声积木】滤波噪声一次成型:ft=null 时不过滤(直接噪声),否则 bandpass 等 + 可选扫频。镲/沙锤/气声全靠它。
   nz(o) {
     const T = o.at ?? this.t + (o.t || 0);
     const g = this.gain(0, o.to || this.out);
@@ -314,11 +361,11 @@ export class V {
     if (fl && o.f1 != null) sweep(fl.frequency, T, Math.min(o.f, this.nyq), Math.min(o.f1, this.nyq), o.sw ?? ((o.a ?? 0.001) + (o.d ?? 0.1)), o.lin);
     return fl;
   }
-  // bubble "plip": damped sine with rising pitch (Minnaert-style)
+  // 【气泡音"plip"】Minnaert 频率式气泡:阻尼正弦 + 音高上滑(水下冒泡、弹跳球的招牌音效)。
   bub(T, f, peak, d = 0.03, rise = 1.7, to) {
     return this.tone({ at: T, f, f1: f * rise, sw: d, a: 0.0012, d, peak, to });
   }
-  // cleanup when the last finite source ends
+  // 【收尾登记】挂到"结束最晚的音源"的 onended 上:它一停就 dispose 全图。调用方通常不用管。
   finish() {
     if (this.endless || !this.srcs.length) return this;
     let last = this.srcs[0];
@@ -326,7 +373,7 @@ export class V {
     last.onended = () => this.dispose();
     return this;
   }
-  // stop every source at time `at` (the caller fades its output first)
+  // 【急停】在时刻 at 停掉所有音源(调用方先淡出输出,避免啪声),随后走正常 finish 清理。
   kill(at) {
     for (const s of this.srcs) {
       if (s._end > at) { try { s.stop(at); } catch (e) { /* already stopped */ } s._end = at; }
@@ -334,6 +381,7 @@ export class V {
     this.end = at; this.endless = false;
     this.finish();
   }
+  // 【销毁】断开所有节点、清空引用,触发 ondispose 回调。幂等(dead 标志)。
   dispose() {
     if (this.dead) return;
     this.dead = true;
@@ -347,6 +395,8 @@ export class V {
  * Instruments (shared by music + SFX). Signature: (v, T, ..., vel, opts) — T absolute time; output → opts.to || v.out
  * ==========================================================================================================*/
 
+// 【底鼓】正弦从 f0(默认 165Hz)快速下扫到 f1(默认 46Hz)——"扑"的主体;
+// 叠加一点三角波饱和(分量感)和 1.6kHz 高通噪声(敲击声)。鼓组力度的锚。
 export function kick(v, T, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -359,6 +409,8 @@ export function kick(v, T, vel = 1, o = {}) {
   return end;
 }
 
+// 【军鼓】三层叠出"啪+嗡+沙":下扫三角(鼓皮)+ 330Hz 正弦(桶身)+ 高通噪声(沙带),
+// 再补一段 4.2kHz 带通(清脆的边缘)。
 export function snare(v, T, vel = 1, o = {}) {
   const to = o.to || v.out;
   v.tone({ at: T, type: 'triangle', f: o.f ?? 205, f1: (o.f ?? 205) * 0.82, sw: 0.05, a: 0.001, d: 0.11, peak: vel * 0.5, to });
@@ -367,6 +419,8 @@ export function snare(v, T, vel = 1, o = {}) {
   return v.nz({ at: T, ft: 'bandpass', f: 4200, q: 0.9, a: 0.001, d: 0.09, peak: vel * 0.32, to });
 }
 
+// 【拍手】三次快速爆点(模拟手掌先后接触)+ 长尾释放,全部走 1.15kHz 带通 + 600Hz 高通:
+// 只留"啪"的中频,切掉低频轰隆。
 export function clap(v, T, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -386,6 +440,7 @@ export function clap(v, T, vel = 1, o = {}) {
   v.noise('white', T, t3 + (o.d ?? 0.2) + 0.02, hp);
 }
 
+// 【踩镲】白噪声 → 7.5kHz 高通(闭)/ 6.5kHz(开)→ 10.5kHz 峰化提升,闭镲 45ms、开镲长尾 320ms。
 export function hat(v, T, vel = 1, open = false, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -396,6 +451,8 @@ export function hat(v, T, vel = 1, open = false, o = {}) {
   return g.gain;
 }
 
+// 【吊镲 crash】双层高通噪声(长尾 1.6s + 短促)+ 三根方波金属泛音(3.4k/4.9k/6.2kHz),
+// 开场"呲——"的气势全靠它。
 export function crash(v, T, vel = 1, o = {}) {
   const to = o.to || v.out;
   v.nz({ at: T, ft: 'highpass', f: 4200, q: 0.6, a: 0.001, d: o.d ?? 1.6, peak: vel * 0.55, to });
@@ -405,22 +462,29 @@ export function crash(v, T, vel = 1, o = {}) {
   for (const f of [3410, 4870, 6230]) v.tone({ at: T, type: 'square', f, a: 0.001, d: 0.5, peak: vel * 0.02, to: hp });
 }
 
+// 【边击 rim】极短的 1.75kHz 三角音 + 2.6kHz 带通噪声——"嗒"的干声,放克/慢歌里替代军鼓。
 export function rim(v, T, vel = 1, o = {}) {
   const to = o.to || v.out;
   v.tone({ at: T, type: 'triangle', f: 1750, f1: 1500, sw: 0.02, a: 0.0005, d: 0.03, peak: vel * 0.45, to });
   v.nz({ at: T, ft: 'bandpass', f: 2600, q: 2, a: 0.0005, d: 0.02, peak: vel * 0.45, to });
 }
 
+// 【沙锤】7kHz 带通噪声 + 6ms 慢起音(去瞬态)——连续的"沙沙",音序器里通常写满 16 分音符。
 export function shaker(v, T, vel = 1, o = {}) {
   v.nz({ at: T, ft: 'bandpass', f: 7000, q: 1.2, a: 0.006, d: 0.05, peak: vel * 0.5, to: o.to || v.out });
 }
 
+// 【嗵鼓 tom】频率 1.5 倍下扫的三角音(桶身)+ 短粉红噪声,fill(加花)里音高递降的一串就是连续 tom。
 export function tom(v, T, f, vel = 1, o = {}) {
   const to = o.to || v.out;
   v.tone({ at: T, f: f * 1.5, f1: f, sw: 0.06, a: 0.001, d: o.d ?? 0.35, peak: vel * 0.8, to });
   v.nz({ at: T, ft: 'lowpass', f: 1800, q: 0.8, a: 0.001, d: 0.05, peak: vel * 0.25, to, kind: 'pink' });
 }
 
+// 【贝斯】三种风格(style 可换):
+//   punk —— 锯齿 + 失谐方波过共振低通,起音瞬间滤波打开再回落,最后 tanh 失真:朋克的"咆哮"
+//   funk —— 短 gate + 方波过快速下扫低通(起音亮、马上变闷):"嘟-哒"的放克指弹
+//   sub  —— 纯正弦 + 一点二倍频三角:干净的低频垫底(输场曲)
 export function bass(v, T, f, gate, vel = 1, o = {}) {
   const to = o.to || v.out, style = o.style || 'punk';
   const g = v.gain(0, to);
@@ -453,6 +517,8 @@ export function bass(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
+// 【电吉他】fs 是一串频率(和弦音),每个音双振荡器 ±7 音分失谐(合唱感)过失真;mute=true 时闷音(短 gate、低通)。
+// 和弦音数量越多自动等比摊薄音量(pre = 0.42/√n),防止大和弦炸音量。
 export function guitar(v, T, fs, gate, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -466,7 +532,8 @@ export function guitar(v, T, fs, gate, vel = 1, o = {}) {
   return end;
 }
 
-// FM electric piano
+// 【FM 电钢琴】sine 载波 + sine 调制波(Modulator Gain 指数衰减)→ 经典的 Rhodes 叮咚音色,
+// 力度越大调制指数越大(越亮),再叠 7 倍频短音做锤击感。
 export function keys(v, T, f, gate, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -480,6 +547,7 @@ export function keys(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
+// 【铺底 pad】双锯齿 ±10 音分失谐过长 sustain + 低通(默认 1.5kHz),慢起音——和声背景毯。
 export function pad(v, T, f, gate, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -489,6 +557,7 @@ export function pad(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
+// 【拨弦 pluck】Karplus-Strong 思路:低通截止从 5.2kHz 快速滑到 520Hz——起音亮、余音"咚咚"衰减。
 export function pluck(v, T, f, gate, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -500,6 +569,7 @@ export function pluck(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
+// 【铃 bell】FM(载波 + 3.5 倍频调制,指数衰减)+ 2.01 倍频陪音——非整数倍泛音带来金属"叮"声,适合胜利结算。
 export function bell(v, T, f, vel = 1, o = {}) {
   const to = o.to || v.out;
   const d = o.d ?? 0.9;
@@ -514,6 +584,8 @@ export function bell(v, T, f, vel = 1, o = {}) {
   return end;
 }
 
+// 【铜管 brass】三锯齿(-9/0/+9 音分,起音瞬间整体下压 45 音分再释放——模拟吹奏的气息冲击)
+// 过低通,起音时截止 380→3000Hz 快速打开(吐音),随后回落。
 export function brass(v, T, f, gate, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -530,7 +602,9 @@ export function brass(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
-// lead: 'pulse' | 'saw' | 'soft' (flute/whistle) | 'square'
+// 【主音 lead】四种风格:o.style:
+//   'pulse' 脉冲波(默认,圆亮) | 'saw' 双锯齿失谐(粗) | 'soft' 三角+气声(长笛/口哨) | 'square' 方波
+//   音长超过 0.18s 自动加颤音(LFO 打 detune);o.glide 给滑音起始频率。
 export function lead(v, T, f, gate, vel = 1, o = {}) {
   const to = o.to || v.out, style = o.style || 'pulse';
   const g = v.gain(0, to);
@@ -555,6 +629,7 @@ export function lead(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
+// 【riser 上滑音效】带通噪声 350→7000Hz 扫频 + 锯齿上滑,包络"慢起陡收"——段落切换前蓄势的"呜——"声。
 export function riser(v, T, dur, vel = 1, o = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
@@ -580,18 +655,50 @@ export function riser(v, T, dur, vel = 1, o = {}) {
  *  - arp: { rate: 1|2 (16th|8th), pattern: 'up'|'down'|'updown', oct: 1..3, lo: midi }
  * ==========================================================================================================*/
 
+// ------------------------------------------------------------------------------------------------------------
+// 【乐谱 DSL 速查(新手必读)】一首歌就是一个 JS 对象(SONGS 表),所有声部都是"文本 → 编译"。
+//
+// 通用约定:一条 pattern 字符串 = 一小节的 16 个十六分音符步进(step 0..15),字符即指令。
+//
+// 【鼓组】drums: { k: 模式, s: 模式, ... }(每种乐器 16 字符;给数组则逐小节轮换)
+//   字符 → 力度(VEL 表):
+//     X = 重击(1.0)   x = 正常(0.8)   g = 鬼音/弱奏(0.35)   c = 轻闭镲(0.55)
+//     o = 开镲正常(0.8) O = 开镲重击(1.0)  m = 闷音(0.6)  r = 弱根音(0.45,贝斯用)
+//     . = 休止  - = 保持(延长上一个音)
+//   乐器键:k 底鼓 s 军鼓 c 拍手 h 踩镲 x 吊镲 p 边击 sh 沙锤 t 嗵鼓
+//   fills: 单独写最后一小节的加花(军鼓滚奏 'x.x.x.x.xxxxXXXX' 是招牌)。
+//
+// 【贝斯】bass: 16 字符,但每个字符是一条【和声指令】(不是固定音高!):
+//     R = 和弦根音      r = 根音(弱)     O = 根音高八度   o = 高八度(弱)
+//     5 = 五度          L = 低五度         3 = 三度(随和弦性质自动大小三) 7 = 七度
+//     4 = 四度          6 = 六度           b = 根音-1 半音  a = 根音+2 半音
+//     n = 引导音(下一小节根音-1 半音,平滑过渡到下一段)   - = 延长  . = 休止
+//   【为什么这样设计】:换和弦时贝斯线自动跟着变,同一套 pattern 可以复用在整首歌。
+//
+// 【旋律】lead / lead2 / riff: 文本乐句 "B4/2 E5/2 r/1"
+//     音名/长度(十六分音符个数)   r = 休止   _ = 连音线(接长上一个音)   ! = 重音   | = 小节线(仅校验对齐)
+//
+// 【和弦垫与琶音】stabs: 16 字符(X/x/m/./-);pad: true 每个和弦段一个长音;
+//   arp: { rate, pattern('up'|'down'|'updown'), oct, lo } 按和弦自动分解。
+// ------------------------------------------------------------------------------------------------------------
+
+// 【音名 → 音级(pc)】C=0, D=2 … B=11,加 # 升 1、加 b 降 1。
 const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const QUAL = {
   '': [0, 4, 7], m: [0, 3, 7], 5: [0, 7], 6: [0, 4, 7, 9], m6: [0, 3, 7, 9], 7: [0, 4, 7, 10], m7: [0, 3, 7, 10],
   maj7: [0, 4, 7, 11], 9: [0, 4, 7, 10, 14], m9: [0, 3, 7, 10, 14], maj9: [0, 4, 7, 11, 14], add9: [0, 4, 7, 14],
   sus2: [0, 2, 7], sus4: [0, 5, 7], '7sus4': [0, 5, 7, 10], dim: [0, 3, 6], m7b5: [0, 3, 6, 10], aug: [0, 4, 8],
 };
+// 【音级求值】取音名字符串(如 'Bb')→ 0..11 的音级。pcOf 的辅助:只看第一个字母 + 升降号。
 function pcOf(s) { return (PC[s[0]] + (s[1] === '#' ? 1 : s[1] === 'b' ? -1 : 0) + 12) % 12; }
+// 【文本音名 → midi 号】'B4' → 71, 'F#5' → 78。parsePhrase 的音符都先过这里。
 export function parseNote(s) {
   const m = /^([A-G])([#b]?)(-?\d)$/.exec(s);
   if (!m) return null;
   return 12 * (+m[3] + 1) + PC[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0);
 }
+// 【和弦符号解析】'Bb/D' → { root: 10, iv: 和弦内音程表, bass: 转位低音 }。
+// QUAL 表把 'm7'、'sus4' 等性质映射成相对根音的音程集合;结果按符号缓存(编译时反复用)。
 const chordCache = new Map();
 export function parseChord(sym) {
   let c = chordCache.get(sym);
@@ -605,15 +712,19 @@ export function parseChord(sym) {
   chordCache.set(sym, c);
   return c;
 }
+// 【把音级落进指定音域】lo 以上、不超过一个八度的最低同音级 midi 音(贝斯/和弦排位的基石)。
 function inRange(pc, lo) { let n = lo + ((pc - lo) % 12 + 12) % 12; return n; }
 // close voicing of chord tones within [lo, lo+maxSpan)
+// 【密集排列(voicing)】把和弦内音全部排到 [lo, hi) 区间并排序——键盘/铺底一次按下的那组音。
 function voice(ch, lo, hi) {
   const r = inRange(ch.root, lo);
   const out = [];
   for (const i of ch.iv) { let n = r + i; while (n > hi) n -= 12; if (!out.includes(n)) out.push(n); }
   return out.sort((a, b) => a - b);
 }
+// 【强力和弦】根音 + 五度 + 八度(摇滚吉他强力和弦,砍掉了三度,空而猛)。
 function powerChord(ch, lo) { const r = inRange(ch.root, lo); return [r, r + 7, r + 12]; }
+// 【和声层】给旋律音 m 找下方 3..9 半音内最近的和弦音(三度/五度/七度)——主旋律的自动和声伴唱。
 function harmBelow(m, ch) {
   for (let d = 3; d <= 9; d++) {
     const pc = (((m - d) % 12) + 12) % 12;
@@ -622,6 +733,9 @@ function harmBelow(m, ch) {
   return m - 12;
 }
 
+// 【文本乐句 → 事件列表】parsePhrase('B4/2 E5/2 r/1 _/2 | …'):
+//   每个 token = 音名/长度(十六分音符数),可选 '!' 重音;'_' 把上一个音符接长(连音线);
+//   '|' 只是小节线,用来校验有没有写对齐(总长必须是 16 的倍数)。乐句可以跨多个小节循环。
 function parsePhrase(str, warn, label) {
   const ev = [];
   let pos = 0, lastNote = null;
@@ -639,14 +753,22 @@ function parsePhrase(str, warn, label) {
   return { ev, len: pos };
 }
 
+// 【鼓键位表】乐谱里的单字符键 → 乐器函数名(顺序无关,只用于遍历)。
 const DRUMS = [['k', 'kick'], ['s', 'snare'], ['c', 'clap'], ['h', 'hat'], ['x', 'crash'], ['p', 'rim'], ['sh', 'shaker'], ['t', 'tom']];
+// 【取某小节的 pattern】字符串 → 逐小节用;数组 → 轮流;最后一小节若写了 fills 则用加花替代。
 function patFor(src, b, nbars, fill) {
   if (fill !== undefined && b === nbars - 1) return fill;
   if (src == null) return null;
   return typeof src === 'string' ? src : src[b % src.length];
 }
+// 【字符 → 力度表】pattern 字符到力度(0..1)的统一映射,鼓/贝斯/stabs 共用(见 DSL 速查表)。
 const VEL = { X: 1, O: 1, x: 0.8, o: 0.8, c: 0.55, g: 0.35, m: 0.6, r: 0.45 };
 
+// 【乐谱编译器——整个系统的中枢】把 SONGS 里的"文本乐谱"一次性展开成事件表:
+//   输出 bars: [{ sec, bar, ev: [step0 事件[], step1 事件[], … 共 16 步], chords }]
+//   每个事件 { i: 乐器名, m: midi 音(鼓无), len: 时值(步), v: 力度, … }。
+// 编译期把所有"乐理"算死:和弦音级、贝斯指令映射、琶音序列、和声伴唱、循环点(loopFrom→小节序号)、
+// 小节末引导音(n 要偷看下一段的和弦)——运行时 pump() 只查表,不做任何乐理计算。
 export function compileSong(def) {
   const warn = [];
   const bars = [];
@@ -660,8 +782,10 @@ export function compileSong(def) {
   def.order.forEach((secName, oi) => {
     const sec = def.sections[secName];
     if (!sec) { warn.push('missing section ' + secName); return; }
+    // 【段落起点表】loopFrom 写的是"第几段",这里换算成全局小节号存进 secStart
     if (!(oi in secStart)) secStart[oi] = bars.length;
     const nb = sec.bars;
+    // 【和弦行】本小节的和弦符号('C7sus4 C7' 两个和弦就把 16 步平分),算好每段的起止 step
     const chordRow = (b) => {
       const syms = (sec.chords ? sec.chords[b % sec.chords.length] : 'C').split(/\s+/);
       return syms.map((s, i) => ({ ch: parseChord(s), s0: Math.floor((i * 16) / syms.length), s1: Math.floor(((i + 1) * 16) / syms.length) }));
@@ -669,6 +793,7 @@ export function compileSong(def) {
     for (let b = 0; b < nb; b++) {
       const ev = Array.from({ length: 16 }, () => []);
       const row = chordRow(b);
+      // 【跨小节偷看】最后一小节要拿"下一段第一个和弦"(或回 loopFrom 段),贝斯引导音 n 和 riser 需要它
       const nextRow = b + 1 < nb ? chordRow(b + 1) : (() => {
         const ns = def.sections[def.order[oi + 1] ?? def.order[def.loopFrom ?? 0]];
         const sym = ns?.chords ? ns.chords[0].split(/\s+/)[0] : row[0].ch.sym;
@@ -690,6 +815,8 @@ export function compileSong(def) {
         }
       }
       // bass
+      // 【贝斯指令 → midi 音】按当前和弦换算;三度/七度随和弦性质自动取大小;
+      // 'n' 用 nextRow 算下一小节根音 -1 半音,且若比当前根音高太多就降八度(保证引导音向下/就近走)
       const bp = patFor(sec.bass, b, nb, sec.fills?.bass);
       if (bp) {
         if (bp.length !== 16) warn.push(`${def.name}.${secName}.bass bar ${b}: pattern length ${bp.length}`);
@@ -738,6 +865,8 @@ export function compileSong(def) {
       // pad: one sustained chord per chord segment
       if (sec.pad) for (const seg of row) ev[seg.s0].push({ i: 'pad', ms: voice(seg.ch, def.padLo ?? 52, (def.padLo ?? 52) + 20), len: seg.s1 - seg.s0, v: 0.8 });
       // arp
+      // 【琶音】按和弦生成 up/down/updown 序列(可跨 oct 个八度),全局步进序号对序列长度取模——
+      // 因此琶音跨小节是连续流动的,不受小节线打断
       if (sec.arp) {
         const a = sec.arp, rate = a.rate || 1;
         for (let s = 0; s < 16; s += rate) {
@@ -752,6 +881,8 @@ export function compileSong(def) {
         }
       }
       // phrases
+      // 【旋律铺排】乐句长度不一定是 16:按 base 逐段对齐到本小节窗口,取落在窗口内的音符。
+      // 同时按需生成和声伴唱(harmony):主旋律下方最近的和弦音,作为 lead2 声部。
       for (const k of ['lead', 'lead2', 'riff']) {
         const ph = phr[secName][k];
         if (!ph || !ph.len) continue;
@@ -768,11 +899,13 @@ export function compileSong(def) {
         }
       }
       // fx
+      // 【段落音效】段首吊镲;riser 从小节 0 开始铺、长度 = riser 个小节(跨小节长音的范例)
       if (sec.crash && b === 0) ev[0].push({ i: 'crash', v: 0.75 });
       if (sec.riser && b === nb - (sec.riser | 0 || 1)) ev[0].push({ i: 'riser', len: 16 * (sec.riser | 0 || 1), v: 0.9 });
       bars.push({ sec: secName, bar: b, ev, chords: row.map((r) => r.ch.sym) });
     }
   });
+  // 【成品】bars 事件表 + loopFrom(段落序号 → 全局小节号,运行时循环就靠它)+ 编译告警(乐谱写错时打控制台)
   return { ...def, bars, loopFrom: secStart[def.loopFrom ?? 0] ?? 0, warnings: warn };
 }
 
@@ -780,42 +913,58 @@ export function compileSong(def) {
  * Songs (original compositions)
  * ==========================================================================================================*/
 
+// ---- 旋律乐句常量(文本记谱,语法见 parsePhrase / DSL 速查)----
+// 战斗曲 A 段主旋律:E 小调,问答式短句(附点节奏 + 十六分冲刺)
 const BATTLE_A_LEAD =
   'B4/2 E5/2 r/1 E5/1 G5/2 F#5/2 E5/2 D5/2 B4/2 | E5/3 G5/3 B5/2 A5/2 G5/2 E5/4 | r/2 A4/1 C5/1 E5/2 A5/2 G5/2 E5/2 C5/2 D5/2 | D#5/3 F#5/3 A5/2 B5/6 r/2 | ' +
   'B4/2 E5/2 r/1 E5/1 G5/2 F#5/2 E5/2 D5/2 B4/2 | E5/3 G5/3 B5/2 A5/2 G5/2 E5/4 | r/2 A4/1 C5/1 E5/2 A5/2 G5/2 E5/2 C5/2 D5/2 | F#5/2 E5/2 D#5/2 B4/2 D#5/4 F#5/4';
+// 战斗曲 B 段主旋律:更上扬,结尾爬到 D6/E6 高点再回落
 const BATTLE_B_LEAD =
   'G5/4 E5/2 G5/2 A5/4 G5/4 | F#5/4 D5/2 F#5/2 A5/6 r/2 | B5/3 A5/3 F#5/2 D5/4 F#5/4 | G5/6 F#5/2 E5/8 | ' +
   'G5/4 E5/2 G5/2 C6/4 B5/4 | A5/4 F#5/2 A5/2 D6/6 r/2 | E6/4 D6/4 B5/4 A5/4 | A5/2 G5/2 F#5/2 D#5/2 F#5/8';
+// 标题曲低音乐句(D 小调吉他式 riff,降 G 是蓝调色彩音)
 const TITLE_RIFF = 'D3/2 r/1 D3/1 F3/2 D3/1 G3/2 Ab3/1 G3/2 F3/2 D3/2 | C4/2 D4/2 r/2 A3/1 C4/1 D4/4 r/2 F3/2';
+// 标题曲主旋律:萨克斯感的宣言式乐句
 const TITLE_LEAD =
   'D5/2 F5/2 G5/3 F5/1 D5/2 C5/2 Bb4/4 | D5/2 F5/2 Bb5/4 A5/2 F5/2 D5/2 C5/2 | C5/4 A4/2 C5/2 F5/4 E5/4 | E5/3 C#5/3 A4/2 G5/4 E5/4 | ' +
   'D5/2 F5/2 G5/3 F5/1 D5/2 C5/2 Bb4/4 | D5/2 F5/2 Bb5/4 A5/2 F5/2 D5/2 C5/2 | C5/4 A4/2 C5/2 F5/4 E5/4 | A4/2 C#5/2 E5/2 G5/2 A5/8';
+// 主菜单 A 段主旋律(F 大调,慵懒摇曳的休闲感)
 const MENU_A_LEAD =
   'A5/3 G5/1 F5/2 E5/2 F5/4 r/4 | E5/2 G5/2 C6/3 D6/1 C6/2 A5/2 r/4 | D6/3 C6/1 A5/2 F5/2 A5/4 G5/4 | F5/2 G5/2 Bb5/4 A5/2 G5/2 E5/4 | ' +
   'A5/3 G5/1 F5/2 E5/2 F5/4 r/4 | E5/2 G5/2 C6/3 D6/1 C6/2 A5/2 r/4 | D6/3 C6/1 A5/2 F5/2 A5/2 C6/2 Bb5/2 G5/2 | G5/4 F5/4 E5/8';
+// 主菜单 B 段主旋律(更流动,像是第二杯鸡尾酒上桌)
 const MENU_B_LEAD =
   'F5/2 A5/2 C6/2 A5/2 G5/4 F5/4 | D5/2 F5/2 Bb5/3 A5/1 G5/4 r/4 | F5/2 A5/2 D6/4 C6/2 A5/2 F5/4 | E5/4 G5/4 Bb5/4 A5/4 | ' +
   'F5/2 A5/2 C6/2 A5/2 G5/4 F5/4 | D5/2 F5/2 Bb5/3 A5/1 G5/4 r/4 | F5/2 A5/2 D6/4 E5/2 G5/2 Bb5/4 | A5/12 r/4';
+// 胜利结算主旋律(G 大调,明亮大跳 + 上行,欢腾收场)
 const WIN_LEAD =
   'D5/2 G5/2 B5/2 A5/2 G5/4 D5/4 | E5/2 G5/2 B5/2 D6/2 B5/8 | C6/3 B5/1 G5/2 E5/2 G5/4 D5/4 | F#5/2 A5/2 D6/4 C6/2 A5/2 F#5/4 | ' +
   'D5/2 G5/2 B5/2 A5/2 G5/4 D5/4 | F#5/2 B5/2 D6/2 F#6/2 D6/8 | E6/3 D6/1 B5/2 G5/2 C6/4 B5/4 | A5/4 G5/4 A5/2 B5/2 A5/2 F#5/2';
+// 失败结算主旋律(A 小调,长音下行,怅然但不绝望)
 const LOSE_LEAD =
   'E5/6 D5/2 C5/4 B4/4 | C5/6 A4/2 C5/4 E5/4 | F5/6 E5/2 D5/4 C5/4 | B4/8 G#4/8 | ' +
   'E5/6 D5/2 C5/4 B4/4 | C5/6 A4/2 C5/4 E5/4 | F5/4 A5/4 G5/4 F5/4 | E5/12 r/4';
 
+// Boss 一/二阶段低音乐句(D 小调,重金属式chug;G# 是移调暗示)
 const BOSS_RIFF = 'D3/2 D3/1 D3/1 F3/2 D3/2 E3/1 F3/1 A3/2 G#3/2 G3/2 | D3/2 D3/1 D3/1 F3/2 D3/2 C4/2 A3/2 Bb3/2 A3/2';
+// Boss 三阶段低音乐句(加入 Eb,Phrygian 色彩的紧张感)
 const BOSS_RIFF3 = 'D3/1 D3/1 Eb3/2 D3/1 D3/1 A3/2 Ab3/2 D3/1 D3/1 C4/2 Bb3/2 | D3/1 D3/1 Eb3/2 D3/1 D3/1 F3/2 E3/2 Eb3/2 D3/4';
+// Boss 一/二阶段主旋律(D 小调,硬朗的模进短句)
 const BOSS_A_LEAD =
   'D5/3 F5/3 A5/2 G5/2 F5/2 E5/2 C5/2 | D5/4 Bb4/4 F5/4 D5/4 | E5/3 G5/3 C6/2 Bb5/2 A5/2 G5/4 | A5/6 G5/2 E5/2 C#5/2 E5/4 | ' +
   'D5/3 F5/3 A5/2 G5/2 F5/2 E5/2 C5/2 | D5/4 Bb4/4 F5/4 Bb5/4 | C6/3 Bb5/3 A5/2 G5/2 E5/2 C5/4 | C#5/4 E5/4 A5/4 C#6/4';
+// Boss 二阶段主旋律(转向更暗的 Gm/Bb,和声更丰富)
 const BOSS_B_LEAD =
   'G5/4 Bb5/4 A5/2 G5/2 F5/4 | A5/6 F5/2 D5/8 | Eb5/2 G5/2 Bb5/4 C6/2 Bb5/2 G5/4 | A5/4 C#6/4 E6/4 A5/4 | ' +
   'G5/4 Bb5/4 D6/2 C6/2 Bb5/4 | A5/6 F5/2 D5/4 F5/4 | G5/2 Bb5/2 Eb6/4 D6/2 C6/2 Bb5/4 | A5/2 G5/2 F5/2 E5/2 C#5/4 E5/4';
+// Boss 三阶段主旋律(高音区疾走,Eb 与 C#dim 把不安推到顶)
 const BOSS_C_LEAD =
   'D6/2 C6/2 A5/2 F5/2 A5/4 D6/4 | Eb6/3 D6/3 Bb5/2 G5/4 Bb5/4 | A5/2 F5/2 D5/2 F5/2 A5/2 D6/2 F6/4 | E6/4 C#6/4 Bb5/4 G5/4 | ' +
   'D6/2 C6/2 A5/2 F5/2 A5/4 D6/4 | Eb6/3 G6/3 F6/2 Eb6/4 D6/4 | C6/2 A5/2 F5/2 A5/2 D6/4 C#6/4 | E6/6 D6/2 C#6/8';
 
+// 【曲目表】游戏内全部原创曲。每个条目:bpm/swing(摇摆)/key/段落(sections)/播放顺序(order)/循环点(loopFrom)。
 export const SONGS = {
+  // 【title】启动画面曲:快节奏朋克摇滚,宣言式的"开机即燃"。
   title: {
     name: 'Splash Attitude', bpm: 128, swing: 0.05, key: 'D minor', pump: 0.22,
     inst: { bass: 'punk', chords: 'guitar', lead: 'saw', arp: 'pluck' }, riffBass: true,
@@ -849,6 +998,7 @@ export const SONGS = {
     order: ['intro', 'A', 'B', 'A', 'break', 'B'], loopFrom: 1,
   },
 
+  // 【menu】主菜单/大厅曲:105bpm 放克,F 大调 —— 休闲港湾的慵懒摇曳(摇摆值最大的一首)。
   menu: {
     name: 'Harbor Lounge', bpm: 105, swing: 0.16, key: 'F major', pump: 0,
     inst: { bass: 'funk', chords: 'keys', lead: 'soft', arp: 'pluck' }, keysLo: 57, bassLo: 31,
@@ -871,6 +1021,7 @@ export const SONGS = {
     order: ['intro', 'A', 'B', 'A'], loopFrom: 1,
   },
 
+  // 【battle】常规对战曲:150bpm 朋克,E 小调 —— 战斗的主力燃曲(有录音时改播录音洗牌)。
   battle: {
     name: 'Turf Riot', bpm: 150, swing: 0, key: 'E minor', pump: 0.28,
     inst: { bass: 'punk', chords: 'guitar', lead: 'pulse', lead2: 'saw', arp: 'pluck' },
@@ -908,6 +1059,7 @@ export const SONGS = {
     order: ['intro', 'A', 'B', 'A', 'break', 'B'], loopFrom: 1,
   },
 
+  // 【battle_final】终盘一分钟曲:同 150bpm、带和声层与 4 小节 build —— 与战斗曲同速,可无缝节拍对齐切换。
   battle_final: {
     name: 'Final Splash', bpm: 150, swing: 0, key: 'E minor', pump: 0.32,
     inst: { bass: 'punk', chords: 'guitar', lead: 'pulse', lead2: 'saw', arp: 'pluck' },
@@ -947,6 +1099,7 @@ export const SONGS = {
     order: ['lift', 'F1', 'F2', 'build'], loopFrom: 1,
   },
 
+  // 【results_win】胜利结算曲:124bpm G 大调放克 —— 铃铛主音 + 明亮和弦,欢欣鼓舞。
   results_win: {
     name: 'Fresh Victory', bpm: 124, swing: 0, key: 'G major', pump: 0.18,
     inst: { bass: 'funk', chords: 'pluck', lead: 'bell', arp: 'pluck' }, keysLo: 59, bassLo: 31,
@@ -963,6 +1116,7 @@ export const SONGS = {
     order: ['A'], loopFrom: 0,
   },
 
+  // 【results_lose】失败结算曲:84bpm A 小调 —— 慢速 sub 贝斯 + 柔音主音,落寞但不消沉。
   results_lose: {
     name: 'Next Time', bpm: 84, swing: 0.1, key: 'A minor', pump: 0,
     inst: { bass: 'sub', chords: 'keys', lead: 'soft' }, keysLo: 55,
@@ -979,6 +1133,7 @@ export const SONGS = {
   },
 
   // ---- boss mode (HULLBREAKER): one tempo so each phase change lands beat-matched on a bar line with a riser
+  // 【boss】Boss 战第一阶段(D 小调,140bpm):重金属 riff + 警报感,铺底同速为阶段切换对齐节拍。
   boss: {
     name: 'Hull Alarm', bpm: 140, swing: 0, key: 'D minor', pump: 0.26,
     inst: { bass: 'punk', chords: 'guitar', lead: 'saw', lead2: 'pulse', arp: 'pluck' }, riffBass: true,
@@ -1004,6 +1159,7 @@ export const SONGS = {
     order: ['intro', 'A', 'B', 'A', 'B'], loopFrom: 1,
   },
 
+  // 【boss_2】Boss 战第二阶段:加入琶音与和声伴唱,和声更暗(Gm/Bb 方向),压力升级。
   boss_2: {
     name: 'Brood Tide', bpm: 140, swing: 0, key: 'D minor', pump: 0.3,
     inst: { bass: 'punk', chords: 'guitar', lead: 'saw', lead2: 'pulse', arp: 'pluck' }, riffBass: true,
@@ -1032,6 +1188,7 @@ export const SONGS = {
     order: ['lift', 'A', 'B'], loopFrom: 1,
   },
 
+  // 【boss_3】Boss 战第三阶段(终段):D Phrygian(Eb 色彩),密集十六分鼓 + 高音疾走主旋律,决战顶。
   boss_3: {
     name: 'Shell Shock', bpm: 140, swing: 0, key: 'D phrygian', pump: 0.34,
     inst: { bass: 'punk', chords: 'guitar', lead: 'saw', lead2: 'saw', arp: 'pluck' }, riffBass: true,
@@ -1065,26 +1222,36 @@ export const SONGS = {
  * Sequencer
  * ==========================================================================================================*/
 
+// 【声部总线】每个 Player 为这 10 个声部各建一个 GainNode(调音量/做淡入淡出/接效果发送),乐器事件按 GROUP_OF 归组。
 const GROUPS = ['kick', 'snare', 'hats', 'bass', 'chords', 'pad', 'arp', 'lead', 'lead2', 'fx'];
+// 【事件乐器 → 声部】鼓组细分(如 clap/tom 归入 snare、rim/shaker 归入 hats),强度分层按"声部"整体升降。
 const GROUP_OF = {
   kick: 'kick', snare: 'snare', clap: 'snare', tom: 'snare', hat: 'hats', rim: 'hats', shaker: 'hats', crash: 'fx', riser: 'fx',
   bass: 'bass', chords: 'chords', riff: 'chords', pad: 'pad', arp: 'arp', lead: 'lead', lead2: 'lead2',
 };
+// 【默认混音】各声部基础电平(歌曲可用 mix 覆盖)——鼓大声部厚、pad/arp 退后。
 const MIX = { kick: 0.6, snare: 0.5, hats: 0.22, bass: 0.36, chords: 0.3, pad: 0.1, arp: 0.1, lead: 0.28, lead2: 0.13, fx: 0.22 };
+// 【延迟发送量】带点回声才"好听"的声部(主音/琶音):送入乒乓延迟。
 const SEND_DLY = { lead: 0.26, lead2: 0.2, arp: 0.2 };
+// 【混响发送量】需要空间感的声部(pad 最多,鼓最少)。
 const SEND_REV = { snare: 0.16, lead: 0.14, lead2: 0.14, pad: 0.35, chords: 0.07, arp: 0.2, fx: 0.25, hats: 0.04 };
+// 【侧链泵感】这些声部在底鼓触发瞬间被"闪避"(pump)——电子舞曲的呼吸感。
 const PUMPED = { chords: true, pad: true, arp: true };
+// 【强度 → 声部权重】LAYERS 给每个声部一个 [进, 出] 强度区间(smoothstep 平滑过渡):
+//   0 时只剩踩镲;0.4 左右鼓齐;0.6+ 主音进;0.8+ 和声层进。战斗越激烈(intensity 越高),编制越满。
 // intensity → layer weight (smoothstep lo..hi). At 0 only hats remain; drums/lead come in above ~0.4.
 const LAYERS = {
   hats: [0, 0.02], bass: [0.08, 0.28], pad: [0.12, 0.32], arp: [0.28, 0.48], chords: [0.32, 0.52], kick: [0.38, 0.52],
   fx: [0.38, 0.55], snare: [0.48, 0.62], lead: [0.62, 0.78], lead2: [0.8, 0.95],
 };
+// 【smoothstep】t 在 [a,b] 间做 3t²-2t³ 平滑插值(端点导数为 0,权重进出不生硬);b<=a 时退化为阶跃。
 const smooth = (a, b, x) => {
   if (b <= a) return x >= a ? 1 : 0;
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
+// 【按 id 取编译好的歌】懒编译 + 缓存:第一次要某首歌时才 compileSong,结果存 Map(有编译告警就提示)。
 const compiled = new Map();
 export function getSong(id) {
   let s = compiled.get(id);
@@ -1098,6 +1265,10 @@ export function getSong(id) {
   return s;
 }
 
+// 【Player —— 一首歌的一次播放实例】音序器的执行端:
+//   持有自己的"声部总线 + 三路推子(干声/延迟/混响)+ 泵感增益";
+//   pump() 把 [now, now+LOOKAHEAD) 窗口内的事件逐个 fire() 成交响乐器调用;
+//   切歌时不销毁旧 Player,而是 fadeOut 后自然消亡——两轨可以短暂叠化。
 class Player {
   constructor(eng, id, t0, opts = {}) {
     const ctx = (this.ctx = eng.ctx);
@@ -1125,7 +1296,9 @@ class Player {
     }
     this.openHat = null;
   }
+  // 【声部权重】LAYERS 区间 smoothstep;声部没有权重表项(如合成必需声部)恒为 1。
   weight(g, x) { const l = this.layers[g]; return l ? smooth(l[0], l[1], x) : 1; }
+  // 【热切换强度】所有声部增益用 setTargetAtTime 平滑滑向新权重(0.35s 时间常数),不重启音序。
   setIntensity(x, now) {
     for (const g of GROUPS) this.groups[g].gain.setTargetAtTime(this.mix[g] * this.weight(g, x), now, 0.35);
   }
@@ -1143,14 +1316,20 @@ class Player {
     this.fadeSeg = { t0: t, v0: v, t1: t + dur, v1: 0 };
     this.stopAt = Math.min(this.stopAt, t + dur + 0.02);
   }
+  // 【下一小节起点】t0 之后(含 now 附近)最近的整小节时刻——同 bpm 切歌时对齐小节线的关键。
   nextBarTime(after) {
     const k = Math.max(0, Math.ceil((after - this.t0) / this.barDur - 1e-6));
     return this.t0 + k * this.barDur;
   }
+  // 【步进】前进一步;走完 16 步进一小节,走完最后一小节回 loopFrom(段落循环点)。
   advance() {
     this.n++; this.step++;
     if (this.step >= 16) { this.step = 0; this.bar++; if (this.bar >= this.song.bars.length) this.bar = this.song.loopFrom; }
   }
+  // 【核心泵】每个 tick 调用:把落在时间窗口 [now, until) 内的事件全部现场合成。
+  // 两条要点:
+  //   · 后台标签页定时器被浏览器节流时,直接"按网格跳拍"追到现在(不补发堆积事件);
+  //   · swing:奇数十六分音符整体后移 swing 比例 × 步长,爵士/放克的摇曳感。
   pump(until, now) {
     if (this.disposed) return;
     // timer starved (background tab): skip ahead on the grid instead of firing a pile-up
@@ -1164,11 +1343,15 @@ class Player {
       this.advance();
     }
   }
+  // 【侧链闪避】底鼓触发瞬间把被泵声部(chords/pad/arp)增益快速压低再恢复——" Pump "电子感。
   pumpDuck(T) {
     const p = this.pumpG.gain, d = this.song.pump;
     p.setTargetAtTime(1 - d, T, 0.004);
     p.setTargetAtTime(1, T + 0.03, 0.075);
   }
+  // 【事件 → 乐器】按事件的乐器名 dispatch 到乐器函数,力度加 ±6% 随机(人味)。
+  // 若该声部当前强度权重太低(<0.02)就不发声——这就是 setIntensity 减声部的实现机制;
+  // riff 例外:贝斯声部还活着时 riff 降八度改走贝斯(保证低频频段不断)。
   fire(e, T) {
     const g = GROUP_OF[e.i];
     if (this.weight(g, this.eng.intensity) < 0.02) {
@@ -1236,6 +1419,7 @@ class Player {
     }
     v.finish();
   }
+  // 【断线】Player 退场时断开全部自建节点(推子/声部总线/发送)。
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
@@ -1243,10 +1427,14 @@ class Player {
   }
 }
 
+// 【lookahead 音序参数】每 25ms 检查一次,把未来 0.16s 内的事件提前排程(到点准触发,不卡顿)。
 const LOOKAHEAD = 0.16, TICK_MS = 25;
+// Zone Control 加时:录音跑得略快(约高半音),烘托" hurry-up "的紧张感
 const OVERTIME_RATE = 1.06;       // Zone Control overtime: recordings run ~1 semitone fast
 const MANIFEST_URL = 'songs/manifest.json';
 
+// 【录音轨】songs/manifest.json 里登记的曲目:用 <audio> 元素流式播放,经 MediaElementSource 进音乐总线。
+// 与合成轨不同——它不参与编译/音序,只负责淡入淡出、暂停/续播和变速(加时)。
 // One recording, streamed by an <audio> element through Web Audio (gain = loudness match from the manifest × fades).
 class FileTrack {
   constructor(eng, id, entry) {
@@ -1287,6 +1475,9 @@ class FileTrack {
   }
 }
 
+// 【MusicEngine —— 游戏侧唯一入口】单例(music)。职责:
+//   总线搭建(_init)、25ms 计时驱动(_tick)、选曲切换(play/同速对拍、riser 衔接)、
+//   强度分层(setIntensity)、录音轨的洗牌/预载/加时(preload/_pick/setOvertime)、暂停续播(配比赛时钟)。
 export class MusicEngine {
   constructor() {
     this.ctx = null; this.players = []; this.current = null; this.intensity = 1; this._want = undefined;
@@ -1300,6 +1491,8 @@ export class MusicEngine {
   get tracks() { return Object.keys(SONGS); }
   now() { return this.offline ? this.vnow : this.ctx.currentTime; }
 
+  // 【引擎初始化——搭总线】mix(声部汇流)→ 30Hz 高通(去直流)→ 胶水压缩 → out(音乐音量)→ 音乐总线;
+  // 另建两条效果回路:乒乓延迟(附点八分音,随曲速调)与卷积混响;录音走独立直通 fileOut(成品录音不再过压缩/效果)。
   // dest = the music bus (audio.js). opt.offline → no timer; drive with advance(t).
   _init(ctx, dest, opt = {}) {
     if (this.ctx) return this;
@@ -1347,6 +1540,8 @@ export class MusicEngine {
     return this;
   }
 
+  // 【心跳定时器】首选 Web Worker 内的 setInterval(后台标签页不受主线程节流影响);
+  // Worker 建不起来(离线测试等)就退回普通 setInterval。
   _startTimer() {
     const tick = () => this._tick();
     try {
@@ -1362,6 +1557,7 @@ export class MusicEngine {
     }
   }
 
+  // 【每 tick】让所有 Player 泵出未来 0.16s 的事件;顺便回收淡出完毕的 Player(stopAt 过 4s 即清理)。
   _tick() {
     if (!this.ctx || !this.players.length) return;
     const now = this.now();
@@ -1373,8 +1569,12 @@ export class MusicEngine {
   }
 
   // offline driving (tests): move the virtual clock and schedule
+  // 【离线驱动(测试用)】没有真实时钟时手动推虚拟时钟:tools/audio-test.mjs 就靠它渲染整首歌。
   advance(t) { this.vnow = t; this._tick(); }
 
+  // 【切歌主入口】remap 钩子先过(Boss 指挥用来劫持选曲);
+  //   有录音 → 立即起 FileTrack(终盘曲要对表);同 bpm → 对齐下小节线对拍切换 + riser 衔接;
+  //   不同 bpm → 旧轨正常淡出、新轨淡入。ctx 未初始化时先记账,初始化后补播。
   play(track, opts = {}) {
     // a mode director (e.g. src/audio/bossAudio.js) can re-route requests: remap(track) → track to play instead
     if (this.remap) { try { const r = this.remap(track); if (r !== undefined) track = r; } catch (e) { /* keep the request */ } }
@@ -1417,6 +1617,7 @@ export class MusicEngine {
   }
 
   // Buffer the next pick for a file-backed id so play() starts without a gap.
+  // 【预载】提前把下一次要播的录音建出来(<audio> 开始缓冲),play() 时无缝接走。
   preload(id) {
     if (!this.ctx || !this.hasFile(id) || this._preloaded[id]) return;
     this._preloaded[id] = new FileTrack(this, id, this._pick(id));
@@ -1427,6 +1628,7 @@ export class MusicEngine {
     return ft;
   }
   // shuffle bag: every song plays once before any repeats, and a new round never opens with the song just heard
+  // 【洗牌袋】同一曲目的多首录音:每首播完一轮再重洗,且新一轮的第一首不重复刚播过的那首。
   _pick(id) {
     const list = this.files[id];
     let bag = this._bags[id];
@@ -1440,6 +1642,7 @@ export class MusicEngine {
     return list[i];
   }
   // a match song ran out: roll straight into the next one ('battle_final' plays once and stops)
+  // 【录音自然播完】可循环曲目直接接下一首;终盘曲(once)若正处加时则改接战斗洗牌,否则安静结束。
   _ended(ft) {
     if (this.current !== ft || ft.stopped) return;
     // overtime outlasts the one-shot final-minute song: roll into the match shuffle (still hurried) instead of silence
@@ -1453,6 +1656,8 @@ export class MusicEngine {
   }
   // Zone Control overtime: the playing recording runs a touch fast (the hurry-up), and a song that ends during overtime
   // rolls on instead of leaving silence. setOvertime(false) only ends the roll-over (new tracks start at normal speed).
+  // 【加时变速】Zone Control 进入加时:正在播的录音立即提速 6%(音高随之升高,像磁带快进),
+  // 且终盘曲播完后自动续播战斗曲而不是留白;关闭只影响之后的新曲目。
   setOvertime(on) {
     this.overtime = !!on;
     if (this.overtime && this.current instanceof FileTrack) this.current.setRate(OVERTIME_RATE);
@@ -1460,6 +1665,7 @@ export class MusicEngine {
   pause() { if (this.current instanceof FileTrack) this.current.pause(); }
   resume() { if (this.current instanceof FileTrack) this.current.resume(); }
 
+  // 【强度入口】0..1 钳位后下发给所有存活 Player(平滑过渡);ctx 未好就只在引擎里记账。
   setIntensity(x) {
     this.intensity = Math.min(1, Math.max(0, +x || 0));
     if (!this.ctx) return;
@@ -1467,6 +1673,7 @@ export class MusicEngine {
     for (const p of this.players) p.setIntensity(this.intensity, now);
   }
 
+  // 【停播】play(null):淡出当前轨(合成轨 duck 淡出,录音轨真暂停)。
   stop(fade = 1) { this.play(null, { fade }); }
 
   dispose() {
@@ -1482,9 +1689,11 @@ export class MusicEngine {
   }
 }
 
+// 【曲目概览表】给 UI/调试用的元信息:曲名、bpm、调性、段落结构(A(8) → B(8)…)与循环位置。
 export const TRACKS = Object.fromEntries(Object.entries(SONGS).map(([id, s]) => [id, {
   name: s.name, bpm: s.bpm, key: s.key,
   structure: s.order.map((k) => `${k}(${s.sections[k].bars})`).join(' → ') + `, loops from ${s.order[s.loopFrom ?? 0]}`,
 }]));
 
+// 【全局单例】游戏各处 import { music } 直接用;audio.init() 时经 music._init() 接到真实 AudioContext。
 export const music = new MusicEngine();
