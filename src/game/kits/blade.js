@@ -1,3 +1,27 @@
+// ============================================================================
+// 【中文导读】盐水弯刀 Brine Cutlass(kind 'blade')——"像画笔一样挥砍"的近战主武器。
+// 【模块定位】本三件套的**行为/逻辑侧**:状态机(点砍 / 蓄力 / 挥出)、命中判定、墨波与
+//   水滴弹幕、以及专属 bot 战术。三者分工:
+//     · blade.js(本文件)—— 行为与数值接入(MAIN_KITS.blade)、世界对象(WAVES 墨波)、
+//       专属挥砍轨迹 FX 的驱动、bot 战术;
+//     · blade-model.js —— 程序化建模 + 部件动画(buildBlade/animateBlade),负责"刀长什么样、
+//       蓄力时刃口如何发光";本文件只 import 并 registerWeaponModel('blade', …)。
+//     · blade-fx.js —— 挥砍弧光 mesh、墨波 mesh、音效配方、HUD 图标(BladeFX / installBladeSounds /
+//       BLADE_ICON);本文件在 tap/heavy 里调 BladeFX.slash、在 addWave 里调 BladeFX.waveMesh。
+//   数据流:输入 → tap()/heavy() → 生成 K.swing(挥砍记录)+ 立即触发 FX;runSwing() 每帧推进
+//   K.swing,到时刻点调 melee()(刀本体命中)、fireDrops()(洒墨)、spawnWave()(蓄满墨波)。
+// 【核心机制】
+//   · 点按 = 快速横斩(左右交替,K.side),刀身即命中盒(前方 reach m 的弧),并甩出一排水滴;
+//   · 长按 = 斩后抬刀蓄力(K.charge),满蓄可一直保持(还能带入一次下潜,chargeStore 秒),
+//     松开 = 过顶重斩 + 短前冲(重斩 wave 直线穿透并涂一条墨带);
+//   · runner.kit 存本武器的全部状态;runner.charge 只作镜像给 HUD / 姿势用——注意 runner.charging
+//     保持 false,好让核心不把小孩判为"忙碌"(拿刀蓄力时仍可下潜)。
+// 【关键约定】世界对象(墨波 WAVES)由本模块自持:用 tick(dt) 推进、clear() 释放(登记在 MAIN_KITS)。
+//   坐标一律米·弧度、Y 轴向上、+Z 为面朝。伤害/射程/时间全在 config.js WEAPONS.blade。
+//   联机:ghost(a, data) 重建远端玩家的墨波(只演给眼睛看,命中与涂墨由 owner 端发)。
+// 【配套阅读】docs/ASSETS-WEAPONS.zh-CN.md(§1 自注册、§4 开火链路;近战特例见 §4 尾注);
+//   docs/CONTRACTS.zh-CN.md §1、registry.js 顶部契约、同目录 blade-model.js / blade-fx.js。
+// ============================================================================
 // Brine Cutlass (kind 'blade') — a sword that swings like a brush, without the rolling: see kits/registry.js.
 //   Tap fire   → a quick horizontal cut (alternating right → left / left → right). The blade itself is a hitbox for the
 //                sweep (an arc in front, `reach` m) that deals `tapMelee`; the cut flings a wide crescent of droplets
@@ -28,13 +52,17 @@ const _m = new THREE.Matrix4(), _x = new THREE.Vector3(), _y = new THREE.Vector3
 const _hit = new Hit(), _hit2 = new Hit();
 const DOWN = new THREE.Vector3(0, -1, 0), UP = new THREE.Vector3(0, 1, 0);
 
+// 【注册段】模块顶层副作用:模型、图标、音效、bot 标记一次到位(见 index.js / docs/ASSETS-WEAPONS §1.1)。
+//   MELEE.blade = true 让 bot 与"是否是近战"的通用判断把 blade 归为近战类。
 // ------------------------------------------------------------------------------------------ registration
 registerWeaponModel('blade', buildBlade, animateBlade);
 WEAPON_ICONS.blade = BLADE_ICON;
 installBladeSounds();
 MELEE.blade = true;
 
+// 【runner 状态】所有每-runner 的状态挂在 runner.kit 上(懒创建),reset/换武器时随旧 kit 一并丢弃。
 // ------------------------------------------------------------------------------------------ runner state
+// 懒创建并返回该 runner 的 blade kit 状态对象;字段覆盖蓄力、冷却、当前挥砍(swing)、前冲、计数等。
 function st(R) {
   return R.kit || (R.kit = {
     held: false, holdT: 0, charge: 0, charging: false, full: false, store: 0,
@@ -44,24 +72,36 @@ function st(R) {
 }
 // charge hums are keyed by runner (runner.kit is nulled before reset hooks run, and a loadout swap resets through the
 // NEW kind's kit — tick() sweeps any hum whose runner stopped charging a blade)
+// 【蓄力嗡鸣的句柄表】按 runner 暂存 blade_charge 循环音,便于停止。用 Map 而非放 runner.kit,是因
+// 为 runner.kit 在 reset 前会被清空,而换武器又会经"新 kind 的 kit"重置——集中在此可由 tick() 统一清扫。
 const HUMS = new Map();
+// 停掉该 runner 的蓄力嗡鸣循环(淡出 0.06s)并从表里移除。
 function stopHum(R) { const h = HUMS.get(R); if (h) { h.stop(0.06); HUMS.delete(R); } }
+// 取消一次蓄力:清空 kit 与 runner 上的蓄力字段,并停掉嗡鸣(松开/被打断/失去资格时调用)。
 function cancelCharge(R, K) {
   K.charging = false; K.charge = 0; K.full = false; K.store = 0;
   R.charge = 0;
   stopHum(R);
 }
+// 该 actor 是否"听得见"(本地玩家,或离相机够近)——决定是否播放本地音效与震屏以外的声音。
 const heard = (a) => a.isLocal || a._nearCamera?.();
+// 传音位置:本地玩家返回 undefined(走 2D 非定位音),其余返回世界坐标供 3D 声像。
 const sndPos = (a) => (a.isLocal ? undefined : a.pos);
+// 手柄震动:仅对本地、非 bot 的 actor 触发(strong/weak 强度 + 毫秒时长)。
 function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
 // core bot logic holding the trigger for its own ends (inking a wall to climb, a puddle to refill in): quick cuts
+// 核心 bot 逻辑在替自己按住开火键(涂墙往上爬 / 在墨坑里回墨):此时按"极快点砍"自动触发。
 const coreDriven = (a) => !!(a.bot && !a.isLocal && (a.bot._climbAim || a.bot.mode === 'refill'));
+// bot 脑仍想保持蓄力(即使核心这一帧因瞄准漂移清掉了它的 trigger 标志);_blHold 是最近一次"想握"的时间戳。
 // a bot brain that wants to keep holding a charge even though the core cleared its trigger this frame (aim drifted)
 const botHolds = (a) => !!(a.bot && a.bot._blHold > G.time - 0.3);
 
+// 【挥砍】点砍 / 重斩 / 安全突进 / 逐帧推进,以及它们甩出的水滴与地面墨笔。
 // ------------------------------------------------------------------------------------------ the cuts
 // Heading of a cut: toward the crosshair's world point (the camera sits over the shoulder, so its ray and the kid's
 // facing differ by a few degrees at mid range), else the aim yaw.
+// 本次挥砍的朝向:优先对准准星的世界落点(相机在肩后,其射线与小孩朝向在中距会差几度),
+// 但偏差超过 0.35 rad 就退回小孩自己的 aimYaw,避免"刀甩向侧后"。落点太近(<2m)也退回 aimYaw。
 function cutYaw(a) {
   const p = a.aimPoint, dx = p.x - a.pos.x, dz = p.z - a.pos.z;
   if (dx * dx + dz * dz < 4) return a.aimYaw;
@@ -69,6 +109,8 @@ function cutYaw(a) {
   let d = y - a.aimYaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
   return Math.abs(d) < 0.35 ? y : a.aimYaw;
 }
+// 【快速横斩】一次点按:扣墨、翻左右(K.side)、建 K.swing(heavy:false),触发挥砍弧光与音效。
+// 墨不够则触发 _empty 并给一个短冷却。返回是否真的砍出。swing 记录本刀的朝向/俯仰/命中集合/是否已洒墨。
 function tap(R, K, w) {
   const a = R.a;
   if (a.ink < w.tapInk) { R._empty(); K.cd = 0.18; return false; }
@@ -84,6 +126,8 @@ function tap(R, K, w) {
   rumble(a, 0.05, 0.12, 45);
   return true;
 }
+// 【满蓄重斩】过顶下劈 + 短前冲:扣重墨、建 heavy swing(带 stroke 标记,供半途的地面墨笔),
+// 起手时若站位安全就发起 lunge(前冲),并开一次冲刺闪白(flashT=0)。触发 'blade_heavy' 动画与重音。
 function heavy(R, K, w) {
   const a = R.a;
   a.ink = Math.max(0, a.ink - w.heavyInk); a.lastFire = 0;
@@ -100,6 +144,8 @@ function heavy(R, K, w) {
   if (a.isLocal) { emit('recoil', { amount: 0.012 }); emit('shake', { amount: 0.1 }); }
   rumble(a, 0.25, 0.3, 120);
 }
+// 前冲是否安全:沿方向采样三点(0.5/1/1.4 倍距离),要求都在水面之上(不冲进海里/虚空),
+// 且 bot 不会冲出悬崖(平台落差 >1.6m 就否决)。人类玩家只检查海面,允许跳台。
 function lungeSafe(a, fx, fz, d) {
   const L = G.level; if (!L) return false;
   for (const k of [0.5, 1, 1.4]) {
@@ -110,6 +156,8 @@ function lungeSafe(a, fx, fz, d) {
   return true;
 }
 
+// 【挥砍推进】每帧推进 K.swing:S.t 累计时间;到 0.028/0.05s 真正"出手"(点砍洒水滴 / 重斩放墨波),
+// 重斩在 0.075s 补一次地面墨笔;在 t0..t1 窗口内跑 melee() 命中判定;前冲按剩余时间给速度;0.4s 后清空。
 // the swing in progress: ink leaves the blade, the blade itself hits, the lunge carries the kid forward
 function runSwing(R, K, dt, w) {
   const S = K.swing, a = R.a;
@@ -126,6 +174,8 @@ function runSwing(R, K, dt, w) {
   if (S.t > 0.4) K.swing = null;
 }
 
+// 【点砍洒墨】沿挥砍轴甩出一弯水滴:中心几滴最快,整片因此向前鼓成一道弧;每滴带出生延迟(delay)
+// 与逐滴距离伤害衰减(tapDamageNear→tapDamageFar)。陡俯冲(pitch<-0.55)时把水滴砸向脚边。带少量散喷(FX)。
 // Quick cut: a crescent of droplets flung across the front along the sweep (the centre ones fastest, so the sheet
 // bows forward), leaving from the blade's path in sweep order. Aiming steeply down throws them at your feet.
 function fireDrops(a, w, S) {
@@ -177,6 +227,7 @@ function fireDrops(a, w, S) {
   emit('weapon:fire', { actor: a, weapon: w.id, cut: 'quick', muzzle: new THREE.Vector3(a.pos.x + Math.sin(yaw) * 0.8, a.pos.y + 0.98, a.pos.z + Math.cos(yaw) * 0.8), dir: new THREE.Vector3(Math.sin(yaw), Math.sin(up), Math.cos(yaw)).normalize() });
 }
 
+// 【地面墨笔】重斩劈到底时,在身前地面刷一道墨(能盖过敌方墨)。沿刀朝向向下射线取地面点并 splat。
 // the blade meets the ground in front at the bottom of the overhead cut: a stroke of ink (cuts through enemy ink)
 function groundStroke(a, w, S) {
   const fx = Math.sin(S.yaw), fz = Math.cos(S.yaw);
@@ -192,8 +243,12 @@ function groundStroke(a, w, S) {
   }
   credit(a, area, S.sp);
 }
+// 涂墨计分:把 splat 面积计入 owner 的 turf;大招激活期间走 addTurfNoSpecial(不计大招冲能)。
 function credit(a, area, sp) { if (area > 0) { if (sp) a.addTurfNoSpecial(area); else a.addTurf(area); } }
 
+// 【刀身命中盒】前方扇形扫一遍:G.actors 里每个敌方,距离在 reach+其碰撞半径内、纵向落在挥砍窗口内、
+// 水平角度在 meleeArcDeg/heavyArcDeg 半角内、且有视线,则每刀命中一次(记入 S.hits)。挡在中间的
+// 护盾/幕帘代为吃伤(blockShot)。同时各扫一次 Boss(boss.segHit)与装置/泡泡(subs.damageArea),各每刀一次。
 // The blade as a hitbox: every enemy inside the arc in front (reach + their body radius, the swing's vertical window,
 // nothing through walls) takes the cut's melee damage once per swing. Shields / curtains in between take it instead.
 function melee(a, w, S) {
@@ -241,9 +296,12 @@ function melee(a, w, S) {
   }
 }
 
+// 【蓄满墨波】满蓄重斩射出的直线墨浪:穿透敌人、沿途涂一条墨带、撞墙/护盾即爆开,自持对象池。
 // ------------------------------------------------------------------------------------------ the ink wave
 const WAVES = [];
 const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
+// 【放墨波】从刀口前方射出直浪:俯仰做轻微压缩(近平面朝前时更直),出生点若贴在墙里则收缩到身体位置
+// (避免浪在墙内炸开)。随后 netRec 上报联机,并发 'weapon:fire'。
 function spawnWave(a, w, S) {
   const pitch = Math.abs(S.pitch) < 0.3 ? S.pitch * 0.4 : clamp(S.pitch, -0.45, 0.35);
   const cp = Math.cos(pitch);
@@ -258,17 +316,22 @@ function spawnWave(a, w, S) {
 }
 // ghost: a remote player's wave (online) — it rolls, cuts and bursts for the eye only (the owner's hits + splats arrive
 // apart)
+// 【建浪记录】创建一条墨波世界对象(owner/team/位置/朝向/命中集合/涂墨累加器/dying 计时),并取一个 BladeFX 的月牙 mesh。
+// ghost=true 是远端玩家的浪——只演不伤。
 function addWave(a, w, pos, dir, sp, ghost) {
   const col = (G.teamColors[a.team] || a.color).clone();
   const W = { owner: a, team: a.team, pos: pos.clone(), prev: pos.clone(), dir: dir.clone(), dist: 0, t: 0, hits: new Set(), paintAcc: 0.3, dying: -1, sp, col, fx: BladeFX.waveMesh(col), w, ghost };
   WAVES.push(W);
   if (ghost && a._nearCamera?.()) G.audio?.play('blade_heavy', { pos, volume: 0.5 });   // (the remote cut's sound)
 }
+// 【联机 ghost】远端玩家的重斩墨波:数据数组 [x,y,z, dirx,diry,dirz],重建成本地只演的一条浪。
 function ghost(a, d) {
   if (!Array.isArray(d)) return;
   addWave(a, WEAPONS.blade, _gp.set(d[0], d[1], d[2]), _gd.set(d[3], d[4], d[5]).normalize(), false, true);
 }
 const _gp = new THREE.Vector3(), _gd = new THREE.Vector3();
+// 【收尾】墨波结束:at 处撞上东西 → 就地 splat + 冲击 FX/音;at 为 null(射程耗尽)→ 俯冲落地成一滩溅墨。
+// 进入 0.14s 的 dying 淡出,同帧由 stepWave 继续摆位。
 function endWave(W, at, normal) {
   W.dying = 0.14;
   const col = W.col;
@@ -293,6 +356,7 @@ function endWave(W, at, normal) {
     }
   }
 }
+// 【推进所有墨波】倒序遍历;ghost 浪在 mute 保护下推进(其涂墨归 owner 端发)。
 function updateWaves(dt) {
   const nm = G.netm;
   for (let i = WAVES.length - 1; i >= 0; i--) {
@@ -301,6 +365,8 @@ function updateWaves(dt) {
     try { stepWave(W, i, dt); } finally { if (g) nm.mute--; }
   }
 }
+// 【单条墨浪的一帧】dying 期只淡出;否则推进位置,用"高而窄的移动板"扫过敌人各命中一次,撞护盾/墙即
+// endWave,沿途每隔 wavePaintEvery 涂一道墨,射程耗尽后收尾,并撒一点飞溅(FX)。
 function stepWave(W, i, dt) {
   {
     const w = W.w;
@@ -316,6 +382,8 @@ function stepWave(W, i, dt) {
     W.prev.copy(W.pos);
     W.pos.addScaledVector(W.dir, step);
     W.dist += step;
+    // 【命中判定·移动板】把这一帧的位移(prev→pos)看作一块沿 dir 前进、窄(waveWidth)而高(waveHeight)的板:
+    // 沿程投影 along 判前后、横向叉积判左右、沿程插值出的板心高度 cy 判纵向;每个敌人每条浪只算一次。
     // enemies inside the crescent's sweep (a tall, narrow slab moving along dir); each is hit once
     const hx = W.dir.x, hz = W.dir.z, hl = Math.hypot(hx, hz) || 1, ux = hx / hl, uz = hz / hl;
     const dmg = lerp(w.waveDamage, w.waveDamageFar, clamp(W.dist / w.waveRange, 0, 1));
@@ -349,6 +417,7 @@ function stepWave(W, i, dt) {
       const hit = G.physics.segment(W.prev, W.pos, _hit, true);
       if (hit.hit) { W.pos.copy(hit.point); endWave(W, hit.point, hit.normal); stop = true; }
     }
+    // 【沿途涂墨】每前进 wavePaintEvery 就向下取一次地面并 splat,形成一条笔直墨带(stretch 朝行进方向拉长)。
     // a straight stripe of ink along its path
     W.paintAcc += step;
     if (!stop && W.paintAcc >= w.wavePaintEvery) {
@@ -370,6 +439,7 @@ function stepWave(W, i, dt) {
     placeWave(W);
   }
 }
+// 【摆 mesh】把月牙 mesh 放到浪的当前位置:以 dir 为 +Z、UP 叉乘得 +X 建正交基;随飞行膨胀并喂 uT 做动画。
 function placeWave(W) {
   if (!W.fx) return;
   const m = W.fx.mesh, w = W.w;
@@ -384,6 +454,7 @@ function placeWave(W) {
   m.material.uniforms.uT.value = W.t;
 }
 
+// 【bot 战术】弯刀 bot 像凶悍的人类剑客:持trigger的时机、走位、埋伏、下潜携弹都由 botTactics 接管。
 // ------------------------------------------------------------------------------------------ bots
 // A Cutlass bot fights like an aggressive human swordsman. bot.tactics (botTactics) runs every fight frame, aimed or
 // not, after bots.js's defaults (and in its retreat, ctx.retreat), and owns the trigger (tap / hold / release), the
@@ -400,9 +471,11 @@ function placeWave(W) {
 //   · no dodge-hop on every hit; hurt: slip out of a shooter's line in our ink; at blade range, finish the fight
 //     (stayIn) instead of turning away; falling back: swim where the way back is ours, run where it isn't
 // SKILL (per difficulty) scales the flank / cover / lurk / dive use, the strafe and the timing.
+// 【难度系数】SKILL 缩放侧翼/掩体/埋伏/下潜的使用与走位时机;DIVE 是"满蓄用一次下潜带入"的触发概率。
 const SKILL = { easy: 0.35, normal: 0.7, hard: 1 };
 const DIVE = { easy: 0, normal: 0.6, hard: 0.9 };          // chance a full charge is carried in a swim (lane permitting)
 const _rs = { own: 0, enemy: 0, empty: 0, n: 0 };
+// 懒创建该 bot 脑的弯刀战术状态(计时器、侧移、掩体点、泳道标记、目标记忆等),挂在 brain._bl。
 function botState(brain) {
   return brain._bl || (brain._bl = {
     press: false, hold: 0, full: 0, dive: 0, dove: 0, diveOK: false, rush: 0, waveT: 3, side: Math.random() < 0.5 ? -1 : 1,
@@ -410,6 +483,7 @@ function botState(brain) {
     target: null, lastD: 0, closeV: 0, square: 0, lurk: 0,
   });
 }
+// 小孩前方 (nx,nz) 方向 d 米内是否连续是己方墨(游泳道);采样 1.2/2.6/4.2 m 三点,任一不满足即否。
 // own ink along the line (nx, nz) from the kid, as far as d m ahead: a swim lane
 function ownLane(a, nx, nz, d) {
   for (const k of [1.2, 2.6, 4.2]) {
@@ -419,6 +493,7 @@ function ownLane(a, nx, nz, d) {
   }
   return true;
 }
+// 小孩能否沿 (ux,uz) 走 len 米:膝高处无墙、路上无水(干湿线),且终点不坠崖(落差 ≤1.4m)。
 // can the kid walk len m along (ux, uz): no wall at knee height, no water, no drop off a ledge
 function walkable(brain, a, ux, uz, len) {
   const x1 = a.pos.x + ux * len, z1 = a.pos.z + uz * len;
@@ -426,6 +501,7 @@ function walkable(brain, a, ux, uz, len) {
   if (!brain._dryLine(a.pos.x, a.pos.y, a.pos.z, x1, z1)) return false;
   return G.level.groundHeight(x1, z1, a.pos.y + 0.6) > a.pos.y - 1.4;
 }
+// 沿 bot 导航路径的前视航点方向(单位向量);无路径时返回 null(交给核心的移动逻辑)。
 // heading along the bot's nav path (its look-ahead waypoint); null without one
 function pathDir(brain, a) {
   const p = brain.path; if (!p || brain.pi >= p.length) return null;
@@ -433,6 +509,7 @@ function pathDir(brain, a) {
   const n = G.nav.nodes[p[i]], dx = n.x - a.pos.x, dz = n.z - a.pos.z, l = Math.hypot(dx, dz);
   return l > 0.05 ? [dx / l, dz / l] : null;
 }
+// 找一个"离我们 1.6–3.2 m、与脚同高、可走到、且目标看不到我们"的点(绕目标一圈采样打分);用于蓄力时躲视线。
 // a spot 1.6–3.2 m away, level with us and reachable on foot, that the target can't see: charge behind it
 function coverSpot(brain, a, t, dist) {
   _v3.set(t.pos.x, t.pos.y + 1.3, t.pos.z);
@@ -452,6 +529,9 @@ function coverSpot(brain, a, t, dist) {
   return best;
 }
 
+// 【弯刀 bot 主循环】每战斗帧运行(在 bots.js 默认行为之后):接管 trigger(点砍/蓄力/放)、游泳与走位。
+// 分支:正在蓄力(找时机出手/下潜携弹/远距离用墨波poke/被逼近就放弃)、近身(点砍连击 + 绕圈)、
+// 受伤且被远程压(撤退回血)、以及普通逼近(泳道接近 / 预蓄伏击 / 等对方移开视线)。走位用 approach()。
 function botTactics(brain, ctx) {
   const { a, w, dist, dt, it, move, target: t } = ctx;
   const K = a.weaponRunner.kit;
@@ -618,9 +698,12 @@ function botTactics(brain, ctx) {
   }
 }
 
+// 【kit 本体】把上面各处实现挂成 MAIN_KITS.blade 的 hook 集合(update/tick/clear/bot/ghost …)。
 // ------------------------------------------------------------------------------------------ the kit
 MAIN_KITS.blade = {
   ghost,
+  // 【每帧入口】WeaponRunner 的 kind switch 落到这里。推进 K.swing;按当前形态/是否存活决定能否出手;
+  // 处理"按下=点砍(带缓冲队列)"、"长按过 chargeDelay=起蓄力"、"松开=按蓄力度放重斩或补一次点砍"。
   update(R, dt, inp, w) {
     const a = R.a, K = st(R);
     if (G.time - K.lastT > 0.3) { cancelCharge(R, K); K.held = false; K.swing = null; K.lunge = 0; K.queued = 0; }   // resumed after a special took the trigger
@@ -676,10 +759,14 @@ MAIN_KITS.blade = {
     }
     R.charge = K.charge;
   },
+  // 状态重置(出生/死亡/换装配):停掉可能残留的蓄力嗡鸣。
   reset(R) { stopHum(R); },
   // (a charge doesn't make the runner busy: you can dive with it held — see chargeStore — and swim on)
+  // 只有"正在挥砍"才算忙碌(注意蓄力不算——见下方 update 注释)。
   busy(R) { const K = R.kit; return !!K && !!K.swing; },
+  // 是否用"开火姿势"渲染:蓄力中,或挥砍的前 0.3s。
   firingPose(R) { const K = R.kit; return !!K && (K.charging || (!!K.swing && K.swing.t < 0.3)); },
+  // 移动速度覆盖:重斩落地后短暂扎根(0.3s 内更慢)、蓄力中中速、开火后短暂减速,否则交回默认(0)。
   moveSpeed(R, w) {
     const K = R.kit; if (!K) return 0;
     if (K.swing && K.swing.heavy && K.swing.t < 0.3) return w.moveSpeedFiring * 0.55;   // planted after the lunge
@@ -687,11 +774,13 @@ MAIN_KITS.blade = {
     if (R.firingT > 0) return w.moveSpeedFiring;
     return 0;
   },
+  // 【每帧世界推进】推进挥砍弧光 FX、所有墨波,并清扫"已经不再蓄力/已死/换了武器"的残留嗡鸣。
   tick(dt) {
     BladeFX.tick(dt);
     updateWaves(dt);
     for (const [R] of HUMS) { const K = R.kit; if (!K || !K.charging || R.a.weapon?.kind !== 'blade' || !R.a.alive) stopHum(R); }
   },
+  // 【整场重置】释放所有墨波的 FX mesh、清空数组、清空 BladeFX 池与嗡鸣。
   clear() {
     for (const W of WAVES) BladeFX.freeWave(W.fx);
     WAVES.length = 0;
@@ -699,6 +788,8 @@ MAIN_KITS.blade = {
     for (const [R] of HUMS) stopHum(R);
   },
 
+  // 【bot 挂钩】bots.js 按这些 hook 驱动:战术主循环(tactics)、留战判断(stayIn)、目标偏好(targetBias)、
+  //   涂地时的行为(paint)。paintPitch 是涂地时的俯仰偏好。
   // ---------------------------------------------------------------------------------------- bots
   // Played like an aggressive human swordsman — see botTactics() below (it runs every fight frame and owns the
   // trigger, the swim and the footwork; bots.js calls it after its defaults). paint: quick cuts on the move, keeping
@@ -706,12 +797,15 @@ MAIN_KITS.blade = {
   bot: {
     paintPitch: -0.2,
     tactics: botTactics,
+    // 低血、且近战范围内(或已满蓄且逼近中)时选择继续打而不是转身跑(否决核心的低血撤退)。
     // low on health in a fight at blade range (or charged and nearly there): finish it rather than turn and run
     stayIn(brain) {
       const a = brain.a, t = brain.target; if (!t || !t.pos) return false;
       const d = Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z), K = a.weaponRunner.kit;
       return Math.abs(t.pos.y - a.pos.y) < 1.4 && (d < 4.5 || (!!K && K.full && d < 5.5));
     },
+    // 目标偏好(加进 bots.js _perceive 的距离评分,越低越优先):优先砍"正和别人纠缠的敌人"或残血敌人;
+    // 若某个远程敌人已发现我们且超出水滴射程(这场决斗我们吃亏),评分拉高(避开)。
     // target choice (bots.js _perceive adds this to the distance score; lower is preferred): an enemy busy with one of
     // our team is the kill a sword gets; a ranged one that has us spotted from beyond the droplets' reach is the duel
     // it loses — another enemy within ~4 m of it is taken first
@@ -723,6 +817,7 @@ MAIN_KITS.blade = {
       else if (eb.target === a && eb.seeTimer > 0 && d > a.weapon.range && !MELEE[e.weapon.kind]) b += 4;
       return b;
     },
+    // 【涂地】移动中偶尔点砍涂地,但保留一份墨给战斗;偶尔(有长路要涂且墨足)蓄一发墨波刷长条。
     paint(brain, ctx) {
       const { a, w, needPaint, inkFrac, wantMove, dt } = ctx;
       const K = a.weaponRunner.kit || {};

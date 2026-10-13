@@ -1,3 +1,39 @@
+// ============================================================================
+// 【中文导读】潮汐弓(Tideline Bow,主武器,kind 'bow')——行为模块
+//
+// 【模块定位】"三发猎鱼弓(Tri-Stringer)"式武器的行为侧:【按住开火键蓄力,
+//   松开一次性放三支箭】。本文件只管"箭"这条命:弹道、命中、插箭、爆炸、
+//   以及蓄力/放箭的状态机与 bot 行为。配套模块:
+//   - 建模 / 部件动画 / 图标 → 同目录 bow-model.js(注册进 character-weapons.js)
+//   - 音效配方 → 同目录 bow-sfx.js(模块副作用注册范例)
+//   - 调参(伤害、射程、蓄力时间、墨耗 …)→ config.js WEAPONS.bow
+//   - 拉弓姿势(HOLD.bow + poseBow)→ character.js "Tideline Bow" 段
+//   - 双环准星 → hud.js + styles/hud.css
+//
+// 【核心机制】
+//   1.【蓄力/放箭状态机】见下方 update() / release() 头注:蓄力线性增长,
+//      第一环 w.ring1、满环 0.999;松开即按当前蓄力度定档放箭。
+//   2.【三档弹道】bowShot(c) 把蓄力度 c 映射为 tap / 环 / 满 三档
+//      (射程、速度、伤害、扇角、是否插箭),档内再线性插值。
+//   3.【箭的生命周期】st 0 飞行 → (过射程俯冲 / 命中→ 插箭) → st 1 插地
+//      倒计时(滴答三声)→ burst() 爆炸(油漆 + 溅射伤害)。箭池化(MAX=192)。
+//   4.【箭不走 G.projectiles.list】:自带 tick 更新与实例化渲染
+//      (InstancedMesh + 加法混合拖尾/光晕),只复用 Physics 的弹道/碰撞工具。
+//
+// 【新手阅读地图】(不写行号,会漂移,按区段找)
+//   - 顶部常量与工具(MAX / ARROW_R / 油漆计分 / kitOf)
+//   - shot tiers:bowShot() 蓄力→档位换算
+//   - arrows:volley()/looseVolley()/ghost() 放箭与联机回放
+//   - lodge()/burst():插箭与爆炸
+//   - stepArrow():箭的单帧推进(飞行碰撞、插箭、倒计时)
+//   - drawing:箭的实例化几何与渲染(ensureRender/draw)
+//   - the runner:update()/release() 蓄力状态机
+//   - bots:bot.fight / bot.paint 的 AI 行为
+//   - registration:MAIN_KITS.bow 注册 + BOW_DEBUG 调试句柄
+//
+// 【配套阅读】docs/ASSETS-AUDIO.zh-CN.md §4(模块副作用注册);
+//   registry.js 顶部注释(kit 契约,全部 hook 可选)
+// ============================================================================
 // Tideline Bow (main weapon, kind 'bow') — a Tri-Stringer-style bow: hold to draw, release to loose THREE arrows at
 // once. Tuning lives in config.js WEAPONS.bow; the model / part animation / icon in bow-model.js; sounds in bow-sfx.js;
 // the draw pose in character.js (the "Tideline Bow" block after the HOLD tables: HOLD.bow + poseBow); the two-ring

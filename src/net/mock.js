@@ -1,3 +1,19 @@
+// ============================================================================
+// 【中文导读】G.net 的离线替身 —— 没有中继也能跑通在线 UI
+// ----------------------------------------------------------------------------
+// 【模块定位】session.js(NetSession)的「假货」:API 完全一致,但把网络换成定时器模拟。menus.js 在 URL 带
+//   ?netmock=1 时安装它(该次页面加载会替换掉真实会话),否则用真实的 src/net/session.js。用途:开发/演示/
+//   审查在线界面,无需起中继。G.net.isMock=true 供上层识别。契约见 docs/NET.zh-CN.md。
+// 【模拟什么】房间生命周期全用定时器驱动:squidkids 会加入/离开/就绪/换武器换外观/发表情,ping 在抖动,
+//   当你是访客时由一个模拟房主在全员就绪后开赛,比赛"跑"几秒后所有人回大厅。
+// 【魔法房号】join() 用特殊码触发失败路径:ZZZZZ → ERR_NOT_FOUND · FULLY → ERR_FULL · BUZYY → ERR_IN_PROGRESS
+//   · NETXX → ERR_CONNECT。其它合法码都以访客身份加入别人(模拟)的房间。错误同样走错误码(errors.js)
+// 【URL 旋钮】?mockauto=0(冻结时间线) · ?mockfill=N(建房/加入时房里已有 N 人) · ?mocklat=ms(连接延迟,
+//   默认 700) · ?mockmatch=s(比赛时长,默认 6 秒)。
+// 【调试句柄】G.net.mock:auto(on) · add({...})→id · drop(id) · ready(id,v) · emote(id,name) · swap(id,{...})
+//   · fill(n) · clear() · host(id) · startMatch() · endMatch() · lose(msg) —— 手动驱动任意场景。
+// 【配套阅读】docs/NET.zh-CN.md、src/net/session.js(它模拟的正式实现)、src/net/errors.js。
+// ============================================================================
 // INKWAVE — offline stand-in for `G.net` (contract: docs/NET.md) so the online UI can be built, demoed and audited
 // without the relay. menus.js installs it when the page URL carries ?netmock=1 (it then replaces any real session for
 // that page load); the real src/net/session.js is used otherwise.
@@ -18,18 +34,23 @@ import { WEAPON_ORDER, MAPS, TEAM_PALETTES, mapNoBots, mapBossOk, bossFallbackMa
 import * as LOOK from '../game/character-style.js';
 import { ERR, netError, codeFromText } from './errors.js';
 
+// 【URL 参数】构造时读一次;?netmock=1 由 menus.js 决定,这里的其余旋钮控制模拟行为
 const q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+// 【Bot 名池】模拟玩家取名用;已用名会被跳过,避免重名
 const NAMES = ['Mako', 'Tentakool', 'inkjet', 'Wavebreaker', 'Tidal Tia', 'Blot', 'Pixel', 'Kraken Kai', 'sploosh', 'Lulu',
   'Squee', 'Dashi', 'Juniper', 'Rin', 'Otto', 'Beanie', 'Glub', 'Zippy', 'Nibbles', 'Coraline', 'Seafoam', 'Momo'];
 const EMOTES = ['booyah', 'wave', 'dance', 'flex'];
 const CODE_ABC = 'BCEFGHJKLMNPQRTUVXYZ23456789'; // no O/0, I/1, W/A/S/D (as session.js)
+// 【魔法失败码表】这些"房号"不加入,而是触发对应错误码,方便测试错误界面
 const FAIL = { ZZZZZ: ERR.NOT_FOUND, FULLY: ERR.FULL, BUZYY: ERR.IN_PROGRESS, NETXX: ERR.CONNECT };
 // English fallbacks for logs / unknown codes (the UI shows the dictionary entry for the code instead)
 const MOCK_ERR_TEXT = { [ERR.NOT_FOUND]: 'Room not found', [ERR.FULL]: 'Room is full', [ERR.IN_PROGRESS]: 'Match in progress', [ERR.CONNECT]: 'Could not connect' };
+// 【工具】clone 深拷贝(防止 UI 改到内部状态);pick 从数组随机取一项
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const rnd = Math.random;
 const pick = (a) => a[(rnd() * a.length) | 0];
 
+// 【MockNet 类】与 NetSession 同形:on/emit + 状态机 + lobby + mock 调试句柄。无网络,全靠 _timers 驱动
 export class MockNet {
   constructor() {
     this.state = 'offline';
@@ -40,15 +61,16 @@ export class MockNet {
     this.errorCode = null;
     this.lobby = null;
     this.startAt = 0;          // performance.now() when the match launches (state 'starting' → 'match')
-    this.isMock = true;
-    this._ls = new Map();
-    this._timers = new Set();
+    this.isMock = true;        // 上层据此识别替身(installNet 不覆盖、test 可断言)
+    this._ls = new Map();      // 事件名 → 监听器集合
+    this._timers = new Set();  // 所有在飞的 setTimeout 句柄,便于 leave/_reset 统一清掉
     this._seq = 0;
     this._auto = q.get('mockauto') !== '0';
-    this._lat = Math.max(0, +(q.get('mocklat') ?? 700) || 0);
-    this._fill = q.has('mockfill') ? Math.max(0, Math.min(7, +q.get('mockfill') | 0)) : null;
-    this._matchS = Math.max(1, +(q.get('mockmatch') ?? 6) || 6);
-    this._pending = 0;
+    this._lat = Math.max(0, +(q.get('mocklat') ?? 700) || 0);   // 连接延迟 ms
+    this._fill = q.has('mockfill') ? Math.max(0, Math.min(7, +q.get('mockfill') | 0)) : null;   // 房里预置人数
+    this._matchS = Math.max(1, +(q.get('mockmatch') ?? 6) || 6);   // 比赛时长 s
+    this._pending = 0;         // 连接令牌:leave() 使其递增,令未完成的 await 判定为已取消
+    // 【调试句柄】G.net.mock.*:手动驱动模拟(见文件头清单)
     this.mock = {
       auto: (on = true) => { this._auto = !!on; if (on) this._schedule(); },
       add: (o) => this._add(o || {}),
@@ -66,6 +88,7 @@ export class MockNet {
   }
 
   // ------------------------------------------------------------------ contract
+  // 【契约:isHost/on】与 session.js 一致;on 返回退订函数
   get isHost() { return !!this.myId && this.myId === this.hostId; }
 
   on(ev, fn) {
@@ -74,12 +97,14 @@ export class MockNet {
     return () => this._ls.get(ev)?.delete(fn);
   }
 
+  // 【建房】模拟连接延迟后建一个以自己为房主的房间;?mockfill=N 会在之后错峰加入 N 个模拟玩家
   async create(name) {
     if (this.state !== 'offline' && this.state !== 'error') return this.code;
     this._reset();
     this._setState('connecting');
     const tok = ++this._pending;
     await this._sleep(this._lat * (0.8 + rnd() * 0.5));
+    // 【取消检测】等待期间若发生了 leave(令牌变化)或状态已变,放弃本次连接
     if (tok !== this._pending || this.state !== 'connecting') throw new Error('Cancelled');
     this.code = Array.from({ length: 5 }, () => pick(CODE_ABC)).join('');
     this.myId = this._id();
@@ -102,6 +127,8 @@ export class MockNet {
     return this.code;
   }
 
+  // 【加入】清洗房号 → 模拟延迟 → 若命中魔法失败码则进入 error 并抛带 code 的错误,否则建一个「别人当房主、
+  //   自己是访客」的模拟房间(随机地图/时段/难度,预置若干 Bot)
   async join(code, name) {
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (this.state !== 'offline' && this.state !== 'error') throw new Error('Already in a room');
@@ -137,12 +164,14 @@ export class MockNet {
     return this.code;
   }
 
+  // 【离开】令牌自增让在飞的连接 await 作废,清定时器,回 offline
   leave() {
     this._pending++;
     this._reset();
     if (this.state !== 'offline') this._setState('offline');
   }
 
+  // 【改自己】归一改动后在模拟 RTT 后应用;换队若目标队已满,延迟触发一次 ERR_TEAM_FULL 错误事件
   setMe(o = {}) {
     const me = this._p(this.myId);
     if (!me || !this.lobby) return;
@@ -162,6 +191,7 @@ export class MockNet {
     this._later(this._rtt(), () => this._patch(me.id, patch));
   }
 
+  // 【房主设置】与 session.js 同规则(含 noBoss/noBots 地图规则);仅房主可用
   setSettings(o = {}) {
     if (!this.isHost || !this.lobby || this.state !== 'lobby') return;
     const L = this.lobby, wasMap = L.map;
@@ -178,17 +208,20 @@ export class MockNet {
     this._emit('lobby', { lobby: this.lobby });
   }
 
+  // 【能否开赛 / 硬性阻拦】与 session.js 一致:房主、无人待就绪、且无 noBots 图的人数不足
   canStart() {
     if (!this.isHost || !this.lobby || this.state !== 'lobby') return false;
     return !this.startBlock() && this.lobby.players.every((p) => p.host || p.ready);
   }
   startBlock() { return noBotsStartBlock(this.lobby); }
 
+  // 【开赛】房主手点开赛:直接走 _launch 的两段流程
   start() {
     if (!this.canStart()) return;
     this._launch();
   }
 
+  // 【表情】合法表情才广播;本地即时回显
   emote(name) {
     if (!this.lobby || !EMOTES.includes(name)) return;
     this._emit('emote', { id: this.myId, name });
@@ -197,6 +230,8 @@ export class MockNet {
   // ------------------------------------------------------------------ simulation
   // Same beat the real session is asked to honour (docs/NET.md → Requests): state 'starting', let the lobby play its
   // countdown + launch (menus.launchLobby() resolves when the screen can be taken over), then the match.
+  // 【起跑节拍】与真实会话同节奏:切 starting → 放行大厅倒计时动画(launchLobby,有 8s 上限兜底)→ 切 match →
+  //   定时 _matchS 秒后自动结束
   async _launch() {
     if (!this.lobby || this.state !== 'lobby') return;
     const L = this.lobby;
@@ -205,14 +240,17 @@ export class MockNet {
     this._emit('match', { phase: 'start' });
     const beat = G.menus && G.menus.launchLobby ? G.menus.launchLobby() : null;
     await Promise.race([beat || this._sleep(3600), this._sleep(8000)]);
+    // 【防竞态】等待期间离开房间(lobby 变化)或状态改变则放弃
     if (this.state !== 'starting' || this.lobby !== L) return;
     this._setState('match');
     this._later(this._matchS * 1000, () => this._endMatch());
   }
 
   /** main.js calls this when the results are done (real session: back to the lobby, room stays). */
+  // 【结束比赛】main.js 在结算展示完毕时调用;立即(_endMatch(true))回大厅
   endMatch() { this._endMatch(true); }
 
+  // 【收尾】派发 match:'end';稍后(默认 1200ms,now 时立即)清就绪、回 lobby、恢复自动时间线
   _endMatch(now = false) {
     if (this.state !== 'match' && this.state !== 'starting') return;
     this._emit('match', { phase: 'end' });
@@ -225,6 +263,7 @@ export class MockNet {
     });
   }
 
+  // 【模拟掉线】按文本映射错误码(否则 ERR_LOST),清场并进 error
   _lose(msg) {
     if (this.state === 'offline') return;
     this._reset();
@@ -234,6 +273,7 @@ export class MockNet {
     this._emit('error', { code: this.errorCode, message: msg });
   }
 
+  // 【自动时间线】每隔 0.9–2.8s 走一步:大厅期让某个模拟玩家行动(_act)、刷新 ping;由 _auto 开关
   _schedule() {
     if (this._tick || !this._auto) return;
     const step = () => {
@@ -246,6 +286,7 @@ export class MockNet {
     this._tick = this._later(1600, step);
   }
 
+  // 【随机行动】访客身份时:全员就绪则模拟房主 1.8s 后开赛;否则按概率加人/踢人/就绪/发表情/换武器/换外观
   _act() {
     const L = this.lobby, others = L.players.filter((p) => !p.you);
     // guest: the simulated host launches once everybody (you included) is ready
@@ -265,6 +306,7 @@ export class MockNet {
     this._patch(p.id, { style: LOOK.randomStyle(rnd) });
   }
 
+  // 【ping 抖动】每人有一个基线(_base):自己是 22ms,他人 16–106ms 偶尔到 200+;每次在当前值 ±15% 抖动
   _pings() {
     if (!this.lobby) return;
     for (const p of this.lobby.players) {
@@ -274,6 +316,7 @@ export class MockNet {
     this._emit('lobby', { lobby: this.lobby });
   }
 
+  // 【加人】满员则忽略;自动为其分配较空的一队;派发 join + lobby
   _add(o) {
     const L = this.lobby;
     if (!L || L.players.length >= L.maxPlayers) return null;
@@ -284,6 +327,7 @@ export class MockNet {
     return p.id;
   }
 
+  // 【踢人】只能踢非自己的玩家;若被踢的是房主则先迁移主机;派发 leave + lobby
   _drop(id, reason = 'left') {
     const L = this.lobby;
     if (!L) return;
@@ -295,6 +339,7 @@ export class MockNet {
     this._emit('lobby', { lobby: L });
   }
 
+  // 【主机迁移】把房主交给指定玩家(或列表首人),新房主自动就绪;派发 host + lobby
   _migrate(id) {
     const L = this.lobby;
     if (!L) return;
@@ -307,6 +352,7 @@ export class MockNet {
     this._emit('lobby', { lobby: L });
   }
 
+  // 【打补丁】把字段合并进某玩家;换队时顺带把就绪清掉(与真实会话一致)
   _patch(id, patch) {
     const p = this._p(id);
     if (!p || !patch || !Object.keys(patch).length) return;
@@ -315,12 +361,14 @@ export class MockNet {
     this._emit('lobby', { lobby: this.lobby });
   }
 
+  // 【较空的一队】返回 0 或 1 —— 谁人少去哪;供自动分配与换队默认
   _teamFor(except) {
     const ps = (this.lobby ? this.lobby.players : []).filter((p) => p.id !== except);
     const a = ps.filter((p) => p.team === 0).length, b = ps.length - a;
     return a <= b ? 0 : 1;
   }
 
+  // 【自己的玩家条目】从离线 profile 取名/武器/外观,you=true、ping 固定 22
   _me(name, team, host) {
     const prof = (G.game && G.game.profile) || {};
     return {
@@ -330,6 +378,7 @@ export class MockNet {
     };
   }
 
+  // 【造一个 Bot 玩家】从 NAMES 里挑没人用的名字;ready 随机(约 30%);ping 20–100
   _bot(o = {}) {
     const used = new Set((this.lobby ? this.lobby.players : []).map((p) => p.name));
     const free = NAMES.filter((n) => !used.has(n));
@@ -340,10 +389,12 @@ export class MockNet {
     };
   }
 
+  // 【小工具】_p 按 id 查玩家;_id 生成唯一玩家 id;_rtt 模拟一次请求往返
   _p(id) { return this.lobby ? this.lobby.players.find((p) => p.id === id) : null; }
   _id() { return 'p' + (++this._seq).toString(36) + ((rnd() * 1e6) | 0).toString(36); }
   _rtt() { return 60 + rnd() * 70; }
 
+  // 【状态迁移】变化才派发;离开 error/offline 时清空 error/errorCode
   _setState(s) {
     if (this.state === s) return;
     this.state = s;
@@ -351,6 +402,7 @@ export class MockNet {
     this._emit('state', { state: s });
   }
 
+  // 【派发】与真实会话一样,顺带把房间调色板同步给 game('lobby' 时);深拷贝 lobby 供 UI,单个回调抛错不影响他人
   _emit(ev, data) {
     // main.js keeps the room's palette in sync for the real session (its 'lobby' hook); mirror that for the mock
     if (ev === 'lobby' && this.lobby && G.game && G.game._roomPalette) { try { G.game._roomPalette(this.lobby); } catch (e) { /* optional */ } }
@@ -360,13 +412,16 @@ export class MockNet {
     for (const fn of [...set]) { try { fn(payload); } catch (e) { console.error('[netmock]', ev, e); } }
   }
 
+  // 【受管定时器】所有定时器登记在 _timers,便于 _reset 统一清;回调执行时先自行出表
   _later(ms, fn) {
     const t = setTimeout(() => { this._timers.delete(t); fn(); }, ms);
     this._timers.add(t);
     return t;
   }
+  // 【不受管 sleep】刻意不登记:连接中途 leave() 也要让它自然 settle(靠 _pending 令牌判定取消)
   _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); } // untracked: a leave() mid-connect must still settle
 
+  // 【清场】清掉所有定时器与飞行状态,回初始(不派发事件,由调用方决定)
   _reset() {
     for (const t of this._timers) clearTimeout(t);
     this._timers.clear();
@@ -376,6 +431,7 @@ export class MockNet {
 }
 
 /** Install the mock as G.net (idempotent). Returns the session. */
+// 【安装】幂等:已是 mock 则原样返回,否则新建并挂到 G.net
 export function installMockNet() {
   if (G.net && G.net.isMock) return G.net;
   G.net = new MockNet();

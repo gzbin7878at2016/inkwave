@@ -1,15 +1,40 @@
+// ============================================================================
+// 【中文导读】Crossroads Market —— 本关共享的"建筑套件"(building kit)
+// ----------------------------------------------------------------------------
+// 【模块定位】本关所有道具构建器的公共工具库与调色板。makeKit(D, H) 在注册期被调用一次,返回一整套
+//   几何/材质助手(笔画字体、窗、门、店面、雨篷、栏杆阳台、立面、屋顶…)。消费者:buildings.js、hall.js、
+//   street.js、tram.js、landing.js、scenery.js、props.js(它们都从 props.js 拿到 KIT)。生命周期:构建期
+//   一次性生成几何,之后冻结;运行期不再调用。
+// 【核心机制】H = PropKit 的 PACK_HELPERS(提供 THREE 及 add/box/cyl/lathe/tube/tor/sph/col/push/pop 等),
+//   D = 道具定义表(供 sub() 复用其它道具类型)。文件内三块:
+//     ① 几何助手:GB(手写顶点缓冲构造器)、tpl(模板几何缓存)、pbox/colBox/colT/sub(碰撞与子道具)、
+//       RAIL/rakedRail(栏杆碰撞,子弹/墨/乌贼可穿);② 笔画字体:GL 字形表 + glyph/letters/textW;
+//     ③ 建筑套件:awning/win/flowerBox/balconette/frontDoor/fascia/shopfront/goodsShelf/bracketSign/
+//       wallLantern/bill + facade/roof/dormer/slopeGeo。
+//   【性能核心】一切几何按"键"进 TPL 模板缓存(tpl),同尺寸同色只建一次;同材质的部件最终被 PropKit 合并
+//   成一个 mesh,把 draw call 压到每种材质 1 次。字/窗这类高频小件严禁每实例重建。
+// 【关键约定】米制、Y 轴向上。本套件的部件统一"贴墙面"约定:局部 z=0 是墙面,+Z 朝外,x 沿墙,y 从地面向上;
+//   除雨篷、壁灯、悬挂招牌外,部件一般不超出首层以下 ~0.15 m。屋顶的 slopeGeo 在局部 -Z 从檐(u=0)到脊(u=L)。
+//   绕 Y 的旋转在 PropKit 里精确(碰撞 AABB 用 8 角点变换,见 colT),非 90° 的 rx/rz 只用于纯视觉小件。
+// 【配套阅读】src/world/propkit.js(PropKit 与 PACK_HELPERS)、src/world/stages/crossmarket/layout.js(FL)、
+//   ./buildings.js、./road 各构建器、docs/ASSETS.zh-CN.md、docs/ARCHITECTURE.zh-CN.md。
+// 【建议阅读顺序】先 GB/tpl(几何底座)→ letters/glyph(字体)→ win/awning(最小墙件)→ facade/roof(组装) 。
+// ============================================================================
 // Crossroads Market — shared building kit for the stage's prop builders (owner: the crossmarket stage).
 // makeKit(D, H) returns the palette + geometry helpers (stroke-font channel letters, windows, doors, shopfronts,
 // awnings, balconettes, facades, roofs …) used by buildings.js, hall.js, street.js and tram.js. H = the PropKit's
 // PACK_HELPERS (THREE + helpers), D = the prop definition table (for sub-props).
+// 【首层标高】first-floor level(米),与 layout.js 的 FL 同值——立面按它排窗层。
 export const FL = 2.6;   // first-floor level (layout.js)
 
+// 【工厂入口】注册期调用一次:解构 H 的助手,返回套件对象(见文件末 return)。D 用于 sub() 复用道具类型。
 export function makeKit(D, H) {
   const { THREE, col, shade, mixc, latheGeo, tubeGeo, extrudeGeo, arcPts, PI, TAU, HP, P3 } = H;
+  // 【无阴影包一层】NS:标 tiny 部件(字、销钉…)为不投影,省 shadow map 里的小物件。
   const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ palette
-  // muted old-town tones; the bistro-green ironwork and the gilded letters are the accents (inks stay the loudest)
+  // 【调色板】低饱和老城色调;小酒馆绿(bistro-green)铁艺与鎏金字是仅有的重音(墨迹仍是最响的)。
   const K = {
     iron: '#2f5446', ironDk: '#223d33', ironLt: '#4d7766', gold: '#c9a55a', goldDk: '#9c7c3c', black: '#232427',
     frame: '#efe9dc', frameDk: '#dcd3c2', glass: '#2c3a44', glassLt: '#46596a', glassWarm: '#4a4538', lit: '#ffd9a0',
@@ -22,9 +47,13 @@ export function makeKit(D, H) {
 
 
   // ------------------------------------------------------------------------------------------ geometry helpers
+  // 【GB 几何构造器】轻量顶点缓冲:[p]osition/[n]ormal/[uv]/[c]olor/[idx] 五个并行数组;v() 压入一个顶点
+  //   返回其索引,tri/quad 追加索引并按法线朝向自动修正绕序(避免背面剔除)。geo() 组装成 BufferGeometry。
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
+    // 【加顶点】带法线与顶点色;返回索引。uv 恒为 (0,0)——本套件几何不用贴图。
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    // 【加三角】用三顶点平均法线判断朝向;退化(面积≈0)直接丢弃,朝里则反转绕序。
     tri(a, b, c) {
       const P = this.p, N = this.n;
       const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
@@ -36,6 +65,7 @@ export function makeKit(D, H) {
       if (s < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
     }
     quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+    // 【产出】组装 THREE.BufferGeometry(position/normal/uv/color + 索引)。
     geo() {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
@@ -46,21 +76,30 @@ export function makeKit(D, H) {
       return g;
     }
   }
+  // 【模板缓存】TPL 以字符串键存已建几何;tpl(key, fn) 首次现建、之后复用——同尺寸窗/字/屋顶只建一次。
   const TPL = new Map();
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
+  // 【键格式化】数字保留 4 位小数以免浮点噪差异导致缓存击穿。
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
+  // 【确定性 hash】把标量映射到 [0,1),供逐实例色调/随机微差(不依赖 Math.random,保证可复现)。
   const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  // 【颜色→线性三元组】cx3 把十六进制/色名转成 [r,g,b](0..1),写进顶点色。
   const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   // cached lumpy foliage / sack blob (H.blobGeo builds a new geometry per call)
+  // 【植被团块】H.blobGeo 每次调用都新建几何,故用 det+seed 缓存复用(花箱、树冠等)。
   const blob = (det, seed) => tpl('cmblob|' + det + '|' + seed, () => H.blobGeo(1, det, seed));
   // plain (unbevelled) box for small / flush parts: 12 triangles
+  // 【素盒】无倒角小盒(12 三角)用于细小/贴平部件;w/h/d 作为 sx/sy/sz 缩放共享的 pboxGeo。
   const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
   // collider from centre + size; roof: true = an off-limits top (nobody stands on it, never inked), or pass the
   // flags object itself ({ rail: true } for railings: blocks kids, shots / ink / squids pass)
+  // 【中心+尺寸碰撞】roof:true = 不可站的顶(上不去、不可上墨);也可传 flags 对象(如 { rail:true } 栏杆:挡人,子弹/墨/乌贼可穿)。
   const colBox = (B, x, y, z, w, h, d, roof = false) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, roof === true ? { roof: true } : roof || undefined);
   // collider given in the CURRENT push frame (B.col takes prop-local coordinates): the box's corners go through the
   // builder's stack top and the prop-local AABB is stored (pushes here only turn about Y, so the fit is exact)
+  // 【当前帧碰撞】在当前 push 坐标系(world 局部)给定 AABB:把 8 角点经栈顶矩阵变换后取轴对齐包围盒再存。
+  //   因本套件的 push 只绕 Y 旋转,变换后仍是精确 AABB(无需近似)。
   const _cv = new THREE.Vector3();
   function colT(B, x0, y0, z0, x1, y1, z1, flags) {
     const m = B.top; let ax = Infinity, ay = Infinity, az = Infinity, bx = -Infinity, by = -Infinity, bz = -Infinity;
@@ -70,17 +109,23 @@ export function makeKit(D, H) {
     }
     B.col(ax, ay, az, bx, by, bz, flags);
   }
+  // 【栏杆标志】挡人、可穿弹/墨/乌贼。
   const RAIL = { rail: true };
   // raked railing collider beside a stair (local +Z from the foot up to (0, rise, run)): `n` stepped rail boxes from
   // x0 to x1, each from the ground (below == null) or `below` m under the flight up to the handrail height
+  // 【斜梯扶手碰撞】楼梯旁的扶手:从 x0..x1 用 n 个阶梯小盒逼近斜坡(局部 +Z 从梯脚到 (rise,run)),
+  //   每块从地面(或 below 米处)顶到扶手高度。
   function rakedRail(B, x0, x1, rise, run, HR, n = 5, below = null) {
     for (let i = 0; i < n; i++) {
       const t0 = (run * i) / n, t1 = (run * (i + 1)) / n, ya = (rise * t0) / run, yb = (rise * t1) / run;
       colT(B, x0, below == null ? 0 : Math.max(0, ya - below), t0, x1, yb + HR, t1, RAIL);
     }
   }
+  // 【杆件】在两点间拉一根管(低径向,默认 5 边),用于铁艺细杆。
   const rod = (B, mat, c, a, b, r, radial = 5) => B.tube(mat, c, [a, b], r, { radial });
   // compose another prop type inside this one, carrying its colliders into this prop's frame
+  // 【子道具】把另一个道具类型 D[type] 嵌进当前道具:push 到 (x,y,z,ry) 后调用其 build,再把它的
+  //   碰撞盒从局部旋转/平移到本帧(含 roof/rail 标志透传)。用于货架上的小件、招牌等复用。
   function sub(B, type, x, y, z, ry, opts = {}) {
     const def = D[type];
     if (!def) return;
@@ -102,9 +147,14 @@ export function makeKit(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ stroke font
+  // 【笔画字体】圆头粗体无衬线(大写高度=1):字形用"中心线笔画+圆端/圆角"定义,可挤出成立体通道字
+  //   (channel letters)或压平成涂料字。坐标为字形空间(0..1),由 glyph 缩放到字高。不依赖任何字体文件。
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + joins; raised channel letters or flat paint.
+  // 【椭圆弧采样】返回 a0..a1 度之间、n+1 个 [x,y] 点(角度制、椭圆半径 rx/ry),构建曲线笔画。
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  // 【整圆】用 EA 采一整圈(去掉重复尾点),{c:…} 标记为闭合环。
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 【字形表】GL[字符] = [前进宽度, 笔画1, 笔画2, …];笔画是 [x,y] 折线数组,或 {c:…} 闭合环。
   const GL = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
@@ -147,8 +197,12 @@ export function makeKit(D, H) {
     "'": [0, [[0, 1], [0, 0.8]]],
     '&': [0.7, [[0.7, 0], ...EA(0.27, 0.72, 0.17, 0.2, -40, 220, 12).reverse(), [0.08, 0.28], ...EA(0.26, 0.24, 0.24, 0.24, 180, 300, 6), [0.62, 0.36]]],
   };
+  // 【点类字符】圆点构成的字符(中点/句点/冒号),逐个点用 disc 画圆。
   const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
+  // 【空格宽度】字形空间单位。
   const SPACE = 0.34;
+  // 【带状挤出】沿折线挤出一条有厚度的带(中心线笔画的本体):带斜接(miter)拐角、可选倒角(bev)、
+  //   可选侧墙(walls 从 z=d 拉回 z0,用于立体通道字)。pts 为折线,closed 决定是否闭合。
   function ribbon(g, pts, closed, hw, b, d, z0) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
     const N = pts.map((p, i) => {
@@ -176,6 +230,7 @@ export function makeKit(D, H) {
       for (let j = 0; j < np; j += 2) g.quad(A[j], A[j + 1], Bq[j + 1], Bq[j]);
     }
   }
+  // 【圆盘挤出】笔画圆端/圆点:一个圆面 + 可选倒角环 + 可选侧墙,可只画 a0..a1 的扇形(圆端帽用)。
   function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
     const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
@@ -193,6 +248,8 @@ export function makeKit(D, H) {
       if (walls) g.quad(wt[k], wb[k], wb[j], wt[j]);
     }
   }
+  // 【取字形几何】按 (字符,笔画宽 wt,挤出深 dep,倒角 bev,弧段 ds) 缓存一份字形几何;返回 {geo, adv}。
+  //   dep>0 走立体通道字(逐笔画向后退 0.006 做出层叠);dep=0 走平压字。字宽 s=1-wt 使字形缩进到笔画中线。
   function glyph(ch, wt, dep, bev, ds = 10) {
     return tpl(['cmgl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -230,9 +287,12 @@ export function makeKit(D, H) {
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
+  // 【测宽】量一行字的总宽(字形空间单位):逐字累加 adv + 字距 track。供 align/缩放预算。
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true);
   // lit: an unlit-shaded acrylic face just proud of each letter (reads as switched on at dusk). Returns the width (m).
+  // 【排字】在当前帧里朝 +Z 排一行字:通道字(默认)或 flat:true 涂料字;lit 会给每个字再叠一层自发光亚克力面
+  //   (黄昏像亮灯)。返回总宽(米)。用于招牌/门楣/账单海报。
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.05, bev = flat ? 0 : o.bev ?? 0, track = o.track ?? 0.12;
@@ -255,11 +315,15 @@ export function makeKit(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ building kit
+  // 【建筑套件·贴墙约定】以下部件全部"贴墙面"安装:局部 z=0 是墙面,+Z 朝墙外,x 沿墙,y 从地面向上。
+  //   除雨篷、壁灯、悬挂招牌外,部件一般不超首层以下 ~0.15 m。
   // Everything below mounts flush on a wall face: local z = 0 is the face, +Z out of the wall, x along it, y up from
   // the ground. Nothing projects more than ~0.15 m below the first floor except awnings, lamps and hanging signs.
 
   // striped canvas shop awning: sloping blind from the wall (y0) out to `proj` and down to y0 - drop, scalloped
   // valance at the front, triangular side cheeks; stripes run down the slope. Cached per size + colours.
+  // 【雨篷几何】条纹帆布店篷:从墙(y0)向外 `proj`、下垂 `drop` 的斜面;前沿带扇贝形帷板,两侧三角形颊板;
+  //   条纹顺坡向下。按尺寸+配色缓存。双腿(1 正面 0.72 亮度 / -1 背面)做出双面观感。
   function awningGeo(W, proj, drop, cA, cB) {
     return tpl(['awn', W, proj, drop, cA, cB].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(3, Math.round(W / 0.24)), sw = W / n, ca = cx3(cA), cb = cx3(cB);
@@ -293,6 +357,7 @@ export function makeKit(D, H) {
       return g.geo();
     });
   }
+  // 【雨篷】把 awningGeo 装到墙上,并补卷轴盒、两侧铁臂、前横杆。
   function awning(B, x, y, W, proj, drop, cA, cB = K.canvas) {
     B.box('paint', K.ironDk, W + 0.1, 0.12, 0.14, x, y + 0.02, 0.07, { r: 0.03 });            // roller box
     B.add('foliage', awningGeo(W, proj, drop, cA, cB), 'white', x, y - 0.02, 0.1, {});
@@ -304,6 +369,8 @@ export function makeKit(D, H) {
   }
   // double-hung sash window in an opening w × h (sill at y), with a surround: 'stone' architrave + sill (+ keystone /
   // cornice hood / pediment), 'paint' band, 'brick' segmental arch; shutters, a lit blind, a balconette
+  // 【窗】上下推拉窗,开洞 w×h(窗台在 y):含窗框/中挺/分格条;surround 可选 stone 石框(+ 拱心石/檐口/山花)、
+  //   paint 涂料框、brick 砖拱;可带百叶窗(shut)、亮灯窗帘(lit/curtain)、花箱(box)。door 变体画成落地法式门。
   function win(B, x, y, w, h, o = {}) {
     const fc = o.frame ?? K.frame, gc = o.glass ?? K.glass, sur = o.sur ?? 'stone', sc = o.surC ?? K.stone;
     const door = !!o.door;
@@ -354,6 +421,7 @@ export function makeKit(D, H) {
     if (o.box) flowerBox(B, x, y - 0.02, w + 0.1, o.box);
   }
   // window box of geraniums hanging under a sill
+  // 【花箱】窗台下挂的花箱:木箱 + 绿叶团块 + 一排天竺葵球(红/粉/白交替)。
   function flowerBox(B, x, y, w, c) {
     pbox(B, 'wood', c === true ? '#8a4f3a' : c, w, 0.18, 0.2, x, y - 0.12, 0.14);
     const n = Math.max(3, Math.round(w / 0.22));
@@ -364,6 +432,7 @@ export function makeKit(D, H) {
     }
   }
   // wrought-iron balconette at floor level y in front of an opening w (slab + railing with a scroll panel)
+  // 【铁艺小阳台】楼面 y 前、开洞宽 w:石板 + 栏杆(中部带卷草花纹板);碰撞用 RAIL(可穿弹/墨)。
   function balconette(B, x, y, w, o = {}) {
     const W = w + 0.5, dz = o.depth ?? 0.42, ic = o.iron ?? K.iron;
     B.box('paint', o.slab ?? K.stone, W, 0.1, dz + 0.04, x, y - 0.05, dz / 2, { r: 0.02 });
@@ -385,6 +454,7 @@ export function makeKit(D, H) {
     }
   }
   // panelled front door with a fanlight, in a stone doorcase (door opening dw × dh at ground level)
+  // 【正门】带扇形气窗(fanlight)的镶板大门,外框为石门套;含门把手、信箱板、门前台阶。
   function frontDoor(B, x, dw, dh, o = {}) {
     const dc = o.door ?? K.iron, sc = o.surC ?? K.stone;
     B.box(NS('paint'), dc, dw, dh - 0.35, 0.05, x, (dh - 0.35) / 2, 0.02, { r: 0.012 });
@@ -400,6 +470,7 @@ export function makeKit(D, H) {
     pbox(B, NS('paint'), shade(sc, 0.9), dw + 0.5, 0.12, 0.3, x, 0.06, 0.15);                        // door step
   }
   // lettered fascia board between two console brackets (x0 … x1), top at y
+  // 【店招横楣】x0..x1、顶在 y 的招牌板:两端托座、金线、檐口压顶;o.name 时排一行鎏金通道字(可亮灯)。
   function fascia(B, x0, x1, y, o = {}) {
     const W = x1 - x0, cx = (x0 + x1) / 2, fc = o.fascia ?? K.iron, Hh = 0.5;
     B.box(NS('paint'), fc, W, Hh, 0.1, cx, y - Hh / 2, 0.08, { r: 0.02 });
@@ -417,6 +488,8 @@ export function makeKit(D, H) {
   }
   // Victorian shopfront between x0 … x1: pilasters, fascia with gilded name, stallriser, display glazing with
   // mullions + transom lights, a recessed door, awning (open or rolled), a warm-lit interior strip; goods rack
+  // 【维多利亚店面】x0..x1:壁柱 + 鎏金横楣 + 窗下裙板 + 橱窗(竖挺/横档)/凹进门/雨篷(展开或卷起)/
+  //   暖光内条;o.goods 时在玻璃后侧摆一排货架剪影。o.door='l'/'c' 决定门靠左/居中。
   function shopfront(B, x0, x1, o = {}) {
     const W = x1 - x0, cx = (x0 + x1) / 2, fc = o.fascia ?? K.iron, top = o.top ?? 2.45;
     const dw = 0.95, dx = o.door === 'l' ? x0 + 0.3 + dw / 2 : o.door === 'c' ? cx : x1 - 0.3 - dw / 2;
@@ -452,6 +525,7 @@ export function makeKit(D, H) {
     else if (o.rolled) { B.box(NS('paint'), o.rolled, W - 0.4, 0.13, 0.14, cx, top - 0.44, 0.07, { round: true, r: 0.04 }); }
   }
   // goods silhouettes on a display shelf just behind the glass: bread, fish, flowers, tins, cups, wine
+  // 【橱窗货物剪影】玻璃后货架上的货品剪影:面包/鱼/花/罐头/杯/酒/书,kind 选择;逐件用 hash 微差。
   function goodsShelf(B, x, y, w, kind) {
     pbox(B, NS('wood'), K.woodDk, w, 0.04, 0.2, x, y, -0.1);
     const n = Math.max(3, Math.round(w / 0.22));
@@ -467,6 +541,8 @@ export function makeKit(D, H) {
     }
   }
   // projecting bracket sign: scrolled iron bracket from the wall at y, hanging a double-sided emblem / board
+  // 【悬挑招牌】墙上 y 处伸出卷草铁支架,下挂双面徽标/招牌:kind 决定徽标形状(pretzel/fish/key/cup/flower/
+  //   barber 或默认文字板 o.text);徽标在局部空间绘制,末尾统一 pop。
   function bracketSign(B, x, y, kind, o = {}) {
     const ic = K.iron, reach = 0.95;
     B.box('metal', ic, 0.16, 0.32, 0.04, x, y, 0.02, { r: 0.01 });
@@ -515,6 +591,7 @@ export function makeKit(D, H) {
     B.pop();
   }
   // cast-iron wall lantern on a scroll bracket (wall z = 0)
+  // 【壁灯】卷草支架上的铸铁壁灯:灯罩(metal)+ 自发光灯芯(glow)+ 底盖。
   function wallLantern(B, x, y) {
     B.box('metal', K.black, 0.1, 0.22, 0.03, x, y, 0.015, { r: 0.01 });
     B.tube(NS('metal'), K.black, [P3(x, y + 0.05, 0.02), P3(x, y + 0.12, 0.2), P3(x, y + 0.05, 0.34)], 0.014, { radial: 4 });
@@ -526,11 +603,13 @@ export function makeKit(D, H) {
 
   // vintage bill poster (faces +Z, centred at x, y, z; w × h): paper, a coloured field, a headline, an emblem and
   // rows of small print as bars. kinds: circus, opera, tram, soap, herring, market, regatta, cocoa
+  // 【海报配色表】每种 bill 的 [bg 底色, fg 前景/字色, word 标题词, em 图案] 四元组;em 取 star/ring/fish/bar。
   const BILLS = {
     circus: ['#b8483e', '#f1e3c4', 'CIRCUS', 'star'], opera: ['#23304a', '#d9b25a', 'OPERA', 'ring'], tram: ['#3f6b55', '#efe6d2', 'TRAMS', 'bar'],
     soap: ['#e0b04a', '#7a3a4c', 'SOAP', 'ring'], herring: ['#3f5f86', '#efe6d2', 'HERRING', 'fish'], market: ['#efe6d2', '#b8483e', 'MARKET', 'star'],
     regatta: ['#f1e3c4', '#23304a', 'REGATTA', 'bar'], cocoa: ['#6a3f2a', '#f1e3c4', 'COCOA', 'ring'],
   };
+  // 【海报】朝 +Z 贴一张复古戏报(纸底 + 色块 + 标题字 + 图案 + 若干小字条),居中于 (x,y,z),尺寸 w×h。
   function bill(B, x, y, z, w, h, kind = 'circus', o = {}) {
     const [bg, fg, word, em] = BILLS[kind] ?? BILLS.circus;
     B.push(x, y, z, 0, 0, o.rz ?? 0);
@@ -547,12 +626,16 @@ export function makeKit(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ facade + roof
+  // 【立面 + 屋顶】facade 只画"一个墙面"(居中 x=0),由 buildings.js 逐面摆放;roof 盖屋顶。
   // One wall face of a building: `len` long (centred on x = 0), eave height h. Spec:
   //   style 'ashlar' | 'render' | 'brick'   wall / trim colours: wall, trim (surrounds, bands, cornice)
   //   bays (window bays), floors (window storey levels, default FL, FL+2.7 …), shut (shutter colour), frame
   //   balc 'first' | 'all' | [bay indices] (iron balconettes + French windows on the first floor)
   //   shops [{ x0, x1, name, fascia, awn: [cA, cB] | rolled, door, goods, sign: 'pretzel' | 'fish' | … }]
   //   door [x, w] (a house door), gskip / uskip: x ranges kept bare on the ground / upper floors, cornice, quoins
+  // 【立面装配器】规格 s 字段:style 石/抹灰/砖、wall/trim 配色、bays 开间数、floors 各层窗标高(默认从 FL
+  //   每 2.7 m 一层)、shut 百叶色、balc 哪层设阳台、shops 店面数组、door 大门、gskip/uskip 底层/上层留空区、
+  //   cornice/quoins 檐口/隅石、plaque 街名牌。所有窗/店都复用上面的零件函数。
   function facade(B, len, s, seed) {
     const h = s.h, style = s.style ?? 'ashlar', trim = s.trim ?? (style === 'render' ? K.stoneLt : K.stone);
     const rnd = (k) => hash(seed * 13.1 + k * 7.7);
@@ -608,6 +691,7 @@ export function makeKit(D, H) {
     if (s.plaque) streetPlaque(B, s.plaque[0], s.plaque[1], s.plaque[2]);
   }
   // enamel street-name plaque (white on blue), wall z = 0
+  // 【街名牌】搪瓷蓝底白字街名牌,贴墙 z=0;宽度按字宽自适应。
   function streetPlaque(B, x, y, text) {
     const W = textW(text, 0.2, 0.1) * 0.13 + 0.22;
     B.box('gloss', '#f2eee6', W, 0.26, 0.02, x, y, 0.01, { r: 0.02 });
@@ -618,6 +702,8 @@ export function makeKit(D, H) {
   // one roof slope: courses of tiles / slates as a sawtooth (each course a tilted face + a small drip step), from the
   // eave (u = 0) to the ridge (u = L) in local -Z, lifted along +Y; half-width at the eave hw0 and at the top hw1
   // (hips taper); a flat underside; per-course tone jitter. Cached.
+  // 【单坡屋面几何】把瓦/石板做成锯齿:每皮一个斜面 + 一个滴水踏步,从檐(u=0)到脊(u=L,局部 -Z 方向),
+  //   沿 +Y 抬升;檐半宽 hw0、脊半宽 hw1(四坡时收窄成尖);带平底。逐皮色调抖动。按参数缓存。
   function slopeGeo(L, hw0, hw1, course, cc, seed) {
     return tpl(['slope', L, hw0, hw1, course, cc, seed].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(2, Math.round(L / course)), step = L / n, lift = 0.035, base = cx3(cc);
@@ -643,6 +729,9 @@ export function makeKit(D, H) {
   }
   // pitched roof over w (X) × d (Z) at y = 0: 'gable' (ridge along X, gable ends in the wall colour), 'hip', 'mansard'
   // (steep lower slopes with dormers + a shallow top), 'flat' (lead roof + parapet kit). Chimneys, dormers, skylights.
+  // 【屋顶】在 w(X)×d(Z)、y=0 处盖屋顶:kind 取 gable 双坡(脊沿 X,山墙用墙色)/ hip 四坡 / mansard 折线坡
+  //   (陡下坡+老虎窗+缓顶)/ flat 平屋顶(铅皮+女儿墙)。r 还可指定 chimneys 烟囱、dormers 老虎窗、skylights
+  //   天窗、ov 出檐、pitch 坡度、c 瓦色、seed 随机种。
   function roof(B, w, d, r) {
     const kind = r.kind ?? 'gable', pitch = r.pitch ?? 0.62, ov = r.ov ?? 0.25, cc = r.c ?? K.slate, course = cc === K.tile || r.tiles ? 0.24 : 0.3;
     const seed = r.seed ?? 1;
@@ -722,6 +811,7 @@ export function makeKit(D, H) {
     }
   }
   // roof dormer facing +Z: cheeks, a small gable (or round-topped) roof, a window
+  // 【老虎窗】朝 +Z 的屋顶老虎窗:侧颊、小双坡(或圆顶)屋面、一扇窗。
   function dormer(B, w, h, cc, fc, kind = 'gable') {
     B.box('paint', fc, w + 0.2, h, 0.9, 0, h / 2, -0.35, { r: 0.03 });
     pbox(B, NS('gloss'), K.glass, w - 0.18, h - 0.25, 0.02, 0, h / 2 - 0.02, 0.105);
@@ -732,6 +822,8 @@ export function makeKit(D, H) {
   }
 
 
+  // 【返回套件对象】props.js 拿到后挂到 KIT 上,供各构建器共享:调色板 K、常量 FL、几何/碰撞助手、
+  //   字体、以及全部建筑零件函数与 BILLS 配色表。
   return { THREE, col, shade, mixc, latheGeo, tubeGeo, extrudeGeo, arcPts, PI, TAU, HP, P3, NS, K, FL, GB, tpl, kf, hash, cx3, pbox, colBox, rod, sub,
     colT, RAIL, rakedRail, letters, textW, glyph, awning, awningGeo, win, flowerBox, balconette, frontDoor, fascia, shopfront, goodsShelf, bracketSign, wallLantern, facade,
     streetPlaque, roof, dormer, slopeGeo, blob, bill, BILLS };

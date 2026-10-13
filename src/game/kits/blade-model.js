@@ -1,3 +1,20 @@
+// ============================================================================
+// 【中文导读】盐水弯刀的**模型/材质/动画侧**——程序化生成的刀身、随蓄力点亮的墨刃、以及每帧动画。
+// 【模块定位】本三件套之一,由 blade.js(行为侧)在模块顶层注册(registerWeaponModel('blade', …));
+//   blade.js 负责挥砍/命中逻辑,本文件负责"长什么样、怎么动":
+//     · blade-model.js(本文件)—— buildBlade() 造网格、makeEdgeMaterial/makeAuraMaterial 造墨刃与光晕、
+//       animateBlade() 每帧按蓄力状态驱动它们;
+//     · blade-fx.js —— 挥砍弧光/墨波特效、音效、图标;
+//     · blade.js —— 状态机、命中判定、以及调 FX。
+// 【核心机制】刀身用"站位放样(loft)"生成:沿刀长取 44 个站位,每站给出刃体/刃口/血槽三组环点再缝成面。
+//   墨刃(edge)是独立 mesh,带逐顶点 aSeg(0=护手 → 1=刀尖),用于让蓄力光"从柄流向尖":
+//   通过 onBeforeCompile 往 MeshStandardMaterial 里注入 GLSL,按 uCharge/uFull/uFlash 塑形发光。
+//   光晕(aura)是刀身沿法线微胀的加法混合网格,蓄力时有光带扫过。
+// 【关键约定】武器空间:原点=握把中心,+Z 沿刀身(柄→尖),+Y=刀背侧,−Y=刃口侧,±X=刀面;
+//   尺度单位米。刀身几何一次性烘焙,运行期只写 uniform 与矩阵。
+// 【配套阅读】blade.js(调用方)、blade-fx.js、../character-weapons.js(武器空间契约 + animateWeapon 的 st)、
+//   ../character-geo.js(GEO_KIT:lathe/sweep/superEllipsoid 等程序化原语)。
+// ============================================================================
 // Brine Cutlass — procedural model + part animation (registered from kits/blade.js).
 // Weapon space (character-weapons.js contract): grip centre at the origin, +Z = along the blade (hilt → tip), +Y = the
 // spine side (the wrist lies that way), −Y = the cutting edge, ±X = the flats. The kid's fist wraps the rubber grip
@@ -14,6 +31,7 @@ import { superEllipsoid, lathe, smoothProfile, sweep } from '../character-geo.js
 const { Parts, C, M, latheZ, torus, at, orient, screw, decal, placeXY, squidShape, rng } = GEO_KIT;
 const V3 = THREE.Vector3;
 
+// 【刀身布局常量】z0/z1 = 刀根/刀尖沿 +Z 的位置,bow = 刀尖朝刀背抬起的弯度(仿军刀),gripR = 握把半径。
 // ---- blade layout (metres, weapon space)
 export const BLADE = {
   z0: 0.092,          // blade root (just past the guard)
@@ -22,12 +40,16 @@ export const BLADE = {
   gripR: 0.0138,
 };
 const L = BLADE.z1 - BLADE.z0;
+// 中线高度(u=0 刀根 → 1 刀尖):军刀的弧线上翘,朝刀背侧弯曲。
 // centreline height at blade fraction u (0 root → 1 tip): the sabre curve rises toward the spine side
 const yc = (u) => BLADE.bow * u * u;
+// 半宽(刀背到刃口距的一半)随刀长变化:根部 ~54mm 宽,中段收腰(正弦低谷),临近刀尖又外扩(高斯凸起)。
 // half-width (spine → edge distance / 2) along the blade: 54 mm wide at the root, a waist, a flare toward the point
 const halfW = (u) => 0.0272 - 0.0042 * Math.sin(Math.PI * Math.min(1, u / 0.7)) + 0.0052 * Math.exp(-(((u - 0.8) / 0.09) ** 2));
+// 刀背厚度(跨 X 全厚)随刀长线性收薄:根 11.2mm → 尖 6.4mm。
 // spine thickness (full, across X) along the blade
 const spineT = (u) => 0.0112 - 0.0048 * u;
+// 给定 u 返回 [刀背高, 刃口高] 两个 Y 值,并实现"假刃收尖":u>0.8 后刀背下沉、刃口上扬,在刀尖处的 tipY 相汇。
 // spine / edge heights at u, with the clipped point: past 0.8 the spine drops (false edge) and the edge rises to meet it
 function span(u) {
   const c = yc(u), h = halfW(u);
@@ -42,6 +64,7 @@ function span(u) {
 }
 const BEVEL = 0.36;   // share of the width (from the edge) that is the ink bevel
 
+// 【放样刀身】手写顶点环,而非 three 的现成几何——为的是在折缝处放重复顶点、配合手写法线,保住刀背/刃口的硬高光。
 // ------------------------------------------------------------------------------------------ lofted blade
 // Station rings. Body ring (one side, spine → bevel line): spine crown, spine shoulder, flat top, flat bottom (bevel
 // line). Edge ring (one side): bevel line → edge apex. Both mirrored across X; separate vertices at the creases so the
@@ -49,6 +72,7 @@ const BEVEL = 0.36;   // share of the width (from the edge) that is the ink beve
 function bladeGeos() {
   const N = 44;
   const body = { pos: [], nor: [], idx: [] }, edge = { pos: [], nor: [], idx: [], seg: [] }, fuller = { pos: [], nor: [], idx: [] };
+  // 【站位分布】基本均匀,但用三次项把站位往刀尖(尖点成形处)挤密一点,免得尖端面过疏。
   // stations: roughly uniform, a touch denser toward the tip where the point forms
   const us = [];
   for (let i = 0; i <= N; i++) us.push(Math.min(1, (i / N) * 0.93 + 0.07 * Math.pow(i / N, 3)));
@@ -115,6 +139,7 @@ function bladeGeos() {
       for (const [k0, k1] of [[3, 4], [4, 5]]) fuller.idx.push(a + k0, a + k1, b + k0, a + k1, b + k1, b + k0);
     }
   }
+  // 【几何打包】把某个环数据组转成 BufferGeometry;extra 用来给 edge 附上 aSeg 逐顶点属性;法线用手写值而非 computeVertexNormals。
   const mk = (d, extra) => {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
@@ -127,6 +152,8 @@ function bladeGeos() {
   return { body: mk(body), edge: mk(edge, edge.seg), fuller: mk(fuller) };
 }
 
+// 【组装】把刀当一堆程序化零件拼起来:柄头/握把/护碗/护指弓/护手/刀身/贴花;P 是实体部件, I 是用队伍墨的
+//   "墨件"(血槽、护手嵌片、墨瓶等)。
 // ------------------------------------------------------------------------------------------ build
 export function buildBlade() {
   const P = new Parts(), I = new Parts();
@@ -191,9 +218,12 @@ export function buildBlade() {
   };
 }
 
+// 【材质】墨刃与光晕两套材质,都是"随蓄力变化"的自定义着色;墨刃靠 onBeforeCompile 注入标准材质。
 // ------------------------------------------------------------------------------------------ materials
 // Ink edge: team ink at rest (a faint glow so it reads as liquid ink), the charge fills it with light from the hilt
 // to the tip (a hot front at the fill line), full charge ripples toward the tip, the release flashes white-hot.
+// 墨刃材质:静息用队伍墨微发光(像液态墨);蓄力时发光从柄(uCharge 推进)流向尖,充满后有波动、释放瞬间爆白。
+// 用 onBeforeCompile 改注入 MeshStandardMaterial,以保留标准光照,只替换自发光项。
 function makeEdgeMaterial() {
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.16, metalness: 0.05, emissive: 0xffffff, emissiveIntensity: 1 });
   const U = { uCharge: { value: 0 }, uFull: { value: 0 }, uFlash: { value: 0 }, uTime: { value: 0 }, uIdle: { value: 0.22 } };
@@ -217,6 +247,7 @@ function makeEdgeMaterial() {
   m.customProgramCacheKey = () => 'iw-blade-edge-1';
   return m;
 }
+// 光晕材质:刀身沿法线胀大 1.6mm 的加法混合壳,蓄力时有微光带从柄扫向尖,充满时钢面泛光。
 // Aura: the blade inflated a hair, additive; a shimmer band sweeps hilt → tip while charging, the steel glows at full
 function makeAuraMaterial() {
   const U = { uColor: { value: new THREE.Color() }, uCharge: { value: 0 }, uFull: { value: 0 }, uFlash: { value: 0 }, uTime: { value: 0 } };
@@ -248,10 +279,13 @@ function makeAuraMaterial() {
   return m;
 }
 
+// 【动画】每帧读蓄力状态驱动墨刃/光晕;首次调用时惰性建 edge/aura 两个 mesh 挂进 w.off,并做近/远 LOD 切换。
 // ------------------------------------------------------------------------------------------ animate
 // st: see character-weapons.js animateWeapon. Charge comes from the runner's kit state (kits/blade.js) when there is a
 // runner, else st.charge (labs / lockers). The release flash: runner.kit.flash (set on a charged slash).
+// 指数阻尼插值:朝目标 b 收敛,速率 l(越大越快);帧率无关(用 1-exp 而非线性)。
 const dampE = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
+// 逐帧驱动刀身特效:w 是武器实例,st 是 animateWeapon 传入的姿态/状态(见 character-weapons.js)。
 export function animateBlade(w, st) {
   const d = w.def, dt = Math.min(0.1, Math.max(0, st.dt || 0));
   if (!w.bl) {
@@ -262,6 +296,7 @@ export function animateBlade(w, st) {
     w.bl = { edge, aura, em, am, charge: 0, flash: 0, full: 0, near: true };
   }
   const B = w.bl, R = st.runner, K = R && R.kit;
+  // 【LOD】与内置武器一致:远处只显示低模刀身(bodyFar/inkFar),但墨刃始终保留——蓄力中的刀是任何距离都要能看懂的"预告"。
   // LOD like the built-ins (the edge stays: a charging blade is a tell at any range)
   const near = st.near !== false;
   if (near !== B.near) {
@@ -273,8 +308,10 @@ export function animateBlade(w, st) {
   if (K && K.flashT != null && K.flashT < 0.02) B.flash = 1;
   if (!K && st.chargeFlash > 0.9) B.flash = 1;
   B.flash = Math.max(0, B.flash - dt * 3.2);
+  // 【充能阻尼】上升(30)远快于回落(9):蓄力要跟手,泄力则留一点余韵不突兀。
   B.charge = dampE(B.charge, ch, ch > B.charge ? 30 : 9, dt);
   const full = ch >= 0.999 ? 1 : 0;
+  // 【满充辉光】到 0.999 即视为充满,同样升快(18)降慢(10),让"叮"的一下更利落。
   B.full = dampE(B.full, full, full ? 18 : 10, dt);
   const eu = B.em.userData.u;
   B.em.color.copy(st.color); B.em.emissive.copy(st.color);

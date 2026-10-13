@@ -1,3 +1,29 @@
+// ============================================================================
+// 【中文导读】比赛内复制 —— 谁拥有谁、20 Hz 快照、回放时钟与插值
+// ----------------------------------------------------------------------------
+// 【模块定位】联机比赛的同步核心,由 session.js 在开赛后 new 出并随 G.game 装配 actor 后 bind()。它挂在
+//   Match 的每帧上(update),桥接 Actor / character / kits / boss / zones 与网络。G.netm 指向当前实例。
+// 【权威模型 · 所有权】每个 actor 有**唯一所有者**(owner):玩家拥有自己的 squidkid,房主拥有所有 Bot,
+//   以及任何「玩家已离开」的 actor(被主机收养为 Bot,从所有人最后看到的位置原地续跑)。所有者以满帧率
+//   正常模拟,并以 20 Hz 流式发送 tick `{k:'t', ts, a:[打包 actor], e:[事件]}`;其他人**从不**模拟别人的
+//   squidkid,只把它当作代理(proxy),在同一套 character 动画代码上按约 100ms 之前的时间轴插值回放。
+// 【回放时钟】每个发送方一条 playback clock(peers 表),位于**发送方时间**上、落后"现在"约 100ms:
+//   · offset(off)—— 见过的最快包决定时钟偏移(网络下限),随漂移以极慢速率(0.0025)上爬;
+//   · delay —— 发送方 tick 间隔(p95)+ 包迟到量(p90)+ 常数,钳在 70–300ms;加缓冲快、削缓冲慢;
+//   · 时钟以本客户端自身帧时间前进,向 now-off-delay 做 ±8%(大抖动 ±20~25%)的柔性纠偏,所以本地卡顿
+//     绝不让远程 squidkid 瞬移;发送方样本快耗尽时**减速**(最低 0.5×)而非冲出路径尽头。
+// 【插值 · 路径】位置是穿过所有者样本的**三次 Hermite 曲线**(以所有者速度为切线,C1 连续,tick 边界无拐角);
+//   垂直方向若任一端 grounded 则不穿过两端地面之间。越过最新样本后做最多 180ms 的弹道外推,然后保持。
+//   传送计数器(netTp,重生时递增)变化即**直接切换**(hold→snap)而非滑过整张地图。
+// 【纠偏】唯一的不连续来自「新数据改写了已经画过的时刻」(多发生于离开外推、所有权交接)。做法:在上一帧
+//   的时刻用新路径重新求值,差值作为偏移量,按临界阻尼曲线(ω = 13)收敛 —— 既不跳变也不颠簸。
+// 【事件时间轴】一次性时刻(动画触发器、射击、splat、重生、大招、区域控制判定、Boss 招式)由所有者打上时间戳,
+//   在该发送方的时间轴上回放,于是「射击从枪口冒出」与「角色开火姿势」同帧,「墨水落点」与你看到的墨块同步。
+// 【关键约定】墨水:所有者每次 paint.splat() 都被记录并处处精确重放(带种子),所以每屏显示同一块地面;
+//   命中由射击者客户端判定(见什么打什么)、受害者的所有者施加(`{k:'hit'}`),健康值永远即时(不上时间轴)。
+// 【配套阅读】docs/NET.zh-CN.md(网络代码工作原理)、src/net/session.js、src/game/actor.js、src/boss/boss.js、
+//   src/game/specials.js、src/game/zones.js、server/src/index.js。
+// ============================================================================
 // In-match replication. Every actor has one owner: each player owns their squidkid, the host owns the bots (and any
 // actor whose player left). Owners simulate normally and stream 20 ticks/s; everyone else renders those actors as
 // proxies through the same animation code, interpolated on a timeline ~100 ms behind the owner.
@@ -27,46 +53,54 @@ import { specialNetState, specialNetApply } from '../game/specials.js';
 import { BotBrain } from '../game/bots.js';
 import { Boss } from '../boss/boss.js';
 
+// 【发送节拍】20 Hz:每个所有者每秒 20 个 tick。远端以约 100ms 延迟插值,所以这个速率既是带宽上限也是插值粒度
 const TICK = 1 / 20;
 
+// 【量化助手】坐标 2 位小数(≈1cm)、角度/时间 3 位小数 —— 压小 JSON、又肉眼看不出误差
 const r2 = (x) => Math.round(x * 100) / 100;
 const r3 = (x) => Math.round(x * 1000) / 1000;
 const now = () => performance.now() / 1000;
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const _P = blankSample();   // scratch: the path re-evaluated at last frame's moment
 const TAU = Math.PI * 2;
+// 【角度差】返回 b 相对 a 的最短有符号角差(落在 (-π, π]),用于角度插值时走短弧、避免绕远路
 const angDiff = (a, b) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; else if (d < -Math.PI) d += TAU; return d; };
 
 // state flags (one int per actor per tick)
+// 【状态位图】每 actor 每 tick 一个整数,把十几个布尔状态压成位标志,显著减小快照体积。解码见 applyRemote。
 const F = {
   alive: 1, squid: 2, sub: 4, climb: 8, grounded: 16, gt1: 32, gt2: 64, charging: 128, rolling: 256, streaming: 512,
   dodge: 1024, subAim: 2048, firing: 4096, special: 8192, sjCharge: 16384, sjFlight: 32768, flick: 65536, slosh: 131072,
   invuln: 262144, enemy: 524288,
 };
 // events forwarded from owners (actor-bearing payloads; vectors/actors are packed)
+// 【转发事件表】带 actor 的一次性事件;本地订阅它们并打包进快照的事件队列(见 _onLocalEvent / FORWARD 订阅)
 const FORWARD = ['actor:jump', 'superjump', 'superjump:land', 'special:use', 'special:slam', 'weapon:dodge', 'weapon:fire', 'splatted', 'respawn'];
 
+// 【NetMatch 类】一场比赛的复制器。由 session._begin 创建,bind() 拿到 Match 及其 actors 后开始工作。
 export class NetMatch {
   constructor(session, cfg) {
     this.s = session;
     this.cfg = cfg;
     this.myId = session.myId;
-    this.byNid = new Map();
+    this.byNid = new Map();        // nid → actor(全场唯一编号)
     this.peers = new Map();        // sender id → playback clock { off, delay, want, tr, rate, lastTs, events }
-    this.out = [];                 // events recorded since the last tick
-    this.tickT = 0;
+    this.out = [];                 // 本 tick 之前记录、待随下一个快照发出的事件
+    this.tickT = 0;                // 距离下一个出站 tick 的剩余秒数
     this.mute = 0;                 // >0: paint calls are visual-only (ghost projectiles / bombs / clouds)
     this.applying = false;         // replaying someone else's splat (don't re-record)
     this.match = null;
     this.clockT = 0;
     this.unsubs = [];
-    this.stats = { in: 0, out: 0, extrap: 0, snaps: 0 };
+    this.stats = { in: 0, out: 0, extrap: 0, snaps: 0 };   // 调试计数(覆盖率/extrap/传送)
   }
 
   get isHost() { return this.s.isHost; }
 
   // ---------------------------------------------------------------------------------------------- setup
   /** Called by main.js once the Match built its actors from the roster. */
+  // 【绑定】main.js 依 roster 建好 actors 后调用:登记 nid→actor、鉴权每个 actor 的 remote、挂事件转发与
+  //   match:state 上报。已离开者在加载期无人处理(那时还没有 NetMatch),在此补一次清理
   bind(match) {
     this.match = match;
     G.netm = this;
@@ -80,6 +114,8 @@ export class NetMatch {
     this.unsubs.push(on('match:state', ({ state, match: m }) => { if (m === this.match && this.isHost) this._sendNow({ k: 'st', s: state, t: r2(m.time) }); }));
   }
 
+  // 【单 actor 装配】标记 remote(= 不是自己拥有的);惰性建 net 缓冲;拦截 character.trigger,使本地非远端
+  //   角色的每次动画触发都被记录下来转发(客端在远端 character 上用 _netTrig 回放,避免再次记录形成回环)
   _setupActor(a) {
     a.remote = a.owner !== this.myId;
     if (!a.net) a.net = { buf: [], err: new THREE.Vector3(), tp: -1, lastRaw: null, rendered: new THREE.Vector3(), has: false, prevGrounded: true, prevVy: 0, yawPrev: 0, loops: {}, sjTo: null, sjRing: 0 };
@@ -94,8 +130,10 @@ export class NetMatch {
     }
   }
 
+  // 【占位】intro 由房主的 k:'go'(session._launch → main.netMatchGo)在每端同刻启动,此处无需逻辑
   go() { /* intro starts on every client at the host's word (session._launch → main.netMatchGo) */ }
 
+  // 【销毁】退订一切事件、停掉所有循环音、清 G.netm。由 session 在退房/回大厅时调用
   dispose() {
     for (const u of this.unsubs) u();
     this.unsubs.length = 0;
@@ -104,8 +142,11 @@ export class NetMatch {
   }
 
   // ---------------------------------------------------------------------------------------------- recording
+  // 【记录事件】给事件打上「本机 now」的发送方时间戳并入出站队列;时间戳让客端能在正确时刻回放它
   _rec(e) { this.out.push([r3(now()), ...e]); }
 
+  // 【记录涂地】所有者每次 splat 都记下位置/半径/队伍/种子/形状;种子让客端重放出一模一样的墨块。
+  //   三重短路:正在重放他人的(applying)、处于幽灵静音期(mute)、纯装饰(cosmetic)都不记 —— 幽灵弹永不涂地
   recSplat(c, radius, team, o) {
     if (this.applying || this.mute > 0 || o.cosmetic) return;
     const st = o.stretch;
@@ -113,6 +154,7 @@ export class NetMatch {
       st ? r3(st.x) : 0, st ? r3(st.y) : 0, st ? r3(st.z) : 0, st ? r2(o.stretchAmt ?? 1) : 0]);
   }
 
+  // 【记录投射物】仅当自己是所有者时记录:打包 spawn 的全部弹道参数,客端据此以 ghostProjectile 重放(纯视觉)
   recProj(p) {
     const o = p.owner;
     if (!o || o.remote || o.nid === undefined) return;
@@ -121,6 +163,7 @@ export class NetMatch {
       r3(p.vis ?? 0.1), p.tail0 ?? 0.8, p.tailK ?? 1.3, p.wob ?? 0.035, p.wobF ?? 26, p.nose ?? 0.3, p.sats ?? 3]);
   }
 
+  // 【记录炸弹】仅所有者记录:位置 + 初速 + kind,客端 ghostBomb 重放(纯视觉)
   recBomb(b) {
     const o = b.owner;
     if (!o || o.remote) return;
@@ -131,11 +174,14 @@ export class NetMatch {
   // ['k', nid, kind, data] (data: a short array of rounded numbers the kit packs); everyone else hands it to the kit's
   // ghost(actor, data) — a visual copy (and, for shields, a solid one): ghosts never paint (mute) and never hurt (a
   // remote attacker's hits are dropped; the owner's splats and hits arrive separately)
+  // 【记录 kit 世界物】有独立世界物体的武器/副武器/大招(拳、箭、伞面、掷出的副武器……):所有者记 spawn
+  //   为 ['k', nid, kind, data];他人交给该 kit 的 ghost(actor,data) 重放(纯视觉,盾类除外)
   recKit(a, kind, data) {
     if (!a || a.remote || a.nid === undefined || G.netm !== this) return;
     this._rec(['k', a.nid, kind, data]);
   }
 
+  // 【本地事件转发】订阅 FORWARD 的事件,只转发「自己拥有」的 actor 的事件(packEvent 把 actor→{n},向量→[x,y,z])
   _onLocalEvent(name, e) {
     const a = e.actor || e.victim;
     if (!a || a.remote || a.nid === undefined || G.netm !== this) return;
@@ -143,10 +189,13 @@ export class NetMatch {
   }
 
   // Boss Battle: the host's move records / crablet bursts go on its event timeline (played in step with the snapshots)
+  // 【记录 Boss 事件】仅房主:招式记录 / crablet 爆发进入房主事件时间轴,与快照同步落地
   recBoss(e) { if (this.isHost && G.netm === this) this._rec(e); }
   // Zone Control: the host's rules decisions + count snapshots (zones.js netEvent), on the same timeline as its paint
+  // 【记录区域控制事件】仅房主:规则判定 + 计数快照(zones.js netEvent),与涂墨同一时间轴
   recZone(e) { if (this.isHost && G.netm === this) this._rec(['z', e]); }
   // a guest's hit on the boss (or a crablet): shooter-authoritative, applied by the host that runs it
+  // 【客端打 Boss】发射者权威:客端把命中发给房主(唯一模拟 Boss 的人),由 boss.remoteHit 施加
   sendBossHit(attacker, d, weak, w, crab = -1) {
     if (this.isHost || attacker.nid === undefined) return;
     const L = this.match?.boss?.log; if (L) { L.sent++; L.sentDmg += d; }
@@ -154,21 +203,26 @@ export class NetMatch {
   }
 
   // a ghost device (a remote player's sprinkler, curtain, waddle …) took a hit here: its owner's copy takes it
+  // 【幽灵装置受击】远端玩家的装置(洒水器、幕帘、Waddle……)在这里被打中:转给它的所有者,由所有者那份承受
   sendDevHit(owner, kind, id, dmg) {
     if (!owner || !owner.remote || owner.owner === undefined) return;
     this.s.tr?.sendTo(owner.owner, { k: 'dh', kind, id, d: r2(dmg) });
   }
 
   // hits land on the victim's owner right away (not on the playback timeline: health must be current)
+  // 【发送命中】直发受害者所有者,**不上时间轴**(健康必须即时);返回是否已发出(自己拥有则本地处理)
   sendHit(attacker, victim, dmg, wid) {
     if (victim.owner === this.myId) return false;
     this.s.tr?.sendTo(victim.owner, { k: 'hit', v: victim.nid, a: attacker.nid, d: r2(dmg), w: wid });
     return true;
   }
 
+  // 【立即广播】绕过 tick 节流(用于 match:state / res / end 等低频控制消息)
   _sendNow(d) { this.s.tr?.broadcast(d); }
 
   // ---------------------------------------------------------------------------------------------- per frame
+  // 【每帧主循环】顺序不可换:① 推进所有发送方的回放时钟 → ② 采样每个远端 actor(算本帧位置/动画)→
+  //   ③ 采样 Boss(客端)→ ④ 回放到期事件 → ⑤ 远端循环音 → ⑥ 按 20Hz 出站 tick
   update(dt) {
     if (!this.match) return;
     // timeline samples for every remote actor (Match.update applies them)
@@ -182,18 +236,21 @@ export class NetMatch {
     this.tickT -= dt;
     if (this.tickT <= 0) {
       this.tickT += TICK;
-      if (this.tickT < 0) this.tickT = TICK;
+      if (this.tickT < 0) this.tickT = TICK;   // 长时间卡顿后不要连发多个 tick 追补:直接重置到下个节拍
       this._sendTick();
     }
   }
 
+  // 【出站 tick】把自己的 actors 打包 + 挂上事件队列 + (房主)挂 Boss 快照/时钟;发出去后清空事件队列
   _sendTick() {
     const a = [];
     for (const x of this.byNid.values()) if (!x.remote) a.push(packActor(x));
     const msg = { k: 't', ts: r3(now()), a };
     if (this.out.length) { msg.e = this.out; this.out = []; }
     const boss = this.match?.boss;
+    // 房主:每 tick 附带 Boss 快照,每 10 个 tick 发一次完整包(细包用于插值、粗包用于对齐)
     if (this.isHost && boss && boss.sim) { this.bossN = (this.bossN || 0) + 1; msg.B = boss.pack(this.bossN % 10 === 0); }
+    // 房主:每 0.5s 附带一次比赛状态 + 时钟,供客端对齐(见 _hostClock / _hostState)
     if (this.isHost && this.match) {
       this.clockT -= TICK;
       if (this.clockT <= 0) { this.clockT = 0.5; msg.c = [this.match.state, r2(this.match.time)]; }
@@ -203,11 +260,14 @@ export class NetMatch {
   }
 
   // ---------------------------------------------------------------------------------------------- incoming
+  // 【收包分发（比赛期）】session._message 的 default 分支把未知 k 转到这里。t=快照、hit/dh/bhit=命中、
+  //   st/res/end/own=房主控制帧(只认 hostId 来源)
   onMessage(from, d) {
     switch (d.k) {
       case 't': this._tick(from, d); break;
       case 'hit': this._hit(d); break;
       case 'dh': {   // a hit on one of our devices, made on another player's screen
+        // 别人屏幕上打中了我们的幽灵装置:找到对应 kit 的 netHurt 施加到本地那份
         const K = d.kind === 'subs' ? G.subs : SUB_KITS[d.kind] || MAIN_KITS[d.kind] || KIT_GHOSTS[d.kind];
         try { K?.netHurt?.(d.id, d.d); } catch (err) { console.warn('[inkwave] device hit', d.kind, err); }
         break;
@@ -220,29 +280,36 @@ export class NetMatch {
     }
   }
 
+  // 【取/建回放时钟】每个发送方一条;默认 delay 0.1s、未初始化。peers 表是远端平滑的全部状态所在
   _peer(id) {
     let p = this.peers.get(id);
     if (!p) this.peers.set(id, (p = { off: 0, delay: 0.1, rate: 1, init: false, events: [] }));
     return p;
   }
 
+  // 【收快照】核心:更新该发送方的 offset(时钟偏移)与 delay(缓冲),把每个 actor 样本压入其缓冲,
+  //   事件入队,并采集房主的时钟/状态与 Boss 快照
   _tick(from, d) {
     this.stats.in++;
     const p = this._peer(from);
     const t = now();
-    const o = t - d.ts;
-    if (!(d.ts < p.lastTs)) p.lastTs = d.ts;
+    const o = t - d.ts;                                // 本包的单程延迟估计(用本机 now 与发送方 ts 之差)
+    if (!(d.ts < p.lastTs)) p.lastTs = d.ts;           // 记录见过的最新发送方时间(用于「还剩多少缓冲」判断)
+    // 【offset】最小延迟包决定时钟偏移(网络下限);新样本更小则下移,否则以 0.0025 极慢速率上爬(容忍漂移/路由变化)
     if (!p.init) { p.off = o; p.init = true; }
     else if (o < p.off) p.off = o;                      // a faster packet: the true floor is lower
     else p.off += (o - p.off) * 0.0025;                 // creep up slowly (clock drift / route change)
     // buffer need from the last ~3 s: how late packets run (90th percentile — a rare hiccup must not drag the delay
     // around; the playback clock rides those out) plus the sender's tick spacing (95th: its frames aren't regular)
+    // 【延迟需求】用近 60 个样本:包迟到量的 p90 + 发送方 tick 间隔的 p95 + 12ms 常数,钳在 70–300ms。
+    //   取分位数而非最大,是为了让单次卡顿不把整段 delay 拉大(回放时钟本身能扛过偶发迟到)
     const W = p.win || (p.win = { late: [], gap: [] });
     W.late.push(o - p.off); W.gap.push(p.prevTs !== undefined ? Math.min(0.25, Math.max(0, d.ts - p.prevTs)) : TICK);
     p.prevTs = d.ts;
     if (W.late.length > 60) { W.late.shift(); W.gap.shift(); }
     p.want = Math.min(0.3, Math.max(0.07, quantile(W.gap, 0.95) + quantile(W.late, 0.9) + 0.012));
     // actors
+    // 【入缓冲】只接受「自己拥有、来自该发送方」的 actor;乱序或重复(时间戳不增)的样本丢弃;缓冲上限 40 个
     if (d.a) for (const s of d.a) {
       const a = this.byNid.get(s[0]);
       if (!a || !a.remote || a.owner !== from) continue;
@@ -256,6 +323,7 @@ export class NetMatch {
     if (d.e) for (const e of d.e) p.events.push(e);
     if (d.c && from === this.s.hostId) this._hostClock(d.c);
     // the boss: the host's snapshot, on the host's playback timeline
+    // 【Boss 快照】仅客端、仅房主来源:与 actor 同样入缓冲、去乱序
     const boss = this.match?.boss;
     if (d.B && from === this.s.hostId && boss && !boss.sim) {
       const buf = boss.net.buf, snap = Boss.unpack(d.B, d.ts);
@@ -268,6 +336,11 @@ export class NetMatch {
   // hitch never makes remote squidkids leap ahead) and steers gently — never jumps — toward "now − delay", where the
   // delay covers the sender's tick spacing and packet lateness. When the sender's samples are about to run out (their frame
   // hitched, packets late) it slows down instead of running off the end of the path into a guess.
+  // 【推进回放时钟】以本机帧时间前进(p.tr += dt*rate)。分档纠偏:
+  //   ① delay 平滑逼近 want —— 加缓冲快(×2)、削缓冲慢(×0.35),避免抖动;
+  //   ② 与 target=now-off-delay 的差 e:小误差做 ±8% 时间拉伸,大误差(卡顿后)±20~25% 快追;
+  //   ③ 发送方样本快耗尽(lastTs 逼近 tr)时把速率压到最低 0.5×,宁可慢也别冲出路径尽头;
+  //   ④ rate 自身也缓动(dt*6),杜绝节奏突变。偏差 >0.5s 视为需重新同步,直接硬设。
   _advance(p, dt) {
     if (!p.init) return;
     const want = p.want ?? 0.1;
@@ -285,6 +358,8 @@ export class NetMatch {
 
   // The owner's path at time t (sender clock) from the buffered samples → S; returns 0 interpolating, 1 holding across a
   // teleport, 2 extrapolating past the newest sample, 3 before the oldest.
+  // 【求路径】在发送方时间 t 处解出所有者路径到 S,返回模式:0=正常插值,1=跨传送保持(下一帧再 snap),
+  //   2=越过最新样本的外推,3=早于最旧样本。tp(传送计数器)不同即判定传送,不跨它做 Hermite 以免滑过整图
   _pathAt(buf, t, S) {
     let s0 = buf[0], s1 = null;
     for (let i = 0; i < buf.length - 1; i++) { if (buf[i].t <= t && buf[i + 1].t > t) { s0 = buf[i]; s1 = buf[i + 1]; break; } }
@@ -293,6 +368,7 @@ export class NetMatch {
     const last = buf[buf.length - 1];
     if (t < last.t) { copySample(s0, S); return 3; }
     // buffer ran dry: a short ballistic extrapolation along the last velocity, then hold
+    // 【弹道外推】缓冲见底:沿最后速度做最多 180ms 外推(空中再叠加重力),之后就保持不动 —— 宁停勿猜
     copySample(last, S);
     const e = Math.min(t - last.t, 0.18);
     if (e > 0) {
@@ -302,17 +378,20 @@ export class NetMatch {
     return 2;
   }
 
+  // 【采样一个远端 actor】在回放时刻求路径 → 处理传送切换 → 计算纠偏偏移量(临界阻尼收敛)→ 存到 n.cur 供 applyRemote
   _sample(a, t, dt) {
     const n = a.net, buf = n.buf;
     const peer = this._peer(a.owner);
     const tr = peer.tr;
     if (!buf.length || tr === undefined) return;
     // drop history older than what we might still need (last frame's moment must stay covered)
+    // 保留缓冲到 tr-0.25s 之前即可 —— 因为纠偏要重求上一帧时刻的路径,必须仍被覆盖
     while (buf.length > 2 && buf[1].t < tr - 0.25) buf.shift();
     const S = n.cur || (n.cur = blankSample());
     const mode = this._pathAt(buf, tr, S);
     if (mode === 2) this.stats.extrap++;
     let snapNow = false;
+    // 【传送】tp 变了直接切(重置纠偏),不做跨图滑动
     if (S.tp !== n.tp) { snapNow = true; n.tp = S.tp; this.stats.snaps++; }
     // Correction: the path itself is smooth (C1 Hermite through the owner's samples), so the only discontinuities are
     // new data rewriting a moment already shown — typically leaving an extrapolation. Measure exactly that (the path
@@ -322,12 +401,15 @@ export class NetMatch {
     if (n.handoff) {
       // a new owner (host migration): its path starts from where it adopted us, a little off what we drew — keep
       // drawing from here and let the offset settle
+      // 【所有权交接】新所有者从「收养我们的位置」起步,与我们所画略有出入:把差值并入偏移量让它慢慢消解
       n.handoff = false;
       if (n.prevRaw && n.has) { err.x += n.prevRaw.x - S.x; err.y += n.prevRaw.y - S.y; err.z += n.prevRaw.z - S.z; n.tp = S.tp; snapNow = false; }
       if (err.lengthSq() > 16) { err.set(0, 0, 0); ev.set(0, 0, 0); }
       n.has = true;
     } else if (snapNow || !n.has) { err.set(0, 0, 0); ev.set(0, 0, 0); n.has = true; }
     else if (n.prevRaw && n.prevT !== undefined) {
+      // 【纠偏测量】用「上一帧时刻」重求路径(现在的新数据),差值 = 新数据改写已显示时刻的量;>16m²(≈4m)
+      //   视为真正的位置重定位,直接清零偏移(显示位移);小差值并入偏移量平滑收敛
       this._pathAt(buf, n.prevT, _P);
       const jx = n.prevRaw.x - _P.x, jy = n.prevRaw.y - _P.y, jz = n.prevRaw.z - _P.z;
       const j2 = jx * jx + jy * jy + jz * jz;
@@ -336,6 +418,8 @@ export class NetMatch {
     }
     (n.prevRaw || (n.prevRaw = new THREE.Vector3())).set(S.x, S.y, S.z);
     n.prevT = tr;
+    // 【临界阻尼积分】ω=13 的二阶系统闭式解:位移与速度都平滑归零 —— 既无位置跳变也无速度踢腿。
+    //   足够小时归零,免得永远残留亚像素抖动
     if (err.x || err.y || err.z || ev.x || ev.y || ev.z) {
       const w = 13, k = Math.exp(-w * dt);
       for (const c of ['x', 'y', 'z']) { const x0 = err[c], v0 = ev[c], q = v0 + w * x0; err[c] = (x0 + q * dt) * k; ev[c] = (v0 - w * q * dt) * k; }
@@ -346,15 +430,20 @@ export class NetMatch {
   }
 
   /** Match.update → for remote actors instead of Actor.update: apply this frame's sample and run the animation. */
+  // 【应用远端样本】Match.update 对远端 actor 走这里**代替** Actor.update:把 _sample 得到的本帧样本
+  //   写进 actor,再由同一套 character 动画代码(_finishFrame)出帧 —— 远程与本地动画完全同源。
+  //   逐块:位置/朝向 → 状态位解码 → 血量/墨/大招 → 武器姿态 → 派生时刻(落地/变形音) → 重生隐藏
   applyRemote(a, dt) {
     const n = a.net;
     a.anim.time = G.time;
-    if (!n.ready) { a.character.root.visible = false; return; }
+    if (!n.ready) { a.character.root.visible = false; return; }   // 尚无首个样本:隐藏,避免出现在原点
     const S = n.cur;
     if (!a.alive) { a.respawnTimer -= dt; return; }
     // position = sampled path + decaying correction; velocity drives the gait
+    // 【位置】采样路径 + 尚未收敛的纠偏偏移;速度直接喂给步态
     a.pos.set(S.x + n.err.x, S.y + n.err.y, S.z + n.err.z);
     a.vel.set(S.vx, S.vy, S.vz);
+    // 【朝向】用最短角差解出转身速率 —— 供动画的甩身/倾斜弹簧使用
     const dy = angDiff(a.yaw, S.yaw);
     a.netTurnRate = dt > 0 ? dy / dt : 0;
     a.yaw = S.yaw;
@@ -362,6 +451,7 @@ export class NetMatch {
     const cp = Math.cos(a.aimPitch);
     a.aimDir.set(Math.sin(a.aimYaw) * cp, Math.sin(a.aimPitch), Math.cos(a.aimYaw) * cp);
     a.aimPoint.copy(a.pos).setY(a.pos.y + 1.2).addScaledVector(a.aimDir, 25);
+    // 【状态位解码】把一个整数 f 拆回各布尔/枚举(见 F)
     const f = S.f;
     const wasSquid = a.form === 'squid';
     a.form = f & F.squid ? 'squid' : 'kid';
@@ -371,6 +461,7 @@ export class NetMatch {
     a.groundTeam = f & F.gt2 ? 2 : f & F.gt1 ? 1 : 0;
     a.onEnemy = !!(f & F.enemy);
     if (a.climbing) { a.wallN.set(S.wx, S.wy, S.wz); a.anim.wallNormal.copy(a.wallN); }
+    // 【受击闪白】由血量突降触发;每帧衰减
     if (S.hp < a.hp - 0.5) a.hurtFlash = Math.min(1, a.hurtFlash + (a.hp - S.hp) / 60);
     a.hurtFlash = Math.max(0, a.hurtFlash - dt * 0.6);
     a.hp = S.hp; a.ink = S.ink; a.special = S.sp;
@@ -379,6 +470,8 @@ export class NetMatch {
     if (S.spx && SPECIAL_ORDER[S.spx - 1]) a.specialId = SPECIAL_ORDER[S.spx - 1];   // their loadout's special
     // a special: its owner's records run a ghost of it here (specials.js netGhost); the flag alone is the fallback, and a
     // ghost whose end never arrived goes when the flag has been off a moment
+    // 【大招】位标志驱动:开启时若无活动大招则起一个 net 幽灵(specials.js netGhost 重放);开了又停但幽灵未收到
+    //   结束记录时,过 0.6s 兜底 end(a,'net'),避免幽灵永不消失
     if (f & F.special) { n.spOff = 0; if (!a.specialActive) a.specialActive = { id: a.specialId || a.weapon.special, net: true }; }
     else if (a.specialActive?.ghost) { if ((n.spOff = (n.spOff || 0) + dt) > 0.6) G.specials?.end(a, 'net'); }
     else a.specialActive = null;
@@ -386,6 +479,7 @@ export class NetMatch {
     a.superJumpState = f & (F.sjCharge | F.sjFlight) ? (a.superJumpState || { phase: 'charge', net: true }) : null;
     if (a.superJumpState) a.superJumpState.phase = f & F.sjFlight ? 'flight' : 'charge';
     // weapon pose state (charge glow, roller drum, splatling spin, dualies lock …)
+    // 【武器姿态】蓄力/滚筒/连喷/双枪滑步等姿态标志与数值,从快照还原到 WeaponRunner
     const wr = a.weaponRunner;
     wr.charging = !!(f & F.charging); wr.charge = S.ch;
     wr.rolling = !!(f & F.rolling); wr.streaming = !!(f & F.streaming); wr.burstFrac = f & F.streaming ? S.ch : 0;
@@ -397,6 +491,7 @@ export class NetMatch {
     // kit weapons' own pose state (a mitts leap / wall cling, a brolly canopy …): netState → netApply
     MAIN_KITS[a.weapon?.kind]?.netApply?.(wr, S.ks | 0, dt);
     // derived moments the owner produced inline: landings (squash, splash, sound) and squid in / out
+    // 【落地派生】所有者原本内联产生的落地时刻(压缩/溅墨/音效),客端由 prevGrounded→grounded 边沿重建
     if (!n.prevGrounded && a.grounded && !a.superJumpState) {
       const speed = Math.max(0, -n.prevVy);
       a.landSpeed = speed; a.landT = 0;
@@ -406,6 +501,7 @@ export class NetMatch {
         emit('actor:land', { actor: a, speed, surface: a.groundTeam, pos: a.pos.clone() });
       }
     }
+    // 【人形⇄鱿鱼变形】由 form 边沿触发变形音效与敌方墨上的出水爆花
     if (wasSquid !== (a.form === 'squid') && a._nearCamera()) {
       G.audio?.play(a.form === 'squid' ? 'squid_in' : 'squid_out', { pos: a.pos, volume: 0.5 });
       if (a.form === 'squid' && a.groundTeam === 1) G.fx?.burst(_v2.copy(a.pos).setY(a.pos.y + 0.1), UPV, a.color, { count: 8, speed: 2.5, size: 0.07 });
@@ -417,6 +513,7 @@ export class NetMatch {
       n.sjRing += dt;
       if (n.sjRing > 0.12) { n.sjRing = 0; G.fx?.ring(_v2.copy(n.sjTo).setY(n.sjTo.y + 0.05), UPV, a.color, { radius: 1.6, life: 0.5 }); }
     }
+    // 【重生隐藏】重生后路径仍停留在旧生命,直到 tp 递增(新生命首个样本到达)才显形 —— 避免在死亡点闪现再滑向出生台
     if (n.spawnPending) {
       if (S.tp === n.deathTp) { a.character.root.visible = false; return; }
       n.spawnPending = false;
@@ -425,10 +522,12 @@ export class NetMatch {
       G.fx?.spawnFlash(_v2.set(a.pos.x, pad.y, a.pos.z), a.color);
     }
     a.character.root.visible = true;
-    a._finishFrame(dt);
+    a._finishFrame(dt);   // 复用的本地动画代码:远程与本地同源出帧
   }
 
   // continuous weapon sounds for remote actors (the owner's loops live in its WeaponRunner)
+  // 【远端循环音】所有者端的循环音在其 WeaponRunner 里;这里为远端 actor 按姿态重建(蓄力音、连喷转轴、滚筒)。
+  //   want(key,on,snd,set) 统一处理「该响但没响→起/该停→停/在响→更新位置音量音高」,只对近处且存活者发声
   _voices(dt) {
     for (const a of this.byNid.values()) {
       if (!a.remote) continue;
@@ -446,9 +545,12 @@ export class NetMatch {
       want('roll', wr.rolling, 'roll', (h) => { const s = Math.min(1, Math.hypot(a.vel.x, a.vel.z) / (a.weapon.rollSpeed || 5)); h.set({ pos: a.pos, volume: s * 0.45, pitch: 0.6 + s }); });
     }
   }
+  // 【停循环音】销毁 actor / 死亡 / 交给他人时,停掉并清空它所有循环音句柄
   _stopLoops(a) { const L = a.net?.loops; if (L) for (const k in L) { L[k]?.stop?.(0.05); L[k] = null; } }
 
   // ---- event playback -----------------------------------------------------------------------------------------------
+  // 【回放事件】为每个发送方取「时间戳 ≤ 该发送方回放时刻 tr」的事件,批量抽出并逐个 _play。
+  //   事件由发送方时间戳定序,所以射击/落地等与它对应的快照在**同一时刻**显现 —— 这是同源的关键
   _playEvents() {
     for (const [id, p] of this.peers) {
       if (!p.events.length || p.tr === undefined) continue;
@@ -461,8 +563,11 @@ export class NetMatch {
     }
   }
 
+  // 【单条事件分发】按类型 e[1] 分派:s=涂地、p=投射物、b=炸弹、tr=动画触发、ev=转发事件、k=kit 世界物、
+  //   bm=Boss 招式、z=区域控制、bc=crablet 爆发。收尾处 emit(name, e) 让本地其它系统也能响应
   _play(from, e) {
     switch (e[1]) {
+      // 【涂地重放】applying 置位期间 recSplat 短路,避免把重放本身又记一遍形成回环;带种子精确重现同一个墨块
       case 's': {
         this.applying = true;
         const st = e[9] || e[10] || e[11] ? _v2.set(e[9], e[10], e[11]) : undefined;
@@ -473,8 +578,10 @@ export class NetMatch {
         this.applying = false;
         break;
       }
+      // 投射物/炸弹:交给 G.projectiles 做纯视觉重放(ghost 不涂地、不伤害)
       case 'p': { const a = this.byNid.get(e[2]); if (a) G.projectiles?.ghostProjectile(a, e); break; }
       case 'b': { const a = this.byNid.get(e[2]); if (a) G.projectiles?.ghostBomb(a, e[3], e[4], e[5], e[6], e[7], e[8], e[9]); break; }
+      // 动画触发:调到 character 的 _netTrig(原始 trigger,不再记录),death 之后只放行 'spawn'
       case 'tr': {
         const a = this.byNid.get(e[2]);
         if (!a || !a.remote || !a.alive && e[3] !== 'spawn') break;
@@ -482,7 +589,9 @@ export class NetMatch {
         this._trigSideEffects(a, e[3]);
         break;
       }
+      // 转发事件(射击/落地/大招……):包一层再分发到 _playEvent
       case 'ev': this._playEvent(e[2], e[3]); break;
+      // kit 世界物:找对应 kit 的 ghost 重放;mute 期间它即便涂地也只会是视觉(幽灵不涂地)
       case 'k': {
         const a = this.byNid.get(e[2]);
         const K = MAIN_KITS[e[3]] || SUB_KITS[e[3]] || KIT_GHOSTS[e[3]];
@@ -491,9 +600,9 @@ export class NetMatch {
         try { K.ghost(a, e[4]); } catch (err) { console.warn('[inkwave] kit ghost', e[3], err); } finally { this.mute--; }
         break;
       }
-      case 'bm': this.match?.boss?.onMove(e[2]); break;
-      case 'z': this.match?.zones?.netEvent(e[2]); break;
-      case 'bc': { const b = this.match?.boss; if (b && !b.sim) b._crabBurst(e[2], e[3], e[4], e[5], !!e[6]); break; }
+      case 'bm': this.match?.boss?.onMove(e[2]); break;              // Boss 招式记录
+      case 'z': this.match?.zones?.netEvent(e[2]); break;            // 区域控制判定 + 计数快照
+      case 'bc': { const b = this.match?.boss; if (b && !b.sim) b._crabBurst(e[2], e[3], e[4], e[5], !!e[6]); break; }   // crablet 爆发
     }
   }
 
@@ -501,14 +610,18 @@ export class NetMatch {
   // Same playback clock as the host's squidkids: Hermite through its snapshots, the boss clock read off them, one-shot
   // state from the snapshot already passed. Corrections (a rewritten extrapolation, a host handoff) settle on the same
   // critically damped offset as remote actors — the boss never pops.
+  // 【Boss 采样(客端)】与房主的 squidkids 共用同一条回放时钟:穿过其快照的 Hermite、从快照读出 Boss 时钟 bt、
+  //   一次性状态取「已经过去的那个快照」。纠偏与远端 actor 同一套临界阻尼(ω=13) —— Boss 绝不跳变
   _sampleBoss(dt) {
     const b = this.match?.boss;
-    if (!b || b.sim) return;
+    if (!b || b.sim) return;                                 // 仅客端(房主自己模拟 Boss)
     const n = b.net, buf = n.buf, peer = this.peers.get(this.s.hostId);
     if (!buf.length || !peer || peer.tr === undefined) return;
     const tr = peer.tr;
     while (buf.length > 2 && buf[1].t < tr - 0.3) buf.shift();
     const S = n.cur || (n.cur = {});
+    // 【求值器】在时刻 t 解出 Boss 路径到 O:两样本间三次 Hermite(位置用速度作切线),yaw/bt 线性;
+    //   无样本区间则做最多 150ms 的直线外推(bt 也顺延)
     const at = (t, O) => {
       let s0 = buf[0], s1 = null;
       for (let i = 0; i < buf.length - 1; i++) if (buf[i].t <= t && buf[i + 1].t > t) { s0 = buf[i]; s1 = buf[i + 1]; break; }
@@ -530,9 +643,11 @@ export class NetMatch {
     };
     at(tr, S);
     // discrete state + crablets from the snapshot already passed (crablets interpolate by id)
+    // 【离散状态】hp/phase/招式/动画等不做插值,直接取「已经过去的那个快照」s0(避免用未来的状态造成提前反应)
     const s0 = S.s0, s1 = S.s1;
     for (const k of ['hp', 'phase', 'f', 'mv', 'anim', 'turn', 'fl', 'wk', 'killer', 'maxHp', 'move']) S[k] = s0[k];
     if (s1 && s1.move) S.move = s1.move;
+    // 【crablet 插值】按 id 配对 s0/s1 两帧的小怪做位置/朝向插值,只在新一帧有的按 id 出现
     const cr = S.crabs || (S.crabs = []);
     cr.length = 0;
     for (const c of s0.crabs || []) {
@@ -550,10 +665,12 @@ export class NetMatch {
       at(n.prevT, P);
       const jx = n.prevRaw.x - P.x, jz = n.prevRaw.z - P.z, j2 = jx * jx + jz * jz;
       // (a charging boss covers 4 m in a quarter second: only a genuinely lost thread — > 12 m — is shown as a cut)
+      // 【纠偏】Boss 冲刺 1/4 秒可跑 4m,故阈值取 12m(144 m²)才判定为真正丢失的轨迹而直接切换
       if (j2 > 1e-6 && j2 < 144) { err.x += jx; err.z += jz; } else if (j2 >= 144) { err.set(0, 0, 0); ev.set(0, 0, 0); }
     }
     (n.prevRaw || (n.prevRaw = new THREE.Vector3())).set(S.x, S.y, S.z);
     n.prevT = tr;
+    // 【临界阻尼收敛】与远端 actor 同一公式(ω=13):平滑消解偏移,不跳变不颠簸
     if (err.x || err.y || err.z || ev.x || ev.y || ev.z) {
       const w = 13, k = Math.exp(-w * dt);
       for (const c of ['x', 'y', 'z']) { const x0 = err[c], v0 = ev[c], q = v0 + w * x0; err[c] = (x0 + q * dt) * k; ev[c] = (v0 - w * q * dt) * k; }
@@ -563,6 +680,7 @@ export class NetMatch {
     n.ready = true;
   }
 
+  // 【触发的附带音】某些动画触发本身要发声(flick 甩滚筒、slosh 泼墨),仅近处播放
   _trigSideEffects(a, name) {
     if (!a._nearCamera()) return;
     const pos = a.pos;
@@ -570,6 +688,7 @@ export class NetMatch {
     else if (name === 'slosh') G.audio?.play('slosh_throw', { pos, volume: 0.55 });
   }
 
+  // 【回放转发事件】把包里的向量/actor 还原(unpackEvent),对远端 actor 施加音效/粒子/命中;末尾 emit 让本地系统响应
   _playEvent(name, d) {
     const e = unpackEvent(d, this);
     if (!e) return;
@@ -600,6 +719,8 @@ export class NetMatch {
     emit(name, e);
   }
 
+  // 【远端被击倒】受害者所有者收到 'hit' 后由其本地判定死亡路径;清空其缓冲、隐藏角色、记下死亡时的 tp。
+  //   若攻击者是自己(本地),补发 'hit' 事件带 killed:true —— 本地只发过预测命中,需正式确认
   _remoteSplat(victim, attacker, cause) {
     if (!victim || !victim.alive) return;
     victim.alive = false; victim.hp = 0;
@@ -613,13 +734,14 @@ export class NetMatch {
     if (attacker) attacker.stats.splats++;
     victim.character.setVisible(false);
     victim.net.buf.length = 0; victim.net.ready = false; victim.net.has = false;
-    victim.net.deathTp = victim.net.tp;
+    victim.net.deathTp = victim.net.tp;   // 记下旧生命的 tp;新生命首个样本的 tp 与之不同即解除隐藏
     // your own kills: the confirm sting / marker (the hit that did it was only a prediction)
     if (attacker && !attacker.remote) emit('hit', { attacker, victim, damage: 0, killed: true, weaponId: cause });
   }
 
   // Alive again, but the path still holds the old life until the owner's first post-respawn sample is due: stay hidden
   // until then (applyRemote), so the squidkid never flashes up where it was splatted and slides to the pad.
+  // 【远端重生】恢复存活/血量,但置 spawnPending:保持隐藏,直到新生命首个样本(tp 变化)到达才显形
   _remoteRespawn(a) {
     a.alive = true; a.hp = PLAYER.hp; a.invuln = PLAYER.spawnInvuln;
     a.respawnTimer = 0;
@@ -627,6 +749,8 @@ export class NetMatch {
   }
 
   // ---- hits (victim's owner) ------------------------------------------------------------------------------------------
+  // 【施加命中】受害者所有者处理他人的 'hit':校验目标是自己拥有且存活、队手合法后,走与本地相同的 applyHit。
+  //   置 _applyingHit 让 shouldApplyHit 返回 'local',避免此时再转发出去形成回环
   _hit(d) {
     const v = this.byNid.get(d.v), atk = this.byNid.get(d.a);
     if (!v || v.remote || !v.alive || !atk || atk.team === v.team) return;
@@ -636,23 +760,27 @@ export class NetMatch {
   }
 
   // ---- host clock / state / result --------------------------------------------------------------------------------------
+  // 【时钟对齐】房主每 0.5s 广播一次比赛时钟;仅当双方都在 playing 且偏差 >0.2s 时半速追赶,避免小抖动乱晃
   _hostClock([state, time]) {
     const m = this.match;
     if (!m || this.isHost) return;
     if (state === 'playing' && m.state === 'playing' && Math.abs(m.time - time) > 0.2) m.time += (time - m.time) * 0.5;
   }
+  // 【状态对齐】房主的状态帧:设时钟 + setState(judge 由客端自己触发,不吃房主的)
   _hostState(d) {
     const m = this.match;
     if (!m || this.isHost) return;
     if (typeof d.t === 'number') m.time = d.t;
     if (d.s !== m.state && d.s !== 'judge') m.setState(d.s);
   }
+  // 【房主发结算】把最终结果 + 每个 actor 的权威计数(涂地/击杀/死亡/Boss 伤害/弱点命中)一次性广播
   sendResult(result) {
     if (!this.isHost) return;
     this._sendNow({ k: 'res', cov: result.coverage, win: result.winner, mode: result.mode, bo: result.boss,
       ...(result.mode === 'zones' ? { zc: result.counts, zp: result.penalty, zr: result.reason, zo: result.overtime ? 1 : 0, zl: result.log } : {}),
       st: this.match.actors.map((a) => [a.nid, Math.round(a.stats.turf), a.stats.splats, a.stats.deaths, Math.round(a.stats.bossDmg || 0), a.stats.weakHits || 0]) });
   }
+  // 【客端收结算】用房主的权威计数覆盖本地 stats,构造 m.result,并切到 judge 展示结算
   _result(d) {
     const m = this.match;
     if (!m || this.isHost) return;
@@ -663,11 +791,14 @@ export class NetMatch {
         : { coverage: d.cov, winner: d.win };
     m.setState('judge');
   }
+  // 【房主发结束】结算展示完毕,通知所有人回到大厅
   sendEnd() { if (this.isHost) this._sendNow({ k: 'end' }); }
 
   // ---- players leaving: their squidkid carries on as a bot, run by the host -------------------------------------------
   // (a humans-only stage — config noBots, Cargo Terminal — removes it instead: it vanishes in an ink burst on every
   // screen; the clock and judge still move with the host)
+  // 【玩家离开】其 squidkid 转交房主收养为 Bot(人类专用图则直接移除)。主机迁移时,比赛跟随者状态与时钟重置,
+  //   Boss 也随主机走(新房主 adopt,其余人 handoff)
   onLeave(id, hostChanged) {
     if (!this.match) return;
     const drop = mapNoBots(this.cfg.map);
@@ -683,12 +814,15 @@ export class NetMatch {
     if (hostChanged && this.match.boss) { if (this.isHost) this.match.boss.adopt(); else this.match.boss.handoff(); }
   }
 
+  // 【移除 actor】从 byNid 摘除、停循环音、从 Match 删掉(人类专用图上、或掉线不应转 Bot 的情形)
   _remove(a) {
     this.byNid.delete(a.nid);
     this._stopLoops(a);
     this.match.removeActor(a);
   }
 
+  // 【收养为 Bot】玩家离开后由(新)房主在本机接管:从「所有人最后看到的位置」原地续跑,绝不跳变。
+  //   续用已有的 netTp(避免客端误判传送)、清空缓冲,重生中的则就地完成重生
   _adopt(a) {
     // continue from exactly where it was drawn — no pop
     a.remote = false;
@@ -706,8 +840,11 @@ export class NetMatch {
     a.net.err.set(0, 0, 0); a.net.errV?.set(0, 0, 0);   // a.pos is already where it was drawn (path + offset)
   }
 
+  // 【预留】显式所有权转移(当前未使用)
   _ownership() { /* reserved: explicit transfers */ }
 
+  // 【命中归属裁决】幽灵从不伤人。正在施加他人命中时按本地处理(防回环);攻击者是远端 → 丢弃(那是幽灵);
+  //   受害者是远端 → 发给其所有者;否则本地 —— 即「射击者客户端判定、受害者所有者施加」
   shouldApplyHit(attacker, victim) {
     // ghosts never hurt anyone; the shooter's client decides, the victim's owner applies
     if (this._applyingHit) return 'local';
@@ -718,8 +855,12 @@ export class NetMatch {
 }
 
 // ---------------------------------------------------------------------------------------------- packing helpers
+// 【打包/解包】把 Actor 压成短数组(降带宽)、再还原成样本(供插值)。actor 短数组与样本字段一一对应,
+//   索引含义见 packActor/unpackActor 注释 —— 两侧必须同步修改
 const UPV = new THREE.Vector3(0, 1, 0);
 
+// 【打包 actor → 短数组】位图 f 汇总状态,后面跟坐标(2 位小数)、角度(3 位)、量化后的 hp/ink/special/涂地、
+//   tp、墙法线、kit 姿态 ks、大招索引 spx、大招状态 spst。数量级:~25 个数/actor/tick,20Hz 下带宽可控
 function packActor(a) {
   const wr = a.weaponRunner;
   let f = 0;
@@ -750,19 +891,26 @@ function packActor(a) {
     MAIN_KITS[a.weapon?.kind]?.netState?.(wr) | 0, SPECIAL_ORDER.indexOf(a.specialId) + 1, specialNetState(a)];
 }
 
+// 【解包 → 样本】把 packActor 的短数组还原成带字段名的样本对象;t 用发送方时间戳 ts(插值/回放的时间基准)。
+//   注意 spx = 大招索引(第 22 位),specialId 由 SPECIAL_ORDER[spx-1] 还原
 function unpackActor(s, ts) {
   return { t: ts, x: s[1], y: s[2], z: s[3], vx: s[4], vy: s[5], vz: s[6], yaw: s[7], aimYaw: s[8], aimPitch: s[9], f: s[10], hp: s[11], ink: s[12], sp: s[13], ch: s[14], turf: s[15], tp: s[16], wx: s[17], wy: s[18], wz: s[19], lock: s[20], ks: s[21] || 0, spx: s[22] || 0, spst: s[23] || 0 };
 }
 
+// 【空白样本】插值目标对象的初值(yaw 0、hp/ink 100、wz=1);复用它可避免每帧分配
 function blankSample() { return { t: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, aimYaw: 0, aimPitch: 0, f: 0, hp: 100, ink: 100, sp: 0, ch: 0, turf: 0, tp: 0, wx: 0, wy: 0, wz: 1, lock: 0, ks: 0, spx: 0, spst: 0 }; }
+// 【拷贝样本】把 s 的所有字段写入 o(保持对象身份),用于 hold/extrap 分支
 function copySample(s, o) { for (const k in s) o[k] = s[k]; return o; }
 
 // cubic Hermite on position (owner velocities as tangents), linear on velocity/angles, discrete state from the earlier
+// 【分位数】对样本数组排序后取第 q 分位(非插值);用于从迟到量/tick 间隔里估稳健的延迟需求
 function quantile(arr, q) {
   const s = arr.slice().sort((x, y) => x - y);
   return s.length ? s[Math.min(s.length - 1, Math.floor(q * s.length))] : 0;
 }
 
+// 【三次 Hermite】位置用两端速度作切线(C1 连续,tick 边界无拐角);速度/角度线性;离散状态取较早样本(a)。
+//   垂直特判:若任一端 grounded,结果被夹在两端 y 之间(±0.02),避免落地速度突跳把曲线甩穿地板
 function hermite(a, b, t, o) {
   const d = Math.max(1e-3, b.t - a.t), u = Math.min(1, Math.max(0, (t - a.t) / d));
   const u2 = u * u, u3 = u2 * u;
@@ -786,12 +934,14 @@ function hermite(a, b, t, o) {
 }
 
 // trigger payloads: numbers, plain objects, or the dualies hand objects (valueOf)
+// 【触发载荷打包】trigger 的数据可能是数字、普通对象或带 valueOf 的双枪手部对象;只保留数字字段(3 位小数)
 function packTrig(d) {
   if (d == null) return 0;
   if (typeof d === 'number') return r3(d);
   if (typeof d === 'object') { const o = {}; for (const k in d) { const v = d[k]; if (typeof v === 'number') o[k] = r3(v); } return o; }
   return 0;
 }
+// 【触发载荷解包】还原为数字或对象,并补回 valueOf(amp→数值、hand→1),让双枪手部对象在动画里可当数用
 function unpackTrig(d) {
   if (!d) return undefined;
   if (typeof d === 'number') return d;
@@ -800,6 +950,8 @@ function unpackTrig(d) {
 }
 
 // event payloads: actors → {n: nid}, vectors → [x, y, z]
+// 【事件打包】actor → {n: nid}(只传编号,接收端按 nid 查回 actor)、Vector3 → [x,y,z]、数字 3 位小数、
+//   字符串/布尔原样;其余类型丢弃
 function packEvent(e) {
   const o = {};
   for (const k in e) {
@@ -811,6 +963,7 @@ function packEvent(e) {
   }
   return o;
 }
+// 【事件解包】把 {n:nid}→byNid 查回的 actor、[x,y,z]→Vector3 还原;nm 是本 NetMatch 实例(提供 byNid)
 function unpackEvent(d, nm) {
   const e = {};
   for (const k in d) {

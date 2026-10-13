@@ -1,3 +1,18 @@
+// ============================================================================
+// 【中文导读】actor.js —— 角色行为体(Actor):每只"乌贼人"的"大脑"
+//   · 定位:控制器(玩家输入、机器人 AI)只写 intent(移动/跳跃/变身/开火等意图)与
+//     瞄准角;位置、速度、形态、墨水、生命、大招状态全部归 Actor 管,玩家与机器人
+//     走完全相同的规则。
+//   · 渲染驱动:每帧 _finishFrame 把状态填进 this.anim(AnimState),再调
+//     ch.update(dt, a) —— 这是唯一驱动 Character(外观与骨骼动画)的入口;
+//     字段含义见本文件 _finishFrame 处的字段表,背景见 docs/ASSETS-CHARACTER.zh-CN.md §4。
+//   · 物理:运动学角色控制器(脚 = 平面足迹接地探测,身体 = 抬高的胶囊体推墙);
+//     骨骼与挂点由 Character 的 root 承载,见 docs/ASSETS-RIG.zh-CN.md §3.2。
+//   · 事件源:character.trigger 与 emit 发出 jump、land、hit、spawn、climb、form 等
+//     事件,供 FX、音频、HUD 各流消费(docs/EVENTS.md)。
+//   · 大招:specialActive 期间跳过常规 weaponRunner,由 _updateSpecial 或
+//     G.specials 接管身体。
+// ============================================================================
 // Actor: one squidkid (local player or bot). Owns movement physics, ink/health/special state and drives its
 // Character visual. Controllers (player input / bot AI) only write `intent` + aim; everything else lives here so
 // bots and the player play by exactly the same rules.
@@ -23,7 +38,8 @@ const DOWN = new THREE.Vector3(0, -1, 0);
 const TAU = Math.PI * 2;
 const _ZERO_MOVE = Object.freeze(new THREE.Vector3());   // move input while planted after a dualies dodge roll
 
-// Local-player gamepad rumble (subtle, scaled by settings.rumble, no-op without a pad).
+// 【手柄震动】本地玩家的手柄震动反馈(轻微,按 settings.rumble 缩放;无手柄时为空操作)。
+// 机器人和远端代理不震,只有 isLocal 的真实玩家才震。
 export function rumble(actor, strong, weak, ms) {
   if (!actor || !actor.isLocal || actor.isBot) return;
   G.input?.rumble?.(strong, weak, ms);
@@ -31,10 +47,14 @@ export function rumble(actor, strong, weak, ms) {
 
 const _dodgeV = new THREE.Vector3();
 export class Actor {
+  // 【构造】建立一只乌贼人的全部运行状态:队伍、武器/副武器/大招配置、状态效果、
+  // 位姿与速度、意图输入槽、接地探测用的接触缓冲、外观(Character)与武器执行器。
+  // 注意:构造时只是装配,真正上场由 spawnAt 完成(它会 reset 并落位)。
   constructor({ team, name, weapon = 'shooter', sub = null, special = null, isLocal = false, isBot = false, style = { hair: 0, skin: 0 }, slot = 0, CharacterClass }) {
     this.team = team; this.name = name; this.isLocal = isLocal; this.isBot = isBot; this.slot = slot;
     this.weaponId = weapon;
     this.weapon = WEAPONS[weapon];
+    // 副武器/大招:显式传入优先,否则继承武器表里的默认配置;ID 非法时回退兜底值
     this.subId = SUBS[sub] ? sub : (this.weapon.sub || 'bomb');
     this.sub = SUBS[this.subId];
     this.specialId = SPECIALS[special] ? special : (this.weapon.special || 'slam');
@@ -46,6 +66,8 @@ export class Actor {
     this.yaw = 0; this.aimYaw = 0; this.aimPitch = 0;
     this.aimDir = new THREE.Vector3(0, 0, 1);
     this.aimPoint = new THREE.Vector3();
+    // intent:控制器(输入、AI)每帧写入的意图槽,是本类唯一的外部输入;
+    // _prevIntent 用来在 update 里做"按下沿/松开沿"检测(跳缓冲、副武器松开投掷等)
     this.intent = { move: new THREE.Vector3(), jump: false, squid: false, fire: false, sub: false, special: false };
     this._prevIntent = { fire: false, sub: false, jump: false, special: false, squid: false };
     this._squidPressT = -1; this._firePressT = -1;
@@ -63,6 +85,8 @@ export class Actor {
     this.character.onEvent = (name, data) => emit('actor:' + name, { actor: this, surface: this.groundTeam, ...(data || {}) });
     this.weaponRunner = new WeaponRunner(this);
     this.stats = { turf: 0, splats: 0, deaths: 0, specials: 0 };
+    // anim:AnimState —— 每帧传给 Character.update(dt, a) 的动画/表现状态包;
+    // 全部字段在 _finishFrame 处统一填充,见那里的字段表
     this.anim = {
       time: 0, speed: 0, localMove: { x: 0, z: 0 }, grounded: true, vy: 0, aimPitch: 0, firing: false, charge: 0, rolling: false,
       form: 'kid', wallNormal: new THREE.Vector3(), ink: 1, lowInk: false, special: 0, invuln: false,
@@ -71,9 +95,12 @@ export class Actor {
     this.reset();
   }
 
+  // 【队伍颜色】本队与敌队配色(取自全局 G.teamColors)。
   get color() { return G.teamColors[this.team]; }
   get enemyTeam() { return 1 - this.team; }
 
+  // 【重置】把角色恢复到"刚出生"的全套默认值(生命、墨水、形态、各种计时器)。
+  // 重生(spawnAt/respawn)与换装备时都会调用;注意它不清 status 之外的统计,不清 pos。
   reset() {
     this.alive = true;
     this.hp = PLAYER.hp;
@@ -113,23 +140,31 @@ export class Actor {
     this.weaponRunner?.reset();
   }
 
+  // 【换副武器】热切换副武器(换装备/拾取时),同步通知外观换投掷物模型。
   setSub(id) {
     if (!SUBS[id]) return;
     this.subId = id; this.sub = SUBS[id];
     this.character.setSub?.(SUBS[id].kind);
   }
 
+  // 【换主武器】热切换主武器:更新配置、外观模型,并重置武器执行器
+  // (清空蓄力、连射、翻滚等一切进行中状态)。
   setWeapon(id) {
     this.weaponId = id; this.weapon = WEAPONS[id];
     this.character.setWeapon(id);
     this.weaponRunner.reset();
   }
+  // 【换大招】只记大招 ID(非法 ID 忽略);是否可用由充能决定。
   setSpecial(id) { if (SPECIALS[id]) this.specialId = id; }
 
+  // 【大招充能】代价、进度比例(0..1,clamp 截断)、是否就绪(充能满且没有大招在进行)。
   specialCost() { return this.weapon.specialCost; }
   specialFrac() { return clamp(this.special / this.specialCost(), 0, 1); }
   specialReady() { return this.special >= this.specialCost() && !this.specialActive; }
 
+  // 【涂墨入账】武器/副武器命中地面时按涂墨面积入账:统计 turf、发 'turf' 事件,
+  // 并按面积给大招充能(大招激活期间不涨 —— 槽已花掉);从"未满"涨到"满"的那一刻发
+  // 'special:ready' 事件(大招就绪提示音/HUD 靠它)。
   addTurf(area) {
     if (area <= 0) return;
     this.stats.turf += area;

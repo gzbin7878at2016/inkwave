@@ -1,3 +1,24 @@
+// ============================================================================
+// 【中文导读】菜单美术工具箱：颁奖图章、段位徽章、墨迹擦除（Canvas）、设置项实时预览、以及各种程序化 SVG 素材。
+// ----------------------------------------------------------------------------
+// 【模块定位】DOM/SVG/Canvas 混合的"UI 素材库"，被 menus.js 大量 import。不持有游戏状态，纯函数式生成 + 少数
+//   有生命周期的类（InkWipe 用 Canvas 2D 画全屏墨迹转场；preview* 每个返回 { el, set, tick } 的动画小组件）。
+// 【核心机制】
+//   ① 程序化 SVG：图标用内联 <svg> 字符串 + currentColor（填充随 CSS 变量变色）。尺寸/坐标是手写的设计常量。
+//   ② InkWipe（Canvas 2D）：WIPE={mid:380,total:1000,revealAt:500}（ms）——0→mid 墨从下往上盖屏、mid→revealAt
+//      满屏保留、revealAt→total 墨从上往下揭开。三种 mode：full（全屏大擦除）/light（快速斜扫，装饰）/
+//      fade（纯淡入淡出）。每帧用 Path2D 重画，dpr 上限 1.5，rAF 驱动 + 安全定时器防标签页被挂起卡死。
+//   ③ client 坐标系：clip-path 类生成器（sweepClip/splatClip）返回 `path('…')` 字符串，供元素自身 px 空间使用；
+//      命令结构只依赖 seed，逐帧只变坐标 → 便宜、无布局读取。
+//   ④ 字体/颜色约定：文字字体由 CSS 类（iw-display=Titan One、Rubik 等）决定；队伍墨色用 CSS 变量 --a/--b，
+//      段位色 --rk，splashtag 用 --tc/--tc-dark/--tc-light/--tc-deep。
+// 【关键约定】所有导出都是可复用的纯生成器或小组件；魔术数字（画布尺寸、viewBox、调色板、位移）多为设计稿常量。
+//   性能：预览组件每帧只改 transform/opacity/属性；InkWipe 每帧 clearRect + 重画（它本身就是全屏动画，属例外）。
+// 【配套阅读】docs/ARCHITECTURE.zh-CN.md、docs/CONTRACTS.zh-CN.md；兄弟文件 src/ui/menus.js（宿主）、
+//   src/ui/ui-icons.js（图标原语）、src/ui/ui-util.js（splatShape/splatSVG/rng/shade 等底层）。
+// 【建议阅读顺序】computeAwards/computeBossAwards（颁奖逻辑）→ inkBurst → InkWipe → createPreview（预览分发）
+//   → 末尾的 sweepClip/tagArt 等素材生成器。
+// ============================================================================
 // INKWAVE UI — menu art + helpers.
 //   computeAwards(players, { win, percents }) → { byPlayer: [[award…]…], match: [tag…] }
 //   computeBossAwards(players) → same shape for Boss Battle (damage, weak hits, crablets, survival)
@@ -11,14 +32,19 @@ import {
 import { SQUID, SQUID_PATH, GLYPHS, WEAPON_ICONS, SPLAT_ICON, SPECIAL_ICONS, mouseGlyph, padGlyph, keycap } from './ui-icons.js';
 import { t, LANGUAGES } from '../i18n/strings.js';
 
-const K = '#15121c';
-const TAU = Math.PI * 2;
+const K = '#15121c';            // 【描边黑】所有图标默认深色描边/深色填充
+const TAU = Math.PI * 2;        // 【2π】圆周常量
+// 【SVG 包装】把 body 包进带 iw-ico 类与 viewBox 的 <svg>（默认 64×64 视口）。
 const svg = (body, vb = '0 0 64 64', cls = '') => `<svg class="iw-ico ${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
+// 【smoothstep】[a,b]→0..1 平滑过渡（注意此处未 clamp，与 diorama.js 的版本不同）。
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 
 // ================================================================================== award icons (silhouettes)
+// 【颁奖图标区】一组 64×64 的剪影图标；填充用 currentColor，`.iw-ico-cut` 的笔画/填充取奖牌的浅金属色（CSS 里设）。
 // currentColor = the glyph; `.iw-ico-cut` strokes/fills take the medal's light metal colour (set in CSS).
+// 【墨点核心图形】用 splatShape 一次性生成墨点轮廓+droplets，供 splat 奖章图标复用（IIFE 只算一次）。
 const splatCore = (() => { const s = splatShape(32, 32, 17, { seed: 11, arms: 8, drops: 4, armLen: 0.5 }); return `<path d="${s.core}"/>${s.drops.map((d) => `<circle cx="${d.x}" cy="${d.y}" r="${Math.max(2.4, d.r)}"/>`).join('')}`; })();
+// 【图标表】奖章/成就图标：星、王冠、滚筒、墨点、盾、浮标、笔刷、秒表、浪、暴击、力量、锚。
 export const AWARD_ICONS = {
   star: svg(`<path d="M32 5 L39.6 22.9 L58.6 24.6 L44.2 37.3 L48.4 56.2 L32 46.4 L15.6 56.2 L19.8 37.3 L5.4 24.6 L24.4 22.9 Z" fill="currentColor" stroke="currentColor" stroke-width="4.5" stroke-linejoin="round"/>
     <path class="iw-ico-cut" d="M25.5 27.5 L29.8 26.9" fill="none" stroke-width="3.6" stroke-linecap="round"/>`),
@@ -54,9 +80,10 @@ export const AWARD_ICONS = {
     <path d="M32 17 V56 M20 26 H44" stroke="currentColor" stroke-width="6.5" stroke-linecap="round"/>
     <path d="M8 36 Q10 54 32 57 Q54 54 56 36 L48 42 M8 36 L16 42" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`),
 };
-export const awardIcon = (id) => AWARD_ICONS[id] || AWARD_ICONS.star;
+export const awardIcon = (id) => AWARD_ICONS[id] || AWARD_ICONS.star;   // 【取图标】未知 id 回退到 star
 
 // ================================================================================== awards
+// 【奖章定义区】涂地对战（AWARDS）与 Boss 合作（BOSS_AWARDS）两套奖章：label/metal（金/银/铜）/icon/desc。
 export const AWARDS = {
   mvp: { label: 'MVP', metal: 'gold', icon: 'star', desc: 'Best all-round score on the winning team' },
   turf: { label: 'TURF KING', metal: 'gold', icon: 'crown', desc: 'Most turf inked in the match' },
@@ -66,8 +93,9 @@ export const AWARDS = {
   survivor: { label: 'SURVIVOR', metal: 'bronze', icon: 'buoy', desc: 'Splatted the fewest times' },
   pure: { label: 'PURE PAINTER', metal: 'bronze', icon: 'brush', desc: 'Top-3 turf without splatting anyone' },
 };
-const AWARD_ORDER = ['mvp', 'turf', 'splats', 'inker', 'untouchable', 'survivor', 'pure'];
+const AWARD_ORDER = ['mvp', 'turf', 'splats', 'inker', 'untouchable', 'survivor', 'pure'];   // 【展示顺序】排序用
 // boss mode (co-op: one squad, no team split — the MVP is given win or lose)
+// 【Boss 奖章】合作模式无阵营之分，MVP 不论胜负都给。
 export const BOSS_AWARDS = {
   mvp: { label: 'MVP', metal: 'gold', icon: 'star', desc: 'Best all-round score against HULLBREAKER' },
   heavy: { label: 'HEAVY HITTER', metal: 'gold', icon: 'pow', desc: 'Dealt the most damage to the boss' },
@@ -77,8 +105,10 @@ export const BOSS_AWARDS = {
   survivor: { label: 'SURVIVOR', metal: 'bronze', icon: 'buoy', desc: 'Splatted the fewest times' },
   cleaner: { label: 'CLEANUP CREW', metal: 'bronze', icon: 'roller', desc: 'Painted over the most boss ink' },
 };
-const BOSS_ORDER = ['mvp', 'heavy', 'crit', 'brood', 'unsinkable', 'survivor', 'cleaner'];
+const BOSS_ORDER = ['mvp', 'heavy', 'crit', 'brood', 'unsinkable', 'survivor', 'cleaner'];   // 【展示顺序】
 /** Boss-mode awards from the final stats: players [{ damage, weakHits, splats, deaths, turf, isSelf }]. */
+// 【Boss 颁奖】只依据终局统计（无时间线数据）：伤害/弱点命中/小蟹/涂地/存活打各类奖，最后按加权分给 MVP；
+//   返回 { byPlayer, match }，byPlayer 按 BOSS_ORDER 排序。
 export function computeBossAwards(players = []) {
   const P = players.map((p, i) => ({ i, dmg: Math.max(0, +p.damage || 0), weak: Math.max(0, +p.weakHits || 0), splats: Math.max(0, +p.splats || 0), deaths: Math.max(0, +p.deaths || 0), turf: Math.max(0, +p.turf || 0) }));
   const by = P.map(() => []);
@@ -105,6 +135,7 @@ export function computeBossAwards(players = []) {
   }
   return { byPlayer: by, match: [] };
 }
+// 【比赛标签】整场比赛的特别标注：险胜（margin<3）、碾压（margin>=20）。
 export const MATCH_TAGS = {
   close: { id: 'close', label: 'PHOTO FINISH', icon: 'stopwatch' },
   landslide: { id: 'landslide', label: 'LANDSLIDE', icon: 'wave' },
@@ -114,6 +145,7 @@ export const MATCH_TAGS = {
  * Derives awards honestly from the final stats only (no timeline data exists, so no "comeback" style awards).
  * players: [{ name, team, weapon, turf, splats, deaths, isSelf }] (ResultsData order). percents: 0..100 or 0..1.
  */
+// 【涂地颁奖】只从终局统计诚实推导（无时间线，故无"翻盘"类奖）。涂地王/MVP 等；percents 支持 0..100 或 0..1。
 export function computeAwards(players = [], { win = true, percents = [50, 50] } = {}) {
   const P = players.map((p, i) => ({ i, team: p.team | 0, turf: Math.max(0, +p.turf || 0), splats: Math.max(0, +p.splats || 0), deaths: Math.max(0, +p.deaths || 0), isSelf: !!p.isSelf }));
   const by = P.map(() => []);
@@ -169,6 +201,7 @@ export function computeAwards(players = [], { win = true, percents = [50, 50] } 
 }
 
 /** Big stamped medal for the local player's awards. */
+// 【大徽章 HTML】本地玩家奖章：墨迹爆发底 + 绶带 + 圆盘脸（awardIcon）+ 标签 + 数值；返回 HTML 串。
 export function medalMarkup(aw, seed = 1) {
   return `<div class="iw-medal is-${aw.metal}" data-aw="${aw.id}" title="${t(aw.label)} — ${t(aw.desc)}">
     <span class="iw-medal__burst">${splatSVG({ seed: 60 + seed * 7, cls: 'iw-fself', r: 54, arms: 9, drops: 5 })}</span>
@@ -179,11 +212,13 @@ export function medalMarkup(aw, seed = 1) {
   </div>`;
 }
 /** Small award chip for the team tables. */
+// 【小徽章元素】队伍表格里用的小奖章 chip（h() 生成，title 含 label—desc）。
 export function awardBadge(aw) {
   return h('span', { class: `iw-aw is-${aw.metal}`, 'data-aw': aw.id, title: `${t(aw.label)} — ${t(aw.desc)}`, html: awardIcon(aw.icon) });
 }
 
 // ================================================================================== ranks
+// 【段位区】五档段位（lv 为起始等级），rankTier 把等级映射到档位索引，rankEmblem 画盾形徽章（按档位加菱形 pip）。
 export const RANK_TIERS = [
   { lv: 1, name: 'Fresh Recruit', cls: 'is-t0' },
   { lv: 5, name: 'Turf Scrapper', cls: 'is-t1' },
@@ -191,8 +226,9 @@ export const RANK_TIERS = [
   { lv: 20, name: 'Splat Veteran', cls: 'is-t3' },
   { lv: 30, name: 'Tide Legend', cls: 'is-t4' },
 ];
-export const rankTier = (level) => RANK_TIERS.reduce((acc, r, i) => (level >= r.lv ? i : acc), 0);
+export const rankTier = (level) => RANK_TIERS.reduce((acc, r, i) => (level >= r.lv ? i : acc), 0);   // 【等级→档位】
 /** Shield emblem with one pip per tier (tier 0..4). Colour via CSS (--rk). */
+// 【段位徽章】盾形 emblem，档位越高 pip 越多（tier 0..4 → 1..5 个菱形）；颜色由 CSS 变量 --rk 控制。
 export function rankEmblem(tier = 0) {
   const n = clamp(tier | 0, 0, 4) + 1;
   const pips = Array.from({ length: n }, (_, i) => {
@@ -205,8 +241,10 @@ export function rankEmblem(tier = 0) {
 }
 
 // ================================================================================== DOM ink burst
+// 【墨爆区】一次性小爆炸：在 parent 的 (x,y) 处喷墨点+飞溅液滴，life 毫秒后自动移除。burstSeed 自增保证每次形态不同。
 let burstSeed = 7;
 /** Spawns a short-lived ink splash (splat + flying droplets) at client coords inside `parent` (absolute, top-left at 0,0). */
+// 【墨爆】坐标是 parent 内绝对像素（左上角为 0,0）；count 个液滴按角度均布+抖动，--dx/--dy 用 --u 单位缩放。
 export function inkBurst(parent, { x = 0, y = 0, color = 'var(--a)', count = 12, dist = 6, size = 1, splat = true, ring = false, life = 1100 } = {}) {
   if (!parent || !parent.isConnected) return null;
   const R = rng((burstSeed += 7919));
@@ -227,7 +265,9 @@ export function inkBurst(parent, { x = 0, y = 0, color = 'var(--a)', count = 12,
 }
 
 // ================================================================================== ink wipe (canvas)
+// 【墨迹擦除区（Canvas 2D）】全屏转场：墨从边沿长出"舌头"状液滴。三个 tongue* 往 Path2D 里画手绘轮廓。
 /** Tongue hanging DOWN from an edge point (x, y): half-width w at the base, length L, round bulb radius b. Clockwise. */
+// 【向下舌】从边点 (x,y) 向下的墨滴：根部半宽 w、长 L、末端圆球半径 b；用贝塞尔 + arc 画成顺时针闭合轮廓。
 function tongueDown(ctx, x, y, w, L, b) {
   const tip = y + L;
   ctx.moveTo(x + w, y - 3);
@@ -237,6 +277,7 @@ function tongueDown(ctx, x, y, w, L, b) {
   ctx.closePath();
 }
 /** Streak reaching UP from an edge point (x, y). Clockwise. */
+// 【向上条】从边点向上伸出的墨条（揭开阶段用），末端圆角半径 c。
 function tongueUp(ctx, x, y, w, L, c) {
   const tip = y - L;
   ctx.moveTo(x - w, y + 3);
@@ -246,6 +287,7 @@ function tongueUp(ctx, x, y, w, L, c) {
   ctx.closePath();
 }
 /** Tongue reaching sideways (dir = +1 right / -1 left) from an edge point, for the light sweep. */
+// 【横向舌】从边点向左右伸出的墨滴（light 斜扫用），dir=+1 右 / -1 左。
 function tongueSide(ctx, x, y, w, L, c, dir) {
   const tip = x + L * dir;
   ctx.moveTo(x - 3 * dir, y - w);
@@ -255,9 +297,12 @@ function tongueSide(ctx, x, y, w, L, c, dir) {
   ctx.closePath();
 }
 
+// 【擦除时间轴】毫秒：0→mid 墨盖上、mid→revealAt 满屏、revealAt→total 揭开（full 模式用）。
 export const WIPE = { mid: 380, total: 1000, revealAt: 500 };
 
+// 【InkWipe 类】全屏墨迹转场控制器。host 内建 canvas + 中心标记；run() 指定参数启动，rAF 逐帧重画。
 export class InkWipe {
+  // 【构造函数】建 canvas 与中心 squid 标记、取 2D context；isFrozen 回调用于暂停推进（如游戏暂停）。
   constructor(host, { isFrozen } = {}) {
     this.host = host;
     this.cv = h('canvas', { class: 'iw-wipe__cv' });
@@ -270,9 +315,10 @@ export class InkWipe {
     this._frame = this._frame.bind(this);
     this._pat = null;
   }
-  get busy() { return !!(this.r && this.r.mode !== 'light'); }
-  get running() { return !!this.r; }
+  get busy() { return !!(this.r && this.r.mode !== 'light'); }   // 【忙碌】full/fade 进行中（light 不算，因其交换是即时的）
+  get running() { return !!this.r; }                              // 【运行中】
 
+  // 【点阵 pattern】懒建一个 16×16 的白点 canvas pattern，供墨面叠加半透明网点纹理（只建一次并缓存）。
   _pattern() {
     if (this._pat) return this._pat;
     const c = document.createElement('canvas'); c.width = c.height = 16;
@@ -282,6 +328,8 @@ export class InkWipe {
     return this._pat;
   }
 
+  // 【启动】a/b 为两种墨色；mode 见上方导读；dir 方向；onMid 在遮满瞬间回调（可做界面切换），onDone 结束回调。
+  //   若已有在跑的，先 _finish 收尾（绝不丢一次待切屏）；尺寸按 dpr 上限 1.5 重设并清缓存。
   run({ a = '#ff8a14', b = '#2f5bff', mode = 'full', dir = 1, onMid = null, onDone = null } = {}) {
     if (this.r) this._finish();                      // never lose a pending screen swap
     const W = Math.max(1, innerWidth), H = Math.max(1, innerHeight);
@@ -309,6 +357,7 @@ export class InkWipe {
     if (!r.midDone && r.midAt <= 0) { r.midDone = true; safeCall(r.onMid); }
   }
 
+  // 【full 准备工作】用种子随机器预生成两色墨滴/条纹/飞沫/溅点/残留点——所有随机量在开始时一次算好，逐帧不再 random。
   _setupFull(r) {
     const { W, H, R } = r;
     const drips = (n, lenK) => Array.from({ length: n }, (_, i) => ({
@@ -327,6 +376,7 @@ export class InkWipe {
     r.residue = Array.from({ length: 12 }, () => ({ x: R() * W, y: H * (0.05 + R() * 0.85), r: H * (0.006 + R() * 0.014), on: -1 }));
   }
 
+  // 【light 准备工作】为斜扫模式预生成侧向舌头组与飞沫（少量）。
   _setupLight(r) {
     const { W, H, R } = r;
     const tongues = (n, lenK) => Array.from({ length: n }, (_, i) => ({ y: ((i + 0.2 + R() * 0.6) / n) * H, w: H * (0.014 + R() * 0.014), L: W * (0.03 + R() * 0.07) * lenK, wob: R() * TAU })).map((d) => ({ ...d, c: d.w * (0.5 + R() * 0.2) }));
@@ -334,6 +384,7 @@ export class InkWipe {
     r.drops = Array.from({ length: 16 }, () => ({ y0: R() * H, p0: 0.1 + R() * 0.6, vx: 1.6 + R() * 1.6, vy: (R() - 0.5) * 0.5, r: H * (0.004 + R() * 0.008), c: R() < 0.7 ? 'a' : 'b' }));
   }
 
+  // 【每帧】推进时间（isFrozen 时 dt=0），到 midAt 回调 onMid、到 dur 结束；按 mode 分派到 _draw*，异常则收尾。
   _frame(now) {
     const r = this.r;
     if (!r) return;
@@ -352,6 +403,7 @@ export class InkWipe {
     } catch (e) { console.error('[ui] wipe', e); this._finish(); }
   }
 
+  // 【收尾】停 rAF/安全定时器、补一次 onMid（若没触发过）、清屏、移除 is-run 类、调 onDone。可重入安全。
   _finish() {
     const r = this.r;
     if (!r) return;
@@ -364,14 +416,16 @@ export class InkWipe {
     safeCall(r.onDone);
   }
 
-  cancel() { if (this.r) this._finish(); }
+  cancel() { if (this.r) this._finish(); }   // 【取消】有在跑的就收尾
 
+  // 【波动边沿】在基准线 base 上叠加三层不同频率/相位/速度的正弦，得到随 x 与时间起伏的墨边高度——墨迹看起来在流动。
   _edge(r, x, base, ph) {
     const k = x / r.W, t = r.t, H = r.H;
     return base + H * (0.021 * Math.sin(k * 6.3 + ph[0] + t * 0.0058) + 0.013 * Math.sin(k * 14.1 + ph[1] - t * 0.0087) + 0.006 * Math.sin(k * 29.7 + ph[2] + t * 0.0125));
   }
 
   /** Sheet whose visible edge is its bottom (covering phase). */
+  // 【下盖墨面】可见边在底部的墨块（覆盖阶段）：沿波动边沿铺满上方，边沿挂 drips 舌头；画粗描边+填充+可选网点。
   _sheetDown(r, base, ph, drips, lenAt, fill, dark, pattern) {
     const ctx = this.ctx, W = r.W, step = Math.max(10, W / 120);
     const p = new Path2D();
@@ -390,6 +444,7 @@ export class InkWipe {
   }
 
   /** Sheet whose visible edge is its top (revealing phase). */
+  // 【上揭墨面】可见边在顶部的墨块（揭开阶段）：沿波动边沿铺满下方，边沿向上伸 streaks；与 _sheetDown 镜像。
   _sheetUp(r, base, ph, streaks, lenAt, fill, dark, pattern) {
     const ctx = this.ctx, W = r.W, H = r.H, step = Math.max(10, W / 120);
     const p = new Path2D();

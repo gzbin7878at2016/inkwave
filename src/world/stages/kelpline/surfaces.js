@@ -1,3 +1,24 @@
+// ============================================================================
+// 【中文导读】Kelpline(海带线码头)关卡的专属表面材质——texlib 的"材质层"声明,占用本关预留的 3 个 PATTERN 槽位。
+// ----------------------------------------------------------------------------
+// 【模块定位】
+//   本文件是 Kelpline"四件套"中的 surfaces。SURF 是"名字→槽位号"的映射,layout.js 里写 pattern: SURF.<name> 时
+//   引用的就是这个;SURFACES 是 texlib.js 在启动时(createLevelMaterial)遍历消费的数据表,为每个槽位生成一份 GLSL
+//   材质。它被 src/world/levelMaterial.js 通过 STAGE_SURFACES/STAGE_SLOTS(见 ../surfaces.js 聚合)取用。
+// 【核心机制】
+//   • 每个条目 { slot, name, onWall?, onTop?, mat }:slot 号唯一;name 是调试/查询用的名字;onWall 指定"该槽位材质
+//     被用在竖直面时"要换成的另一个 PATTERN(顶面/侧面自动换态);onTop 同理管顶面。
+//   • mat 遵循 texlib.js 的 MATERIALS 契约:prep 字符串里最多声明 4 个 fbm(f[0..3])与 2 个 worley(w[0..1])噪声请求
+//     (带频率/octave/seed),surf 是 GLSL 片段,负责写 s.alb(rgb=本层自有颜色、a=应用方块色的覆盖度)、s.h(高度,米)、
+//     s.rough(粗糙度)、s.metal(金属度)、s.cav(空腔遮蔽)。
+// 【关键约定】
+//   • 米制单位:surf 里的 P 是"米"面上的坐标(scale 控制每 repeat 的米数),高度 s.h 也是米。
+//   • 三层全是 mask 层:albedo.a = 方块自身的颜色被应用的范围(被 tint 的部分),albedo.rgb = 本层自带的颜色
+//     (沥青密封胶、锈、裸钢……),于是 layout.js 只需给每块方块一个色调色,材质自动叠加污渍/磨损细节。
+//   • onWall/onTop 的槽位映射发生在 levelMaterial.js:只有可上墨的"墙/顶"面会触发二次兑换。
+// 【配套阅读】docs/ASSETS.zh-CN.md(材质生产线)、src/world/texlib.js(MATERIALS 契约)、src/world/levelMaterial.js、
+//   以及同目录 layout.js / murals.js / props.js。
+// ============================================================================
 // Kelpline Terminal — stage surface materials (texlib layers), on this stage's three reserved PATTERN slots.
 //
 // SURF maps our names to the slot ids (use them in layout.js as `pattern: SURF.<name>`). SURFACES lists what each slot
@@ -14,17 +35,28 @@
 //            weld + bolt rows on the repeat border, rust spots — catwalk landings, hatch-cover rims, the spawn stair
 import { PATTERN } from '../../mapkit.js';
 
+// 【SURF 名字→槽位】给 layout.js 用:pattern: SURF.tarmac / SURF.quay / SURF.chequer。
+//   31/32/33 是本关在 src/world/stages/surfaces.js 的 STAGE_SLOTS 里预留的三个全局唯一槽位号。
 export const SURF = { tarmac: 31, quay: 32, chequer: 33 };
 
+// 【映射模式常量】传给 mat.mode(见 texlib.js):GRID=网格/块状拼接,HEX=六边形 worley 细胞拼接。影响 P 如何重映射为
+//   单元 uv,进而决定下面 surf GLSL 里怎么算格缝/细胞。
 const GRID = 1, HEX = 2;
 
+// 【SURFACES 数据表】本关三个材质槽的声明。texlib 启动时逐个消费:建噪音、拼 GLSL、写 uniform。顺序无依赖,但每个
+//   slot 必须唯一且落在本关预留的槽位区间内。
 export const SURFACES = [
+  // 【槽 31 tarmac】堆场/车道的沥青路面。onWall 指定:当此材质被用在竖直面(墙)时改用 PATTERN.concrete
+  //   (沥青不该出现在墙面上)。mat 字段:detail 细节强度、scale 每 repeat 米数、tint 允许方块色调、mask 是遮罩层、
+  //   alpha 无、mode=HEX 六边形拼接、sym 对称种子、hr[heightRange] 高度扰动范围(米)、ao 遮蔽强度。
   {
     slot: 31, name: 'tarmac', onWall: PATTERN.concrete,
     mat: {
       detail: 0.6, scale: 4.0, tint: true, mask: true, alpha: false, mode: HEX, sym: 7, hr: [-0.004, 0.0012], ao: 0.45,
       prep: `f[0] = FB(uv, ivec2(3), 4, 0.5, 3101u); f[1] = FB(uv, ivec2(8), 3, 0.5, 3107u); f[2] = FB(uv, ivec2(48), 2, 0.5, 3109u);
   f[3] = FB(uv, ivec2(4), 3, 0.55, 3113u); w[0] = WO(uv, ivec2(190), 1.0, 3119u); w[1] = WO(uv, ivec2(7), 0.9, 3121u);`,
+      // 【GLSL surf:tarmac】密级配磨耗层——骨料嵌在沥青胶结料中(被 tint 的部分),叠加密封的裂缝网(黑色发亮的
+      //   沥青带,本层自有色)、油滴、橡胶擦痕,以及被车流磨亮的斑块。所有输出写进 s.alb/s.a/s.h/s.rough/s.cav。
       surf: /* glsl */`
   // dense-graded wearing course: aggregate set in binder (the tinted part), a sealed crack network (glossy black
   // bitumen bands, own colour), oil drips, rubber scuffs, lighter traffic-polished patches
@@ -57,6 +89,7 @@ export const SURFACES = [
   s.cav = (1.0 - 0.25 * (1.0 - stone)) * (1.0 - 0.4 * crack);`,
     },
   },
+  // 【槽 32 quay】码头前沿混凝土;竖面同样换成 PATTERN.concrete。mode=GRID 网格拼接(下面 GLSL 用 2.4m 板块)。
   {
     slot: 32, name: 'quay', onWall: PATTERN.concrete,
     mat: {
@@ -64,6 +97,8 @@ export const SURFACES = [
       prep: `f[0] = FB(uv, ivec2(4), 5, 0.55, 3201u); f[1] = FB(uv, ivec2(12), 3, 0.5, 3203u);
   f[2] = FB(uv, ivec2(4, 150), 1, 0.5, 3209u); f[3] = FB(uv, ivec2(150, 4), 1, 0.5, 3211u);
   w[0] = WO(uv, ivec2(160), 1.0, 3217u); w[1] = WO(uv, ivec2(6), 0.85, 3221u);`,
+      // 【GLSL surf:quay】2.4m 现浇码头板(每 repeat 2×2 块):锯缝+黑色密封胶填缝、磨圆的棱角、逐块交替方向的
+      //   扫帚纹、逐块的色差;车流磨掉浮浆处露出骨料,掉落索具留下的锈迹渗流、发丝裂纹、橡胶擦痕。
       surf: /* glsl */`
   // 2.4 m cast apron slabs (2 x 2 per repeat): sawn joints filled with dark sealant, rounded arrises, a broom finish
   // whose direction alternates slab to slab, per-slab tone, exposed aggregate where traffic wore the laitance off,
@@ -102,12 +137,15 @@ export const SURFACES = [
   s.cav = mix(1.0, 0.5, inJ) * (1.0 - 0.35 * crack) * (1.0 - 0.1 * grime);`,
     },
   },
+  // 【槽 33 chequer】花纹钢板(走道踏板);竖面换成 PATTERN.hullpaint(船体漆)。这是本关唯一会写 s.metal 的层。
   {
     slot: 33, name: 'chequer', onWall: PATTERN.hullpaint,
     mat: {
       detail: 0.3, scale: 1.2, tint: true, mask: true, alpha: false, mode: GRID, sym: 3, hr: [-0.004, 0.003], ao: 0.3,
       prep: `f[0] = FB(uv, ivec2(3), 4, 0.5, 3301u); f[1] = FB(uv, ivec2(24), 2, 0.5, 3303u); f[2] = FB(uv, ivec2(6), 3, 0.5, 3307u);
   f[3] = FB(uv, ivec2(10), 3, 0.5, 3309u); w[0] = WO(uv, ivec2(8), 0.9, 3311u);`,
+      // 【GLSL surf:chequer】涂装的钢制花纹板:40mm 网格上交替 ±45° 的凸花(防滑凸块),repeat 边界上一道对接焊
+      //   缝加一排螺栓;行走线上的凸花顶面被磨掉漆露出裸钢(本层自有色),另有锈斑。会写 s.metal 让磨光处反光。
       surf: /* glsl */`
   // painted steel chequer plate: raised lugs on a 40 mm grid alternating ±45°, a butt-welded seam with a bolt row on
   // the repeat border, paint worn off the lug tops along the walking lines (bare steel, own colour), rust spots

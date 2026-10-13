@@ -1,3 +1,21 @@
+// ============================================================================
+// 【中文导读】Crossroads Market —— 关卡壁画/招牌贴花,写进全局 mural 图集
+// ----------------------------------------------------------------------------
+// 【模块定位】世界层贴花子系统(见 src/world/murals.js)的关卡供给端。关卡加载时,画家 murals.js
+//   调用本文件 drawMurals(),把本关的"幽灵招牌(ghost signs)"与地面马赛克门槛画进共享的 2048×1008
+//   画布区域 R,并返回这批 mural 条的元数据(id、像素矩形、放置方式)。这些贴花随后被烘进图集,在
+//   墙面上以贴花方式渲染——不增加几何、不占 draw call 增量。
+// 【核心机制】drawMurals(g, R, kit):g 是 Canvas2D 上下文,R = { x, y, w, h }(像素,本关专属区域),
+//   kit 提供字体构造器(font/fontB)。返回 out 数组,每条:
+//     { id, x, y, w, h, m:[faceW,faceH] }                        贴花按面原点等比铺,faceW×faceH 米
+//     { id, x, y, w, h, place:[x0,xLen,y0,yLen], fx:[weather,chip] } 显式放置(见 murals.js 头注释)
+//   fx 缺省 [0.85, 1],控制墙面斑驳透出程度/贴花被缺角切蚀的程度。
+// 【关键约定】米制;R 的像素矩形只在本关区域内落笔(不得越界到别的关卡区);id 是全局唯一的 mural id,
+//   本关占 4..7。所有绘制用固定 seed 的确定性随机(rnd),保证每次加载贴花一致(镜像两半必须一致)。
+//   place 的 u/v 是"面空间"米(见 layout.js/levelMaterial.js 的采样规则)。术语保留英文。
+// 【配套阅读】src/world/murals.js(图集与绘制契约)、docs/ASSETS.zh-CN.md、docs/INK.zh-CN.md;
+//   兄弟文件 ./hall.js(马赛克门槛落在其地面上)、./layout.js。
+// ============================================================================
 // Crossroads Market — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
 // drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
@@ -12,17 +30,22 @@
 //   5  FISH · OYSTERS · ICE — the fishmonger's upper wall over Fish Lane (5 × 5.4 m face, ashlar)
 //   6  TEA · COFFEE · COCOA — the tall row's gable facing the hall (4.5 × 5.8 m face, render)
 //   7  mosaic threshold band across each gable entrance of the (turned) hall floor, in 4.5 m halves
+// 【id 别名】本关占用的四个 mural id:4 市场招牌、5 鱼铺招牌、6 茶馆招牌、7 大厅地面马赛克门槛带。
 export const MURAL = { market: 4, fish: 5, tea: 6, mosaic: 7 };
 
+// 【入口】关卡加载时由全局 murals.js 调用:在区域 R 内绘制本关全部贴花,返回 out 元数据表。
 export function drawMurals(g, R, kit) {
   const { fontB, font } = kit;
   const X0 = R.x, Y0 = R.y;
+  // 【颜料色板】褪色广告用的奶油/砖红/墨绿/藏青/金/墨色。
   const CREAM = '#efe4c8', RED = '#a8453a', GREEN = '#3f6b55', NAVY = '#2b3a58', GOLD = '#c9a24e', INK = '#3a2e26';
   const out = [];
 
   // faded paint: draw at partial alpha, then knock holes of "lost paint" through it in a seeded pattern
+  // 【确定性随机】线性同余(seed*16807 % 2147483647)保证每次加载得到相同贴花——镜像两半必须一致。
   let seed = 7;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  // 【做旧(磨损)】把已画内容用 destination-out 打洞:随机椭圆(剥落) + 竖向雨痕(流挂),模拟老广告褪色缺墨。
   function wear(x, y, w, h, n = 90, maxR = 10) {
     g.save(); g.globalCompositeOperation = 'destination-out';
     for (let i = 0; i < n; i++) { g.globalAlpha = 0.25 + rnd() * 0.5; g.beginPath(); g.ellipse(x + rnd() * w, y + rnd() * h, 2 + rnd() * maxR, 1 + rnd() * maxR * 0.5, rnd() * 3, 0, Math.PI * 2); g.fill(); }
@@ -30,6 +53,7 @@ export function drawMurals(g, R, kit) {
     for (let i = 0; i < 26; i++) { g.globalAlpha = 0.12 + rnd() * 0.2; const sx = x + rnd() * w; g.fillRect(sx, y + rnd() * h * 0.3, 2 + rnd() * 4, h * (0.3 + rnd() * 0.6)); }
     g.restore();
   }
+  // 【文字】居中绘字;maxW 超出时逐 2px 缩字号直到放下(px 下限 10);stroke 非空则先描边再填。
   function text(s, cx, cy, px, fill, f = fontB, maxW = 9999, stroke = null, sw = 0) {
     g.font = f(px); let p = px;
     while (g.measureText(s).width > maxW && p > 10) { p -= 2; g.font = f(p); }
@@ -37,16 +61,20 @@ export function drawMurals(g, R, kit) {
     if (stroke) { g.lineJoin = 'round'; g.lineWidth = sw; g.strokeStyle = stroke; g.strokeText(s, cx, cy); }
     g.fillStyle = fill; g.fillText(s, cx, cy);
   }
+  // 【画框】填底色 + 双层描边(bg 底 / border 双线),构成招牌外框。
   function panel(x, y, w, h, bg, border) {
     g.fillStyle = bg; g.fillRect(x, y, w, h);
     g.strokeStyle = border; g.lineWidth = 8; g.strokeRect(x + 10, y + 10, w - 20, h - 20);
     g.lineWidth = 3; g.strokeRect(x + 22, y + 22, w - 44, h - 44);
   }
+  // 【缎带】画一条两端带燕尾缺口的横缎带,用于 EST. 1887 之类铭牌。
   function ribbon(cx, cy, w, h, fill) {
     g.fillStyle = fill;
     g.beginPath(); g.moveTo(cx - w / 2, cy - h / 2); g.lineTo(cx + w / 2, cy - h / 2); g.lineTo(cx + w / 2 + h * 0.4, cy); g.lineTo(cx + w / 2, cy + h / 2); g.lineTo(cx - w / 2, cy + h / 2); g.lineTo(cx - w / 2 - h * 0.4, cy); g.closePath(); g.fill();
   }
 
+  // 【4 市场招牌】CROSSROADS MARKET · EST 1887:奶油底砖红框,含 MARKET 墨绿横条、缎带铭牌、
+  //   一栏果蔬(fruits/produce)与篮子;画完做旧。place 把 3.8×4.6 m 贴到面原点 (0.35,0.55)。
   // ---- 4: CROSSROADS MARKET (480 × 580 px, 3.8 × 4.6 m)
   {
     const x = X0, y = Y0, w = 480, h = 580;
@@ -69,6 +97,8 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: MURAL.market, x, y, w, h, place: [0.35, 3.8, 0.55, 4.6], fx: [1, 1] });
   }
+  // 【5 鱼铺招牌】FISH · OYSTERS · ICE:奶白底藏青框,大字 FISH 带描边、一条大鱼(含尾/眼/鳞)、
+  //   底部砖红条;画完做旧。
   // ---- 5: FISH · OYSTERS · ICE (500 × 520 px, 4.2 × 4.4 m)
   {
     const x = X0 + 500, y = Y0, w = 500, h = 520;
@@ -90,6 +120,8 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: MURAL.fish, x, y, w, h, place: [0.4, 4.2, 0.7, 4.4], fx: [1, 1] });
   }
+  // 【6 茶馆招牌】CAFE DES HALLES · TEA/COFFEE/COCOA:米底酒红框,一只茶杯+杯柄+蒸汽曲线,
+  //   底部金线;画完做旧。
   // ---- 6: TEA · COFFEE · COCOA (480 × 580 px, 3.8 × 4.6 m)
   {
     const x = X0 + 1020, y = Y0, w = 480, h = 580;
@@ -111,6 +143,9 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: MURAL.tea, x, y, w, h, place: [0.35, 3.8, 0.55, 4.6], fx: [1, 1] });
   }
+  // 【7 大厅地面马赛克门槛带】黑/奶油/陶土三色马赛克条:回字纹(Greek key)边 + 一排玫瑰花饰(rosettes),
+  //   横铺在市场街入口处。刻意做成旋转对称——大厅随电车轨旋转,两侧门槛各取半条。
+  //   整条 1024×96 px = 9×0.85 m;导出时 w:w/2 让它只覆盖半侧(place 长度 4.5 m),fx=[0.5,0.2] 弱化磨损。
   // ---- 7: mosaic threshold on the hall floor: a band of tesserae (black / cream / terracotta) — a Greek key border
   // around a row of rosettes, laid across the Market Street entrance (rotationally symmetric; 1024 × 96 px, 9 × 0.85 m)
   {

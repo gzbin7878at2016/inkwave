@@ -1,3 +1,28 @@
+// ============================================================================
+// 【中文导读】Saltpan Basin 关卡的表面材质定义：把「盐壳 / 干裂泥 / 木栈板」三张程序化纹理
+//             注册到 texlib 为本关卡预留的三个 PATTERN slot（34/35/36），供 layout.js 引用。
+// ----------------------------------------------------------------------------
+// 【模块定位】四件套中最底层：surfaces.js（本文件，定义材质）→ layout.js（pattern: SURF.x 引用）
+//   → props.js / murals.js 在其上做装饰。调用链：../index.js 收集本文件的 SURFACES，交给
+//   texlib 在 boot 期各生成一层（layer）；stage 槽位由 STAGE_SLOTS 预留（本关卡 [34,35,36]），
+//   ../index.js 会校验 slot 与 STAGE_SURFACES 一致，不符则告警。
+// 【核心机制】
+//   · SURF 是「可读名字 → slot id」的映射，layout.js 里写 pattern: SURF.mud 即用 35 号槽。
+//   · 每个 SURFACES 条目 = { slot, name, onWall?, onTop?, mat }：
+//       mat     —— 一份 texlib 材质（字段含义见文件头英文注释：detail/scale/tint/mask/alpha/mode/
+//                  sym/hr/ao + prep/surf —— 两段 GLSL，可用 texlib 的 GEN_COMMON 全部助手）。
+//                  在 boot 期烘焙成独立纹理层，运行期不再分配。
+//       onWall  —— 该槽"竖直面"改用什么 PATTERN id（默认用本槽）；本关卡 mud 的竖面换成 36 (timber)。
+//       onTop   —— 该槽"顶面"改用什么 PATTERN id（默认用本槽）。
+//   · 未使用的槽位回退到 concrete。
+//   · 全部纹理程序化生成：GLSL 里用噪声/坐标直接合成盐晶、裂纹、木纹，无需外部贴图。
+// 【关键约定】
+//   · 米制；纹理按世界坐标 (P/uv) 平铺，故 scale 决定"几米一循环"。mode: GRID 表示格状排布。
+//   · onWall/onTop 覆盖机制让同一块地形在顶面与竖面呈现不同材质（盐池底=盐壳、池壁=木护岸）。
+//   · 约定「涂墨遮罩」：mat 的 mask 让方块固有色充当"墨水遮罩"，tint 让固有色染进纹理。
+// 【配套阅读】../index.js（STAGE_SLOTS/SURFACES 校验）、docs/ASSETS.zh-CN.md、docs/INK.zh-CN.md、
+//             ../../texlib.js（MATERIALS 字段与 GEN_COMMON 助手）、同目录 layout.js。
+// ============================================================================
 // Saltpan Basin — stage surface materials (texlib layers), on this stage's three reserved PATTERN slots.
 //
 // SURF maps your names to the slot ids; use them in layout.js as `pattern: SURF.<name>`. SURFACES lists what each
@@ -14,14 +39,23 @@
 //   mud     sun-baked tidal clay on the dykes and yards: curled shrinkage-crack plates, salt bloom in the cracks.
 //           Its vertical faces are the timber revetments that line every pan (onWall → timber)
 //   timber  bleached boardwalk timber: 200 mm silvered boards, dark gaps, salt crusted along the joints, rusty nails
+// 【SURF：名字 → slot】salt=盐壳池底(34)、mud=干裂泥堤(35)、timber=漂白木栈板(36)。
+//   layout.js 的 mud()/pan()/wood() 预设即引用这三个名字。
 export const SURF = { salt: 34, mud: 35, timber: 36 };
 
+// 【mode 常量】1 = GRID（格状排布）；此处给个可读名字，避免魔数。另见 texlib：0 plain / 1 grid / 2 hex。
 const GRID = 1;
 
+// 【SURFACES：三张表面材质】按 slot 升序给出，../index.js 会收集烘焙。
 export const SURFACES = [
   {
+    // slot 34 saltcrust：结晶盐池底——多边形盐壳板块 + 抬起的晶脊，浅处露出粉色盐水，
+    // 盐水是图层自身色（glossy）；盐壳吃方块固有色当涂墨遮罩。
     slot: 34, name: 'saltcrust',
     mat: {
+      // detail=细节强度、scale=世界坐标缩放(米/循环)、tint=固有色染色、mask=固有色作墨水遮罩、
+      // alpha=false(不透明)、mode=GRID、sym=7(对称量)、hr=高度范围[-0.005,0.003]、ao=0.35。
+      // prep 预置 f[0..2]（不同尺度的 FB 噪声）与 w[0..1]（WO 波噪声，用于板块边界扰动）。
       detail: 0.45, scale: 3.2, tint: true, mask: true, alpha: false, mode: GRID, sym: 7, hr: [-0.005, 0.003], ao: 0.35,
       prep: `f[0] = FB(uv, ivec2(3), 4, 0.55, 811u); f[1] = FB(uv, ivec2(12), 3, 0.5, 821u); f[2] = FB(uv, ivec2(48), 3, 0.5, 827u);
   vec2 wq = uv + 0.012 * vec2(sin(TAU * (3.0 * uv.y + 2.0 * uv.x)), sin(TAU * (3.0 * uv.x - 2.0 * uv.y) + 1.1));
@@ -66,8 +100,13 @@ export const SURFACES = [
     },
   },
   {
+    // slot 35 drymud：晒裂潮泥——0.4 m 收缩裂纹板块（裂宽 8–20 mm、板缘上翘漂白）、次级细裂纹、
+    //   粉砂颗粒、潮湿暗斑；裂缝及其沿线结盐霜（图层白色）；裂底暗（图层色）、偶有贝壳碎片。
+    //   onWall:36 让它的竖直面改用 timber 材质（每个盐池都由木护岸包边）。
     slot: 35, name: 'drymud', onWall: 36,
     mat: {
+      // detail=0.9(细节更强)、scale=2.4、hr=[-0.016,0.003]、ao=0.55；prep 里 f[0..2] 三级 FB，
+      // w[0] 用带双重正弦扰动的 wq 造不规则裂纹走向。
       detail: 0.9, scale: 2.4, tint: true, mask: true, alpha: false, mode: GRID, sym: 7, hr: [-0.016, 0.003], ao: 0.55,
       prep: `f[0] = FB(uv, ivec2(4), 4, 0.55, 851u); f[1] = FB(uv, ivec2(24), 3, 0.5, 853u); f[2] = FB(uv, ivec2(96), 2, 0.5, 857u);
   vec2 wq = uv + 0.025 * vec2(sin(TAU * (2.0 * uv.y + uv.x)) + 0.5 * sin(TAU * (5.0 * uv.y - 3.0 * uv.x) + 0.7),
@@ -104,8 +143,13 @@ export const SURFACES = [
     },
   },
   {
+    // slot 36 saltboard：漂白盐场木栈板——沿 u 方向 200 mm 宽的板、7 mm 缝、每循环每板一处错开的对接缝；
+    //   银灰木纹（受 tint 染色）、晚材线、自对接缝端延伸的干裂；缝隙与板端结盐霜（图层白色）、缝暗（图层色）；
+    //   每根托梁(每 0.6 m)上一对锈钉，锈迹渗入木里。
     slot: 36, name: 'saltboard',
     mat: {
+      // detail=0.35、scale=2.4、sym=1(无对称)、hr=[-0.02,0.0015]、ao=0.45；prep 按板号 row 造逐板相位：
+      //   f[0] 沿板长的高频纹理、f[2] 逐板错位、f[3] 细噪声、w[0] 木纹波。surf 里 PW=0.2 为板宽常量。
       detail: 0.35, scale: 2.4, tint: true, mask: true, alpha: false, mode: GRID, sym: 1, hr: [-0.02, 0.0015], ao: 0.45,
       prep: `int row = int(floor(P.y / 0.2)); float ly = P.y - float(row) * 0.2;
   f[0] = Req(vec2(uv.x * 6.0, ly * 30.0 + float(row) * 5.37), ivec2(6, 4096), 3, 0.55, 881u);

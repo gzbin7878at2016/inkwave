@@ -1,3 +1,28 @@
+// ============================================================================
+// 【中文导读】Cargo 关卡的贴花/标识(mural atlas 的关卡区)—— 用 Canvas 2D 程序化"画"出地面标线与招牌。
+// ----------------------------------------------------------------------------
+// 【模块定位】
+//   本文件是 Cargo 关卡"四件套"之一的 murals(关卡贴花),由 src/world/stages/cargo/ 目录拥有。
+//   它导出 drawMurals(g, R, kit):当关卡被载入时,由 src/world/murals.js 的 createMuralTexture → setStage(id)
+//   调用,把本关的贴花画进 2048×1008 的"关卡区"画布,并返回放置表(id 4…11)。
+//   产出的贴花被 levelMaterial.js 采样:面的 mural id 写在几何的 mural 字段(layout.js),渲染时按面尺寸铺开,
+//   且永远画在"墨的下面"(被涂墨覆盖)。
+// 【核心机制】
+//   1) 表项格式 { id, x, y, w, h, place: [x0, xLen, y0, yLen], fx: [weather, chip] }:
+//        x,y,w,h      —— 图集内的像素矩形(本文件内画到哪块);核心 murals.js 会换算成 UV 的 rect。
+//        place        —— 贴在面上的位置/尺寸(米,面的 u/v);xLen<0 = 每 |xLen| 个面高平铺;yLen≤0 = 纵向拉满。
+//        fx           —— [风化, 剥落]:地表纹理透显比例 / 表面掉皮在多大程度上"咬"进壁画。
+//   2) 地面标识画在地板块的顶面:顶面 u = −x、v = +z,原点在板的 (maxX, minZ) 角,所以画布读起来正是
+//      "Alpha 玩家从基地朝中场看"的样子;Bravov 半场(镜像板)采样同一画布但整体转 180°。
+//   3) 因此每张地面绘制都点对称:同一特征在 Alpha 世界米坐标画一遍,再转 180° 画一遍(onSlab 的 s=±1),
+//      它的孪生落在箱下/楼后,或本来就是另一半需要的标识。
+// 【关键约定】
+//   • 全部在【局部坐标(码头 35° 转向之前)】里画;layout.js 把板转 35°,但被转后的板顶面 u/v 不变,故画法不变。
+//   • 米制,Y 轴向上(面内 v 向上);镜像约定同 layout:每张图必须点对称,两半才一致。
+//   • id 4…11 是本关专供;0–3 是四条可平铺常驻条带(murals.js 维护),不要占用。
+// 【配套阅读】src/world/murals.js(图集总管/rect/place/fx 的总说明)、src/world/levelMaterial.js(壁画采样);
+//   同目录 layout.js(哪些面挂了 mural)、surfaces.js、props.js。
+// ============================================================================
 // Cargo Terminal — stage decals / signage for the mural atlas (see src/world/murals.js; drawn when the stage loads).
 //
 // drawMurals(g, R, kit) draws into the stage region R = { x, y, w, h } (2048 x 1008 px) and returns the table for mural
@@ -18,10 +43,14 @@
 //   9  KRAKEN LINES (40' long sides)  10  TIDEBANK (40')
 //   11 the Landing (single slab x ±16.16, z ±7, drawn once): the round crane working zone, KEEP CLEAR, box slots,
 //      4A / R2 block ids for both teams
+// 【PI 简写】本文件大量三角函数(M_→1)的常量。
 const PI = Math.PI;
 
+// 【rng 确定性随机】mulberry32 变体:同种子 → 同分布。做旧(磨损/锈斑)每次都画在同样位置,便于复现与排障。
 function rng(seed) { let a = seed | 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
+// 【stencil 印刷字】在当前变换里居中排一行字,size = 大写字母高度(先 translate/scale 到目标帧再调用);
+// 用 measureText 量宽做居中/右对齐,支持字距(letterSpacing)。返回换算到目标尺度的行宽。
 // Text in the current transform: centred at (x, y), `size` = cap height, reading along +x (rotate the frame first)
 function stencil(g, str, x, y, size, color, { weight = 800, spacing = 0.06, family = 'Rubik', align = 'center' } = {}) {
   g.save();
@@ -36,6 +65,8 @@ function stencil(g, str, x, y, size, color, { weight = 800, spacing = 0.06, fami
   g.restore();
   return w * size / 100;
 }
+// 【wear 做旧】在矩形 r 内用 destination-out(只擦薄、不添色)打上随机小划痕 flecks 与团状磨痕 scuffs——
+// 模拟轮胎与鞋底磨掉的漆。所有随机数来自种子,结果可复现。
 // knock random flecks + soft scuffs out of whatever was painted in rect r (paint worn by tyres and boots)
 function wear(g, r, { flecks = 2600, fleck = [0.6, 2.4], scuffs = 60, scuff = [6, 22], seed = 1 } = {}) {
   const R = rng(seed);
@@ -57,8 +88,11 @@ function wear(g, r, { flecks = 2600, fleck = [0.6, 2.4], scuffs = 60, scuff = [6
   g.restore();
 }
 
+// 【地面标线配色】半透明的白(标线)、黄(边界/警示)、绿(人行道)、深灰(轮胎磨痕);半透明→让沥青纹理透出来。
 const WHITE = 'rgba(238,236,228,0.86)', YELLOW = 'rgba(232,184,58,0.9)', GREEN = 'rgba(88,150,96,0.82)', DARK = 'rgba(30,32,36,0.2)';
 
+// 【onSlab 地面绘制器】把 fn 以"Alpha 世界米"为坐标系调用两次:s=1 按原样、s=−1 绕板心转 180°(点对称,补另一半)。
+// 关键变换:canvas x = r.x+(maxX−x)·sx、canvas y = r.y+r.h−(z−minZ)·sz;孪生映射 (x,z)→(2cx−x, 2cz−z)。
 // Draw on a ground slab in Alpha world metres: `slab` = { minX, maxX, minZ, maxZ }, `r` = canvas rect. fn(g, s) is
 // called twice: s = 1 (as placed) and s = −1 (turned 180° about the slab centre).
 function onSlab(g, r, slab, fn) {
@@ -75,10 +109,12 @@ function onSlab(g, r, slab, fn) {
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.restore();
 }
+// 【groundText 地面文字】把字画得"站在 −Z 朝 +Z 看"可读(即 Alpha 玩家从基地往中场看的朝向);h = 大写高。
 // text on the ground, readable by someone standing at −Z looking toward +Z (the Alpha player's view), cap height h
 function groundText(g, str, x, z, h, color, o = {}) {
   g.save(); g.translate(x, z); g.rotate(PI + (o.rot ?? 0)); stencil(g, str, 0, h / 2, h, color, o); g.restore();
 }
+// 【arrowZ 地面箭头】默认指向 +Z(朝中场),尾在 (x,z);dir=−1 时反向。用 scale(1,dir) 复用同一套顶点。
 // arrow on the ground pointing +Z (toward mid) with its tail at (x, z)
 function arrowZ(g, x, z, len, color, dir = 1) {
   const sw = 0.34, hw = 0.95, hl = 0.8;
@@ -89,6 +125,7 @@ function arrowZ(g, x, z, len, color, dir = 1) {
   g.closePath(); g.fill();
   g.restore();
 }
+// 【hatchBox 斜纹框】矩形内画 45° 斜线(pitch 间距)并描边——用于"禁停/禁入"的斜纹地面框。
 function hatchBox(g, x0, z0, x1, z1, color, pitch = 0.45, lw = 0.12) {
   g.save();
   g.beginPath(); g.rect(x0, z0, x1 - x0, z1 - z0); g.clip();
@@ -99,6 +136,7 @@ function hatchBox(g, x0, z0, x1, z1, color, pitch = 0.45, lw = 0.12) {
   g.strokeStyle = color; g.lineWidth = 0.1;
   g.strokeRect(x0 + 0.05, z0 + 0.05, x1 - x0 - 0.1, z1 - z0 - 0.1);
 }
+// 【slotOutline 箱位框】集装箱堆位的地面框:四边留缺口、四角补 L 形角标,是堆场调度的通用符号。
 // container-slot outline (rectangle with open corners), x0..x1 × z0..z1, line width w
 function slotOutline(g, x0, z0, x1, z1, color, w = 0.1, gap = 0.35) {
   g.fillStyle = color;
@@ -110,6 +148,7 @@ function slotOutline(g, x0, z0, x1, z1, color, w = 0.1, gap = 0.35) {
     g.fillRect(Math.min(cx, cx + dx * w), Math.min(cz, cz + dz * 0.25), w, 0.25);
   }
 }
+// 【roundel 限速圆牌】地面限速圆标:白底红圈 + 中心文字(如 "20" km/h),转 180° 使从 Alpha 侧读数正立。
 function roundel(g, x, z, R, txt) {
   g.save(); g.translate(x, z); g.rotate(PI);
   g.fillStyle = 'rgba(232,236,232,0.85)'; g.beginPath(); g.arc(0, 0, R, 0, PI * 2); g.fill();
@@ -118,10 +157,13 @@ function roundel(g, x, z, R, txt) {
   g.restore();
 }
 
+// 【drawMurals 主入口】在画布区 R(2048×1008)里画本关 4…11 号贴花,返回放置表。rect() 把"区内坐标"平移到
+// 全局画布坐标。以下按 id 分块;每块末尾 wear() 做旧,再 push 一条 { id, ...r, place, fx }。
 export function drawMurals(g, R, kit) {
   const out = [];
   const rect = (x, y, w, h) => ({ x: R.x + x, y: R.y + y, w, h });
 
+  // 【id 4 · 4A 堆场地面】板 x 6…16.16、z −31.6…−7:黄色边界线 + 四排 × 四格 20 尺箱位虚线框。
   // ---------------------------------------------------------------- 4: Block 4A slab (tarmac)
   {
     const r = rect(0, 0, 320, 775), slab = { minX: 6.0, maxX: 16.16, minZ: -31.6, maxZ: -7 };
@@ -135,6 +177,8 @@ export function drawMurals(g, R, kit) {
     wear(g, r, { flecks: 1900, scuffs: 40, seed: 41 });
     out.push({ id: 4, ...r, place: [0, 10.16, 0, 24.6], fx: [0.9, 1] });
   }
+  // 【id 8 · 冷藏块地面】板 x −16.16…−6:黄边界、每 6.15m 一道箱位端线、猫道下绿色人行道 + WALK 字样、
+  // 岸线侧插电位的禁停斜纹带。
   // ---------------------------------------------------------------- 8: Reefer block slab (tarmac)
   {
     const r = rect(320, 0, 320, 775), slab = { minX: -16.16, maxX: -6.0, minZ: -31.6, maxZ: -7 };
@@ -154,6 +198,7 @@ export function drawMurals(g, R, kit) {
     wear(g, r, { flecks: 1900, scuffs: 40, seed: 43 });
     out.push({ id: 8, ...r, place: [0, 10.16, 0, 24.6], fx: [0.9, 1] });
   }
+  // 【id 5 · 卡车通道地面】板 x −6…6:两条行车道磨痕、黄边线、白虚线中线、朝中场箭头 + 20 限速圆牌、基地端人行横道。
   // ---------------------------------------------------------------- 5: truck lane slab (tarmac)
   {
     const r = rect(640, 0, 380, 780), slab = { minX: -6, maxX: 6, minZ: -31.6, maxZ: -7 };
@@ -175,6 +220,8 @@ export function drawMurals(g, R, kit) {
     wear(g, r, { flecks: 3200, scuffs: 70, seed: 45 });
     out.push({ id: 5, ...r, place: [0, 12, 0, 24.6], fx: [0.9, 1] });
   }
+  // 【id 6 · 码头面】板 7.84×47.4(两舷共用):岸线黄边线 + 内 1m 白安全线,并在 u 方向自身镜像(两侧 Alpha
+  // 码头互为镜像);两处吊机停机的斜纹框。
   // ---------------------------------------------------------------- 6: apron slabs (quay concrete)
   {
     const r = rect(1020, 0, 168, 1000), slab = { minX: 16.16, maxX: 24, minZ: -41, maxZ: 0 };
@@ -194,6 +241,8 @@ export function drawMurals(g, R, kit) {
     wear(g, r, { flecks: 2000, scuffs: 40, seed: 47 });
     out.push({ id: 6, ...r, place: [0, 7.84, 0, 41], fx: [0.9, 1] });
   }
+  // 【id 7 · 基地地面】板 x ±16.16、z −47.4…−31.6:运营楼楼梯脚人行横道、楼前人行道带、卡闸停止线 +
+  // GATE 车道箭头 + OUT 字样、堆场前沿黄边线、地面大字 BERTH 4。
   // ---------------------------------------------------------------- 7: base slab (quay concrete)
   {
     const r = rect(1190, 0, 840, 410), slab = { minX: -16.16, maxX: 16.16, minZ: -47.4, maxZ: -31.6 };
@@ -216,6 +265,9 @@ export function drawMurals(g, R, kit) {
     wear(g, r, { flecks: 3000, scuffs: 60, seed: 49 });
     out.push({ id: 7, ...r, place: [0, 32.32, 0, 15.8], fx: [0.9, 1] });
   }
+  // 【id 9–11 · 集装箱侧面船公司标志】贴在箱长边 1.25m 高的带里;40 尺标志居中于 12.19m 长边,20 尺居中于
+  // 6.06m 边。logo() 辅助函数:裁剪到矩形内、平移到局部零基准再画,画完做旧并 push 带 place 的表项。
+  //   9 KRAKEN LINES(鱿鱼圆标 + 字标)  10 TIDEBANK(波浪 + 斜体字标)
   // ---------------------------------------------------------------- 9–11: shipping-line logos on container sides
   // Placed on the long sides, 1.25 m high band; 40' logos centred on a 12.19 m side, the 20' one on a 6.06 m side.
   const logo = (id, x, y, w, h, place, draw) => {
@@ -247,6 +299,9 @@ export function drawMurals(g, R, kit) {
     g.fillText('TIDEBANK', 0, 0);
     g.restore();
   });
+  // 【id 11 · The Landing】跨两半的唯一板,只手绘一次(不像其它板靠点对称补另一半):轮胎磨痕、吊机作业圈
+  // (黄圈 + 圈内斜纹)、两向 KEEP CLEAR、箱位框、两侧 4A / R2 堆场编号(各队从自己基地读)。内部用 s2=±1
+  // 手动镜像文字,让两半都能读。
   // ---------------------------------------------------------------- 11: the Landing (single slab, drawn once)
   {
     const r = rect(0, 785, 1020, 220), sl = { minX: -16.16, maxX: 16.16, minZ: -7, maxZ: 7 };

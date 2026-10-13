@@ -1,3 +1,38 @@
+// ============================================================================
+// 【中文导读】i18n 字符串字典 —— 无框架的极简多语言层(英文文案 + 中文翻译 + t() 查表)
+// ----------------------------------------------------------------------------
+// 【模块定位】属于 UI 基础设施层(src/i18n/)。启动早期由 main.js 的 boot() 调用 setLang()
+//   选定语言(document.title、加载条文案都靠它)。全局通过 t(key, params) 取文案:
+//   UI 工具 h() 会把每个 DOM 文本过一遍 t(),因此"英文原文即 key"的文案无需改调用点即可本地化。
+//
+// 【核心机制】
+//   · 本文件(EN)保存英文文案表;中文翻译在 src/i18n/zh.js 的 ZH_PHRASES 里(英文作为 key)。
+//     DICTS 把两者合起来:{ en: EN, zh: { ...ZH(内置) , ...ZH_PHRASES(zh.js) } }。
+//   · t(key) 解析顺序:当前语言字典 → 英文 EN → key 本身。所以**英文可以没有词条**
+//     (key 本身就是英文);缺失的中文词条会优雅回退成英文,永不崩、也让缺失一眼可见。
+//   · 语言持久化在 localStorage 'inkwave.lang',并与 settings 里的 lang 保持同步。
+//   · {n} 风格占位符在 t() 里做 replaceAll 插值(如 '{n} XP' + {n: 5})。
+//
+// 【key 命名约定 —— 两种风格并存】
+//   ① 语义 key('settings.title'、'settings.row.lang.label'、'common.on')——
+//      点分层级,用于"调用点一开始就按字典写"的 UI;前缀即所属界面/组件。
+//   ② 英文 msgid('PLAY'、'Ink the turf')—— 直接用英文原文当 key,是 UI 的大头:
+//      h() 把每个 DOM 字符串喂给 t(),精确命中即本地化,零调用点改动。英文无需词条。
+//   · 带插值的 msgid 用 {n}/{name}/{team} 等占位;带 HTML 的文案(如 '<b>{n}</b>')原样内联。
+//
+// 【新增一条文案的流程】
+//   1. 在英文表(本文件 EN)加上语义 key,或直接用英文原文当 msgid(后者英文表可省略);
+//   2. 在 src/i18n/zh.js 的 ZH_PHRASES 里加**逐字相同**的 key(大小写/标点/破折号/弯引号都要一模一样,
+//      否则 t() 命中不了,会回退成英文);
+//   3. 插值文案记得在中文里同样保留 {n} 占位;
+//   4. 语言名(label)保留其自身语言(English / 中文),不翻译。
+//
+// 【关键约定】zh.js 的 key 必须与英文**完全一致**(含 '’' 弯引号、'—' em dash);占位符名不可改。
+//   LANGUAGES 的 label 是原生名,永不翻译,保证任何语言下选择器都可用。
+//
+// 【配套阅读】src/i18n/zh.js(中文词条)、src/ui/ui-util.js(h() 如何统一走 t())、
+//             docs/ARCHITECTURE.zh-CN.md;消费方:src/main.js(setLang/语言切换菜单)。
+// ============================================================================
 // INKWAVE i18n — a tiny string dictionary. No framework: `t(key, params)` resolves the current language
 // (persisted in localStorage 'inkwave.lang', kept in sync with the `lang` setting in 'inkwave.settings'),
 // falls back to English, then to the key itself so a missing entry is obvious but never crashes.
@@ -11,16 +46,21 @@
 // picker is usable no matter which language is active.
 import { ZH_PHRASES } from './zh.js';
 
+// localStorage 中保存当前语言的键(与 'inkwave.settings' 里的 lang 字段并行,启动时读这里最省事)。
 const STORE_KEY = 'inkwave.lang';
 
 /** Supported languages, in menu order. `label` is the native name (never translated). */
+// 【语言清单】菜单里的显示顺序;label 是原生名(不参加翻译),id 是字典键(DICTS 里必须有对应项)。
 export const LANGUAGES = [
   { id: 'en', label: 'English' },
   { id: 'zh', label: '中文' },
 ];
 
+// 【英文文案表】语义 key 与英文 msgid 混排;插值文案中文对应项在 zh.js。
+// (英文 msgid 的"翻译"就是它自己,故这里也可能出现 key===值的自映射条目。)
 const EN = {
   // ---- interpolated msgids (English template → English text; zh translations in zh.js)
+  // 【带插值的英文 msgid】中文翻译在 src/i18n/zh.js 的 ZH_PHRASES 中,key 必须逐字一致。
   '{n} more characters to go': '{n} more characters to go',
   'Connecting to room {code}…': 'Connecting to room {code}…',
   '{n} XP to next level': '{n} XP to next level',
@@ -150,6 +190,8 @@ const EN = {
   'settings.reset.previewCap': 'Press twice to restore <b>every setting</b> on every tab',
 };
 
+// 【内置中文表】设置屏等"语义 key"的中文;其余英文 msgid 的中文在 zh.js 的 ZH_PHRASES,
+// 二者在 DICTS 里合并(下方 'zh': { ...ZH, ...ZH_PHRASES })。合并时 ZH_PHRASES 优先。
 const ZH = {
   'common.on': '开',
   'common.off': '关',
@@ -238,20 +280,27 @@ const ZH = {
   'settings.reset.previewCap': '按两次即可恢复<b>所有页签上的全部设置</b>',
 };
 
+// 【字典合并】en → EN;zh → 内置 ZH 与 zh.js 的 ZH_PHRASES 合并(ZH_PHRASES 覆盖同名项)。
 const DICTS = { en: EN, zh: { ...ZH, ...ZH_PHRASES } };
 
+// 【语言切换订阅者】setLang 时逐个通知(如重建 HUD);lang 是当前语言 id,默认 'en'。
 const listeners = new Set();
 let lang = 'en';
 
+// 【启动恢复】从 localStorage 读回上次语言;仅当它是 DICTS 里支持的语言才采用。
+// try/catch 兜底隐私模式下 localStorage 抛异常。
 try {
   const v = localStorage.getItem(STORE_KEY);
   if (v && DICTS[v]) lang = v;
 } catch { /* private mode */ }
 
+// 【读取当前语言】getLang 返回 id;isZh 是常用快捷判断(供少数按语言分叉的 UI 使用)。
 export function getLang() { return lang; }
 export const isZh = () => lang === 'zh';
 
 /** Translate `key` in the current language (English fallback, then the key itself). `{n}` placeholders interpolate. */
+// 【翻译入口】查当前语言 → 英文 EN → 回退 key 本身(三级兜底,缺词条不崩且一眼可见);
+// 若传 params,则对结果做 {k} → 值的字符串替换(replaceAll,同名单次替换全部出现处)。
 export function t(key, params = null) {
   let s = DICTS[lang][key];
   if (s === undefined) s = EN[key] !== undefined ? EN[key] : key;
@@ -260,6 +309,8 @@ export function t(key, params = null) {
 }
 
 /** Switch language (idempotent). Persists, updates <html lang>, notifies `onLangChange` listeners. */
+// 【切换语言】幂等:已是该语言则只同步 <html lang> 后返回。否则持久化 + 更新 <html lang> +
+// 通知所有订阅者(每个回调单独 try/catch,避免一个出错中断其余)。id 不在 DICTS 中则直接忽略。
 export function setLang(id) {
   if (!DICTS[id] || id === lang) { if (DICTS[id]) document.documentElement.lang = id; return; }
   lang = id;
@@ -268,4 +319,5 @@ export function setLang(id) {
   for (const fn of listeners) { try { fn(id); } catch (e) { console.error('[i18n]', e); } }
 }
 
+// 【订阅语言变化】返回退订闭包;main.js 借它做 HUD 重建。用法与 core/ctx.js 的 on() 一致。
 export function onLangChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }

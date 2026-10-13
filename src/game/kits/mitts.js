@@ -1,3 +1,29 @@
+// ============================================================================
+// 【中文导读】Sponge Mitts(海绵拳套,主武器 kind='mitts')——一款近战拳击武器:双拳各戴一只吸满墨水的海绵手套。
+// ----------------------------------------------------------------------------
+// 【模块定位】属于 src/game/kits/ 武器内容层,是 mitts 三文件分工中的"逻辑"层:
+//   · mitts.js —— 本文件:玩法行为(出拳/蓄力起跳/贴墙)+ 状态机 + 联机 ghost + Bot 战术。
+//   · mitts-model.js —— 建模层:buildMitts() 出几何、海绵材质、部件动画(被本文件 import 触发注册)。
+//   · mitts-assets.js —— 资产层:HUD 图标与音效(同样 import 触发注册)。
+//   本文件顶层 `import './mitts-model.js'` 与 `import './mitts-assets.js'` 只为其注册副作用;
+//   末尾 MAIN_KITS.mitts = {...} 完成自注册(契约见 ./registry.js)。
+// 【核心机制】三条玩法线索:
+//   ① 出拳(tap/hold fire):左右拳交替(约每秒 6 次),每拳甩出一只"墨水拳"——手套形墨块飞行 fistRange 后爆开;
+//      直击造成 punchDamage,爆开范围波溅伤周围敌人并涂地;出拳时接近全速跑动。
+//   ② 蓄力起跳(按住 fire 再按 jump——该次按键永不变成普通跳):蹲身蓄力、手套随墨水膨胀;松手沿准星起跳
+//      (瞄得越高弧线越高,平地约 4.5–13m),耗墨 leapInkMin…leapInkMax。落点处:对正下方敌人一次拳砸(gloveDamage)+
+//      涟漪溅伤(中心 landDamageMax 衰减到 landDamageMin)+ 大片涂地 + landInvuln 秒无敌。
+//   ③ 贴墙:起跳撞上"高过头顶的墙"就黏住——小孩用左手套挂墙,仍可用右拳;挂着持续耗墨 clingDrain/s;
+//      jump 可脱离(fire+jump 则从墙上再起跳),空墨自动掉、变乌贼形态自动松手。
+// 【关键约定】· 单位:米/秒/弧度;武器空间与握把约定见 mitts-model.js 与 ../character-weapons.js。
+//   · 每跑手的状态挂在 runner.kit({mitts:true,…}),出生/死亡/换装时置空;tick() 会清扫遗留状态(循环音、预览)。
+//   · 拳头是本模块自有的世界对象(InstancedMesh 墨块),不经 G.projectiles 的弹道池。
+//   · 联机:本地端权威。ghost() 回放远端玩家的世界对象(仅视觉,不涂墨不伤害);netState/netApply 走位姿位。
+// 【配套阅读】docs/ASSETS-WEAPONS.zh-CN.md(§1 自注册、§4 开火全链路)、docs/CONTRACTS.zh-CN.md、
+//   ./registry.js(hook 契约)、../bots.js(MELEE/bot 契约)、同目录 mitts-model.js / mitts-assets.js。
+// 【建议阅读顺序】先 update() 建立主循环印象 → jump() 看它如何与跳跃系统博弈 → leap 段(leapVelocity/predictLeap)
+//   → fists 段(出拳与弹道)→ 末尾 registration 看各 hook 如何被核心调用。
+// ============================================================================
 // Sponge Mitts (main weapon, kind 'mitts') — a melee boxing weapon: a squishy ink-soaked sponge glove in each fist.
 //
 //  · Punches (tap / hold fire): the gloves alternate right / left (≈ 6 a second). Each throws an ink fist — a glossy
@@ -28,23 +54,36 @@ import { MELEE } from '../bots.js';
 import './mitts-model.js';
 import './mitts-assets.js';
 
+// 全局常量与模块级"临时向量池":热路径(每帧/每拳)复用这些对象,零分配是其硬性性能约定。
 const DEG = Math.PI / 180;
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
+// 下面 _v/_v2/… 都是复用暂存向量;跨函数调用当心被覆盖(只在紧邻语句内使用)。
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3();
 const _dir = new THREE.Vector3(), _hb = new THREE.Vector3(), _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
 const _c = new THREE.Color(), _xa = new THREE.Vector3(), _ya = new THREE.Vector3();
+// _hit/_hitP/_hitC:三个独立 Hit 结果对象,供同一函数内多次 raycast/segment 不互相覆盖。
 const _hit = new Hit(), _hitP = new Hit(), _hitC = new Hit();
 const _res = { t: 0, dist: 0 };
+// W():取本武器在 config.js 里的数值调参表 WEAPONS.mitts(伤害/射程/耗墨等);每次现取以支持热重载。
 const W = () => WEAPONS.mitts;
 const TAU = Math.PI * 2;
+// r2/r3:把浮点四舍五入到 2/3 位小数——联机短数组记录用(压低位宽,见 registry.js 的 ghost 协议)。
 const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
+// HAND_R/HAND_L:传给 a.character.trigger('shoot', …) 的手别描述符,valueOf 恒为 1(可当布尔真值用)。
 const HAND_R = Object.freeze({ hand: 0, valueOf() { return 1; } }), HAND_L = Object.freeze({ hand: 1, valueOf() { return 1; } });
+// near:某点是否落在玩家镜头附近 r 米内——低于阈值才播音频/特效,是为性能与听觉清晰度设的闸门。
 const near = (p, r = 30) => { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; };
+// rumble:仅对本地非 Bot 玩家触发手柄震动(强度 strong/weak,时长 ms)。
 function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
+// credit:把涂地面积计入得分。大招期间(或来自大招的涂地)走 addTurfNoSpecial,不额外吃大招加成。
 function credit(a, area, sp) { if (!(area > 0)) return; if (sp || a.specialActive) a.addTurfNoSpecial(area); else a.addTurf(area); }
 
 // ================================================================================================ per-runner state
+// 【每跑手状态】STATES 保存所有活跃 runner 的 kit 状态,便于 tick() 在 runner 掉线/死亡后清扫其遗留(循环音、贴墙等)。
+// 状态统一挂在 runner.kit 上,字段覆盖:出拳冷却与左右交替、蓄力、跃起飞行、落地预测、贴墙、以及 Bot 的意图缓存。
 const STATES = new Map();   // runner → its state (so tick can sweep a state the runner dropped)
+// K(r):取/建某 runner 的 mitts 状态。首次访问时惰性创建全部字段(避免在构造点散落)。
+// 注意 k.mitts:true 是"本 runner 已装备 mitts"的标记,别的流程据此判断。
 function K(r) {
   let k = r.kit;
   if (!k || !k.mitts) {
@@ -59,23 +98,29 @@ function K(r) {
       // wall cling
       cling: false, hang: false, clingT: 0, clingN: new THREE.Vector3(), clingPt: new THREE.Vector3(), drain: null, dryWarn: 0,
       // bots: a leap they asked for (charge to reach, direction), set by bot.fight / bot.paint
+      // Bot 的起跳意图:botWant=目标蓄力档(≥0 时 leapVelocity 会改用 botYaw/botPitch),botKind=目标落点类型。
       botWant: -1, botYaw: 0, botPitch: 0,
     };
     STATES.set(r, k);
   }
   return k;
 }
+// stopLoops:停掉该状态持有的两条循环音(蓄力、贴墙耗墨),带淡出;清扫时调用。
 function stopLoops(k) {
   k.loop?.stop(0.08); k.loop = null;
   k.drain?.stop(0.12); k.drain = null;
 }
 
 // ================================================================================================ fists (projectiles)
+// 【拳头弹道】fists 是本模块自有的投射物数组(对象池 fistPool 复用,上限 MAX_FISTS=96)。所有拳头共用一个
+// InstancedMesh(fistMesh),逐实例写矩阵与队伍色,因此 96 只拳头只需 1 个 DrawCall。
 // A glove-shaped ink blob flying knuckles-first: a fat fist, a row of four knuckle bumps across the face, the thumb
 // folded under them and a tapering ink tail. Instanced (team colour per instance) with a rim glow so it reads fast.
 const MAX_FISTS = 96;
 const fists = [], fistPool = [];
 let fistMesh = null;
+// fistGeometry:用若干超椭圆体拼出"指节朝前的拳头墨块":主体 + 面部 4 个指节鼓 + 拇指 + 拖尾墨滴。
+// 【为什么合并】mergeGeometries 把所有块并成单一 geometry(去掉 uv 属性省内存),InstancedMesh 才能一份几何画 96 次。
 function fistGeometry() {
   const parts = [];
   parts.push(superEllipsoid(0.105, 0.092, 0.09, 0.72, 0.68, 22, 16, (q) => { if (q.z > 0.03) q.z = 0.03 + (q.z - 0.03) * 0.72; }));
@@ -84,6 +129,7 @@ function fistGeometry() {
     parts.push(superEllipsoid(0.027, 0.029, 0.022, 0.8, 0.8, 10, 8).translate(x, 0.03 - Math.abs(x) * 0.12, 0.078 - Math.abs(x) * 0.12));
   }
   parts.push(superEllipsoid(0.055, 0.022, 0.024, 0.8, 0.8, 12, 8).rotateZ(-0.18).translate(0.02, -0.04, 0.074));
+  // 【拖尾】拳头身后的墨:一大滴(后段收窄 x/y 模拟液滴尖)+ 两个渐小的拖尾团,共同拉出速度感。
   // tail: the ink the fist drags behind it — a fat drop pinching off, then two trailing blobs
   parts.push(superEllipsoid(0.07, 0.062, 0.1, 0.9, 0.9, 16, 12, (q) => { if (q.z < 0) { const t = -q.z / 0.1; q.x *= 1 - 0.55 * t * t; q.y *= 1 - 0.55 * t * t; } }).translate(0, 0, -0.07));
   parts.push(superEllipsoid(0.036, 0.034, 0.042, 1, 1, 10, 8).translate(0, 0.004, -0.2));
@@ -91,10 +137,13 @@ function fistGeometry() {
   for (const g of parts) { if (g.attributes.uv) g.deleteAttribute('uv'); }
   return mergeGeometries(parts, false);
 }
+// ensureFistMesh:惰性建共享 InstancedMesh 与材质;每帧从 fists 写实例矩阵/颜色。
+// 材质用 onBeforeCompile 注入"菲涅尔边缘发光"(越掠射越亮的环),配合 envMapIntensity 让高速拳头一眼可辨。
 function ensureFistMesh() {
   if (!G.scene) return null;
   if (!fistMesh) {
     const mat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 0.5, sheenRoughness: 0.3, sheenColor: 0xffffff, envMapIntensity: 1.2 });
+    // 【rim glow】fr=1-|N·V| 即菲涅尔项;fr³ 让亮环集中在轮廓,加到自发光上=廉价的描边高光。
     mat.onBeforeCompile = (sh) => {
       sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         { float fr = 1.0 - abs(dot(normalize(normal), normalize(vViewPosition))); totalEmissiveRadiance += diffuseColor.rgb * (0.18 + 0.9 * fr * fr * fr); }`);
@@ -110,6 +159,8 @@ function ensureFistMesh() {
   return fistMesh;
 }
 
+// gloveMuzzle:求"拳头生成点"= 手套面(拳从哪出来)。优先问角色模型要该手的枪口;
+// 若返回值异常(非有限值 / 离胸口太远 / 被墙挡住视线)则回退到"胸前一拳位",保证拳头永远从合理处射出。
 // the glove's face (where a fist leaves), falling back to a point in front of the chest on the punching side
 function gloveMuzzle(a, hand, out) {
   const ch = a.character;
@@ -124,6 +175,8 @@ function gloveMuzzle(a, hand, out) {
   return out;
 }
 
+// spawnFist:从对象池取一只拳头,设置初速度(dir×fistSpeed)、寿命(射程/速度)等,入列 fists。
+// ghost=true 表示这是远端玩家的视觉副本(不涂墨不伤害);m=起点,dir=方向。
 // a fist leaves the glove at m along dir. ghost: a remote player's (online) — flies and bursts for the eye only
 function spawnFist(a, w, hand, m, dir, ghost = false) {
   const f = fistPool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), start: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3() };
@@ -134,6 +187,8 @@ function spawnFist(a, w, hand, m, dir, ghost = false) {
   if (a.isLocal || near(m)) G.audio?.play('mitts_punch', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.6 : 0.45, pitch: hand ? 1.06 : 0.97 });
   return f;
 }
+// fireFist:一次完整出拳——取枪口、算方向(复用 G.projectiles 的瞄准/散布工具)、生成拳头、
+// 上报联机记录 netRec(kind 0)、发 'weapon:fire' 事件(供角色动画等订阅)、并触发手柄轻震(节流 rumbleT 0.08s)。
 function fireFist(a, w, hand) {
   const m = gloveMuzzle(a, hand, _v);
   const dir = G.projectiles._aimFrom(a, m, _dir);
@@ -145,8 +200,11 @@ function fireFist(a, w, hand) {
   if (r.rumbleT <= 0) { r.rumbleT = 0.08; rumble(a, 0.05, 0.12, 45); }
 }
 
+// hitBase:取 actor 的"命中基准点"(脚点 + 平滑高度偏移 smoothY,台阶处避免抖动),供胶囊命中判定。
 function hitBase(e) { return _hb.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
 
+// burstFist:拳头爆开——对周围(除直击目标)敌人溅射伤害,并在爆点涂地(有法线就涂在该面,否则涂其下方地面)。
+// 直击目标(参数 direct)已在上层单独结算伤害,这里跳过以免重复。远端 ghost 拳只播特效(burstFx)不做任何结算。
 // A fist bursts: splash damage to everyone near but the one it hit, paint where it burst (on the surface it hit, else
 // the ground under it), FX + pop.
 function burstFist(f, at, direct, normal) {
@@ -172,6 +230,9 @@ function burstFist(f, at, direct, normal) {
   if (direct !== 'boss') G.boss?.splash(o, c, w.splashRadius, w.splashMax, w.splashMin, 'mitts');   // Boss Battle
   burstFx(f, o, c, direct, normal, w);
 }
+// burstFx:拳头爆开的纯视觉/听觉表现(不含伤害结算),本地或镜头附近才播。
+// 【为什么区分 explosion/ring】全屏墨幕式爆炸只用在"不会糊住自己视野"的情况(别人的拳 or 已命中的拳);
+// 自己没打中时的爆开只画一个地环,避免挡住玩家视线。
 function burstFx(f, o, c, direct, normal, w) {
   const col = o.color, show = o.isLocal || near(c, 26);
   if (show) {
@@ -185,6 +246,8 @@ function burstFx(f, o, c, direct, normal, w) {
   emit('weapon:impact', { pos: c.clone(), normal: (normal || UP).clone(), team: f.team, kind: 'shot', radius: w.splashRadius, victim: direct && direct !== 'boss' ? direct : undefined });
 }
 
+// updateFists:每帧推进所有拳头并重绘实例。倒序遍历以便 stepFist 内 swap-pop 删除当前项。
+// 对 ghost 拳临时递增 nm.mute(ghostMute 机制),使其涂墨不会重复上报网络。
 function updateFists(dt) {
   const w = W(), nm = G.netm;
   for (let i = fists.length - 1; i >= 0; i--) {
@@ -194,6 +257,8 @@ function updateFists(dt) {
   }
   drawFists();
 }
+// stepFist:单只拳头一步:推进位置 → 依次检测命中(角色胶囊 → Boss → 副武器/大招拦截 → 关卡) → 命中即爆开并回收。
+// 【顺序为何固定】先用便宜的 AABB 粗筛(±3m)再算线段-胶囊精确距离;一旦命中就 dead 并 break,避免一帧多重结算。
 function stepFist(f, i, w, dt) {
   {
     let dead = !f.owner;
@@ -201,37 +266,45 @@ function stepFist(f, i, w, dt) {
     f.prev.copy(f.pos);
     f.pos.addScaledVector(f.vel, dt);
     const hr0 = w.fistSize;
+    // 【角色命中】ghost 拳对角色只是"看着爆开"不开伤害(命中判定归其 owner 端);先用 ±3m 的 AABB 粗筛再精确求线段-胶囊距离。
     // bodies (a ghost fist bursts on them for the eye; the owner's client decides the hit)
     if (!dead) for (const e of G.actors) {
       if (e.team === f.team || !e.alive) continue;
       const h = e.hitH || (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height), hr = e.hitR || PLAYER.radius;
       if (Math.abs(e.pos.x - f.pos.x) > 3 + hr || Math.abs(e.pos.z - f.pos.z) > 3 + hr) continue;
       Physics.segmentCapsuleDist(f.prev, f.pos, hitBase(e), hr, h, _res);
+      // _res.dist 是线段到胶囊的最近距离;0.95×hr+hr0 给一点宽容(贴身不判穿)。
       if (_res.dist < hr * 0.95 + hr0) {
-        _v.copy(f.prev).lerp(f.pos, _res.t);
+        _v.copy(f.prev).lerp(f.pos, _res.t);   // _res.t 处即最近点,作为直击位置
         if (!f.ghost) G.projectiles.applyHit(f.owner, e, w.punchDamage, 'mitts');
         G.fx?.burst(_v, _v2.copy(f.dir).negate(), f.owner.color, { count: 7, speed: 3.2, size: 0.08 });
         burstFist(f, _v, e, null);
         dead = true; break;
       }
     }
+    // 【Boss 战】对 HULLBREAKER 的命中球体 / 它的小蟹生效(仅 Boss 模式,见 src/boss/)。
     // Boss Battle: HULLBREAKER's hit spheres / its crablets
     if (!dead && G.boss) {
       const bh = G.boss.segHit(f.prev, f.pos, hr0);
       if (bh) { const at = bh.point.clone(); G.boss.hit(f.owner, w.punchDamage, bh.target, 'mitts', at); burstFist(f, at, 'boss', null); dead = true; }
     }
+    // 【拦截】敌方的墨墙/装置/大招物件会挡下拳头并在那里爆开;ghost 拳伤害为 0(不消耗对方装置)。
     // enemy curtains / devices / special objects catch it (and it bursts there) — a ghost's blow costs them nothing
     const fd = f.ghost ? 0 : w.punchDamage;
     if (!dead && G.subs && G.subs.blockShot(f.prev, f.pos, f.team, fd)) { burstFist(f, f.pos, null, null); dead = true; }
     if (!dead && G.specials && G.specials.shotHit(f.prev, f.pos, f.team, fd, f.owner)) { burstFist(f, f.pos, null, null); dead = true; }
+    // 【关卡碰撞】与地形相交即爆开(带命中面法线,用于让涂地贴在该面上)。
     // the level
     if (!dead) {
       const h = G.physics.segment(f.prev, f.pos, _hit, true);
       if (h.hit) { _v.copy(h.point); _v3.copy(h.normal); burstFist(f, _v, null, _v3); dead = true; }
     }
+    // 【射程尽头】到达寿命还没撞到任何东西:空中自爆(涂地落到下方地面)。
     // end of its reach: bursts in the air
     if (!dead && f.age >= f.life) { burstFist(f, f.pos, null, null); dead = true; }
+    // 掉进水面以下(waterY)直接回收,不爆开不涂地。
     if (!dead && f.pos.y < PLAYER.waterY - 1.5) dead = true;
+    // 【滴墨拖尾】飞行途中每隔 1.5m 向正下方投射,落点涂一小片墨(脚下拖痕)。
     // a thin drip trail under it
     if (!dead) {
       f.trail += w.fistSpeed * dt;
@@ -241,9 +314,12 @@ function stepFist(f, i, w, dt) {
         if (g.hit) credit(f.owner, G.paint.splat(_v.copy(g.point).addScaledVector(g.normal, 0.08), 0.28 + Math.random() * 0.1, f.team, { seed: Math.random() }), f.sp);
       }
     }
+    // 【回收】swap-pop O(1) 摘除:i 位置换成末尾元素再 pop;清 owner 后归还对象池。
     if (dead) { f.owner = null; fists[i] = fists[fists.length - 1]; fists.pop(); fistPool.push(f); }
   }
 }
+// drawFists:把 fists 数组写进 InstancedMesh 的实例矩阵与颜色。
+// 朝向:让"指节"始终朝飞行方向、上方向尽量保持水平(避免拳头乱滚),按 seed 加轻微摆动与果冻般缩放颤动。
 function drawFists() {
   const mesh = fists.length || (fistMesh && fistMesh.count) ? ensureFistMesh() : null;
   if (!mesh) return;
@@ -270,8 +346,13 @@ function drawFists() {
 }
 
 // ================================================================================================ leap
+// 【蓄力起跳】这一段是 mitts 的招牌机制:蓄力越满、跳得越远;落点先做预测(predictLeap)供预览/telegraph/Bot 使用;
+// 撞到可攀墙则转为贴墙(cling)。
 // Launch velocity for a charge: speed² eases linearly with the charge (distance ∝ v² on flat ground), heading = the aim
 // yaw, elevation = leapAngle + aim pitch × leapPitchK (clamped), the vertical speed capped. Off a wall: never into it.
+// leapVelocity:根据蓄力档 c∈[0,1] 算起跳速度向量(写入 out)。速度 v 在 [leapSpeedMin, leapSpeedMax] 间按 v² 线性
+// 插值(平地射程∝v²,故"力度感"均匀);仰角 = leapAngle + 准星俯仰×leapPitchK,钳在 [min,max],垂直分量再封顶 leapVyMax。
+// 【从墙上起跳】若当前贴墙,则保证出射方向不完全朝墙内(dn<0.35 时把水平方向推向法线),避免跳回墙里。
 function leapVelocity(a, k, c, out) {
   const w = W();
   const yaw = k.botWant >= 0 ? k.botYaw : a.aimYaw, pitch = k.botWant >= 0 ? k.botPitch : a.aimPitch;
@@ -286,10 +367,15 @@ function leapVelocity(a, k, c, out) {
   return out.set(dx * vh, vy, dz * vh);
 }
 
+// predictLeap:模拟"从 from 以 v0 起跳会落在哪"。用与角色本体一致的积分器(重力含下坠/顶点倍率)逐步推进,并对
+// 关卡做扫掠:胸口碰墙、脚踩地、头顶天花板、掉进海。out.kind ∈ {'ground','wall'(可贴),'bump'(贴不住的墙),'sea','none'}。
+// 可选 pts(Float32Array)输出路径供弧线预览用(out.n 为点数)。
+// 【为什么自建积分而非用物理】预览/Bot 需要"和实际一致的确定性轨迹",故复刻同一套重力常量(P.gravity 等)。
 // Where a leap from `from` with velocity v0 comes down: the actor's own integrator (gravity with the fall / apex
 // multipliers; the kit holds the horizontal speed) swept against the level — the chest for walls, the feet for ground,
 // the head for ceilings. out.kind: 'ground' | 'wall' (clingable) | 'bump' (a wall it can't stick to) | 'sea' | 'none'.
 // pts (optional Float32Array) gets the path for the arc preview (out.n points).
+// PRED_DT 固定 1/60 步长(与常见帧率一致,保证轨迹稳定);PRED_PTS 是预览折线最多采样点(缓冲区大小)。
 const PRED_DT = 1 / 60, PRED_PTS = 64;
 function predictLeap(from, v0, out, pts) {
   const P = PLAYER;
@@ -298,17 +384,21 @@ function predictLeap(from, v0, out, pts) {
   out.kind = 'none'; out.n = 0; out.block = -1;
   const push = () => { if (pts && out.n < PRED_PTS) { pts[out.n * 3] = x; pts[out.n * 3 + 1] = y + 0.35; pts[out.n * 3 + 2] = z; out.n++; } };
   push();
+  // 最多模拟 210 步(≈3.5s);下坠时加重力(fallGravityMul)、顶点附近降重力(apexGravityMul)以复刻本体手感。
   for (let i = 1; i <= 210; i++) {
     let g = P.gravity; if (vy < 0) g *= P.fallGravityMul; if (Math.abs(vy) < P.apexBand) g *= P.apexGravityMul;
     vy = Math.max(-P.maxFall, vy - g * PRED_DT);
     const nx = x + vx * PRED_DT, nz = z + vz * PRED_DT;
     let ny = y + vy * PRED_DT;
+    // 【天花板】上升中头顶(hy+P.height)撞到朝下的面(normal.y<-0.5):停止上升,vy 归 0。
     // head against a ceiling: stop rising
     if (vy > 0) {
       _a.set(x, y + P.height, z); _b.set(nx, ny + P.height, nz);
       const h = G.physics.segment(_a, _b, _hitP, false);
       if (h.hit && h.normal.y < -0.5) { vy = 0; ny = y; }
     }
+    // 【胸口撞墙】在胸口高度朝前进方向(含半径补偿)扫掠;命中近乎竖直的面(|normal.y|<0.55)即视为墙:
+    // 记录命中点/法线/时间,判断这墙能否贴(clingableAt)→ 'wall' 或 'bump',然后返回。
     // chest against a wall
     _a.set(x, y + 0.8, z); _b.set(nx + dx * P.radius, ny + 0.8, nz + dz * P.radius);
     let h = G.physics.segment(_a, _b, _hitP, false);
@@ -320,6 +410,7 @@ function predictLeap(from, v0, out, pts) {
       x = out.pos.x; y = ny; z = out.pos.z; push();
       return out;
     }
+    // 【脚踩地】仅在下落(vy≤0.5)时检查脚下;命中朝上的面(normal.y>0.55)即落地,写 out 并返回。
     // feet onto the ground (falling)
     if (vy <= 0.5) {
       _a.set(x, y + 0.3, z); _b.set(nx, ny - 0.02, nz);
@@ -331,7 +422,8 @@ function predictLeap(from, v0, out, pts) {
       }
     }
     x = nx; y = ny; z = nz;
-    if ((i & 1) === 0) push();
+    if ((i & 1) === 0) push();   // 隔步采样,预览折线够用又省点
+    // 【落海】低于 fallDeathY 且该处无地面(groundHeight=-Infinity)=海面:记为 'sea',落点在水面。
     if (y < P.fallDeathY && G.level.groundHeight(x, z, y + 0.6) === -Infinity) {
       out.kind = 'sea'; out.pos.set(x, P.waterY, z); out.normal.set(0, 1, 0); out.hitPt.copy(out.pos); out.t = i * PRED_DT;
       return out;
@@ -341,6 +433,7 @@ function predictLeap(from, v0, out, pts) {
   return out;
 }
 
+// clingableAt:判断某面墙能否被海绵黏住。条件:实体(非栏杆/格栅)、高过头顶、且脚正下方一小段无地板(否则算站在地上不算挂墙)。
 // a wall a sponge can stick to: solid (not a railing / grate), rising past the head, with no floor right under the feet
 function clingableAt(pos, n, blockId) {
   const b = blockId >= 0 ? G.level.blocks[blockId] : null;
@@ -352,6 +445,8 @@ function clingableAt(pos, n, blockId) {
   return !G.physics.raycast(_v2, DOWN, 0.5, _hitC, false).hit;
 }
 
+// startCharge:开始蓄力。若已在蓄力/跃起中直接返回 true(吞掉重复触发);墨不足则播 r._empty() 并失败;
+// 否则进入 charging 态并起播蓄力循环音(仅本地或镜头附近)。
 function startCharge(r, k) {
   const a = r.a, w = W();
   if (k.charging || k.leaping) return true;
@@ -360,11 +455,14 @@ function startCharge(r, k) {
   if (a.isLocal || near(a.pos)) k.loop = G.audio?.loop('mitts_charge', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.5 : 0.35, pitch: 1 }) || null;
   return true;
 }
+// cancelCharge:取消蓄力(松开前被打断/走出平台等),清空蓄力值、停循环音。
 function cancelCharge(r, k) {
   k.charging = false; k.charge = 0; k.chargeT = 0; k.botWant = -1; r.charge = 0;
   k.loop?.stop(0.08); k.loop = null;
 }
 
+// releaseLeap:松手触发起跳。扣除与蓄力成正比的墨水,算好起跳速度并写进 actor.vel、清空缓冲(避免立刻再跳),
+// 进入 leaping 态、预测落点(k.land)、触发起跳动画/音效/FX,上报联机记录(kind 2),地面起跳还在脚下涂一小片。
 function releaseLeap(r, k) {
   const a = r.a, w = W();
   const c = k.charge;
@@ -389,6 +487,7 @@ function releaseLeap(r, k) {
   rumble(a, 0.25, 0.35, 110);
 }
 
+// leapFx:起跳的视听——地面起跳:气流声 + 地面墨环;从墙起跳(wallN 非空):朝离墙方向喷一团墨。
 // the launch: whoosh + a ring of ink off the deck (or a burst off the wall it pushed away from: wallN)
 function leapFx(a, pos, c, wallN) {
   if (!(a.isLocal || near(pos))) return;
@@ -399,6 +498,8 @@ function leapFx(a, pos, c, wallN) {
     G.fx?.ring?.(pos, UP, col, { radius: 1.3, life: 0.35 });
   } else G.fx?.burst(_v2.copy(pos).setY(pos.y + 1), wallN, col, { count: 12, speed: 4, size: 0.08 });
 }
+// landFx:落地的视听——爆炸/落地环 + 落地音 + 屏幕震动(emit 'shake')。
+// 【复用】远端起跳的 ghost 也只播这套(其涂墨与伤害归 owner 端),故这里不涉及任何结算。
 // the landing's look and sound (the ghost of a remote leap plays just this: its paint + hits are the owner's)
 function landFx(a, at, n, c) {
   const w = W(), col = a.color;
@@ -410,6 +511,8 @@ function landFx(a, at, n, c) {
   }
   emit('shake', { pos: c.clone(), amount: 0.35 });
 }
+// telegraph:飞行途中在落点用地上的墨印标出"即将落地"的范围,所有人可见(每 0.1s 重算一次落点,以防被推了一下)。
+// 画两层 fx.mark:半径=landRadius 的实环 + 内圈脉动环,颜色取起跳者的颜色。
 // in flight: the landing zone marked on the ground in the leaper's ink, for everyone (re-aimed now and then in case
 // something nudged the flight; a remote leaper's is predicted from its replicated velocity)
 function telegraph(a, k, w, dt) {
@@ -422,7 +525,7 @@ function telegraph(a, k, w, dt) {
     G.fx?.mark?.(_v2.copy(at).addScaledVector(n, 0.035), n, a.color, w.landRadius * 0.45 * (0.8 + 0.2 * Math.sin(G.time * 20)), 4, 0.8, G.time % 1, 1, 0.3);
   }
 }
-// the leap's splash where it comes down (ground or wall): damage ring + big splat + FX
+// landSplash:落点结算(地面或墙面)——无敌帧、拳砸直击、伤害涟漪(中心最大逐步衰减)、大片涂地、FX,并上报联机(kind 1)。
 function landSplash(a, at, n) {
   const w = W(), col = a.color;
   if (w.landInvuln) a.invuln = Math.max(a.invuln, w.landInvuln);   // a moment untouchable on landing (it flickers)
@@ -436,6 +539,7 @@ function landSplash(a, at, n) {
   }
   const c = _a.copy(at).addScaledVector(n, 0.35);
   let area = G.paint.splat(c, w.landPaint, a.team, { seed: Math.random() });
+  // 在接触面的切平面里均匀撒 6 个外圈墨点(带抖动的角度/半径),让涂地有个不规则的溅射边。
   for (let i = 0; i < 6; i++) {
     const ang = (i / 6) * Math.PI * 2 + Math.random() * 0.5, rr = w.landPaint * (0.75 + Math.random() * 0.35);
     // round the contact, in the surface plane
@@ -460,6 +564,9 @@ function landSplash(a, at, n) {
   rumble(a, 0.45, 0.5, 160);
 }
 
+// startCling:起跳撞到可攀墙后转入贴墙态。把水平法线标准化存进 k.clingN,算出手撑点 k.clingPt,
+// 速度清零、k.hang=true(由 actor 抑制重力/位移,把小孩钉在墙上),补一次落地式涂地(撞墙点),起播耗墨循环音。
+// 【为什么复用 landSplash】把"抵墙"也视作一次微小落地,顺便给贴墙点上色。
 function startCling(r, k, n) {
   const a = r.a;
   k.cling = true; k.hang = true; k.leaping = false; k.clingT = 0; k.dryWarn = 0;
@@ -475,6 +582,8 @@ function startCling(r, k, n) {
   }
   emit('mitts:cling', { actor: a, on: true, pos: k.clingPt.clone(), normal: k.clingN.clone() });
 }
+// dropCling:脱离墙面。why='jump' 朝墙外弹跳(带向上速度);'squid'(变乌贼)不额外给速度直接落下;其余按轻微外推坠落。
+// 都会解除 hang、停耗墨音、发 'mitts:cling' {on:false, why}。
 // let go of the wall: 'jump' hops off it, 'empty' / 'squid' / anything else just drops
 function dropCling(r, k, why) {
   const a = r.a;
@@ -490,16 +599,20 @@ function dropCling(r, k, why) {
 }
 
 // ================================================================================================ local preview
+// 【本地预览】仅本地玩家蓄力时显示的落点指示:沿跳线的虚线圈 + 落点环(白;落海则红色 X)。
+// 这些是场景内对象(prevLine/prevRing/prevX),无人在蓄力时统一隐藏。
 // While the local player charges: a dashed arc along the leap path and a ring where it comes down (white; red-ish X
 // over the sea). Scene objects owned here, hidden whenever nobody local is charging.
 let prevLine = null, prevRing = null, prevX = null, prevShown = 0;
 const prevPts = new Float32Array(PRED_PTS * 3), prevOut = { kind: 'none', pos: new THREE.Vector3(), normal: new THREE.Vector3(), hitPt: new THREE.Vector3(), block: -1, t: 0, n: 0 };
+// ensurePreview:惰性建预览对象(虚线 Line + 落点环 Group + 红色 X),并确保它们挂进场景。返回是否就绪。
 function ensurePreview() {
   if (!G.scene) return false;
   if (!prevLine) {
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PRED_PTS * 3), 3));
     prevLine = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: 0.9, depthTest: false }));
     prevLine.renderOrder = 10; prevLine.frustumCulled = false;
+    // 落点环(半径=溅射范围)+ 内部柔光填充 + 中心点;用 DoubleSide 适应任意朝向。
     // landing ring (the splash radius) + a soft fill + a centre dot
     prevRing = new THREE.Group();
     const rm = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });

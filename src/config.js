@@ -1,9 +1,33 @@
+// ============================================================================
+// 【中文导读】src/config.js —— 全项目唯一调参中心
+// ----------------------------------------------------------------------------
+// 【为什么集中】CONTRACTS 契约规定"从这里 import,不要抄数字":所有数值与内容定义
+//   只写在本文件,各模块一律 import 引用。调平衡只需改这一处,杜绝两份数字日后
+//   不同步;本文件自身不 import 任何模块,是纯数据叶子(无环依赖)。
+// 【各表速览】
+//   队伍与身份  GAME_TITLE 系列 / TEAM_PALETTES 配色 / COLORBLIND_PALETTE 色盲专用
+//   玩家手感    PLAYER —— 属性、移动、操控(手感流 4,实测于 tools/measure-handling.mjs)、
+//               跳跃缓冲/土狼时间、角色控制器、面向弹簧、爬墙
+//   主武器      WEAPONS(12 把现役 + 3 把退役)+ WEAPON_ORDER 顺序
+//               + WEAPON_SUCCESSOR 退役映射 + weaponRange() 射程折算
+//   副武器      SUBS(15 种)+ SUB_ORDER 顺序 + SUB 兼容别名
+//   大招        SPECIALS(19 个)+ SPECIAL_ORDER 顺序
+//   比赛规则    MATCH 涂地战 / ZONES 区域控制 / DIFFICULTY bot 难度
+//   舞台        TIMES 时段 / MAPS 地图清单与 flags / OFFLINE_MAPS 离线白名单
+//   其他        BOT_NAMES 机器人名池 / PROGRESSION 经验成长
+//               / DEFAULT_SETTINGS 默认设置 / QUALITY 画质四档
+// 【单位约定】长度=米,时间=秒,速度=米/秒,角度=度(弧度处会注明 rad),
+//   墨量与体力同为 0..100 一条槽。【伤害基准】玩家 hp=100,故 damage ≥ 100 即一击涂地。
+// 【注释约定】中文注释为导读与调参说明,【】框出要点;原英文注释全部保留,互为补充。
+// ============================================================================
 // Shared tuning + content definitions. Every module reads from here; nothing here imports anything.
 
 export const GAME_TITLE = 'INKWAVE';
 export const GAME_SUBTITLE = 'Turf Riot';
 export const VERSION = '1.0.0';
 
+// 【队伍配色表】每局随机取一组高对比撞色;a 是 Team 0 的颜色,而 Team 0 永远是
+//   本地玩家所在队(对战双方视角下"我方"色会随调色板互换)。
 // Team ink palettes. Team 0 ("Alpha") is always the local player's team; a palette is picked per match.
 export const TEAM_PALETTES = [
   { id: 'tangerine-cobalt', a: '#ff8a14', b: '#2f5bff', names: ['Tangerine', 'Cobalt'] },
@@ -13,20 +37,23 @@ export const TEAM_PALETTES = [
   { id: 'lime-magenta', a: '#a6f01a', b: '#e02cd8', names: ['Lime', 'Magenta'] },
 ];
 // Used instead when settings.colorblind is on (yellow vs blue is safe for all common CVD types).
-export const COLORBLIND_PALETTE = { id: 'cb-yellow-blue', a: '#ffd21a', b: '#2a52ff', names: ['Sun', 'Sea'] };
+export const COLORBLIND_PALETTE = { id: 'cb-yellow-blue', a: '#ffd21a', b: '#2a52ff', names: ['Sun', 'Sea'] }; // 【色盲模式】settings.colorblind 开启时替换上表
 
 export const TEAM_NAMES = ['Alpha', 'Bravo'];
 
+// 【玩家手感总表】人体属性 + 移动 + 操控(手感流 4,由 actor.js _horizontal/_integrate 消费,
+//   实测工具 tools/measure-handling.mjs)+ 跳跃 + 角色控制器 + 面向弹簧 + 爬墙。
+//   改这里的手感请配合 measure-handling 复测,勿凭感觉单改一个数。
 // ---- Player physics / feel (meters, seconds) ----
 export const PLAYER = {
-  hp: 100,
+  hp: 100, // 【生命基准】全表伤害的对照系:damage ≥ 100 即一击涂地
   specialChargeRate: 0.8,   // special meter points per m² of turf inked (0.8 = charges 20% slower); special ink never charges it
   radius: 0.38,
   height: 1.45,          // kid form standing height (feet -> top of head)
   squidHeight: 0.55,
-  runSpeed: 6.0,
+  runSpeed: 6.0, // 【人形跑速】干地移动基准;配 seeker 6.3 等"能否跑过"的数值以它为参照
   squidDrySpeed: 2.9,    // squid hopping on unpainted ground
-  swimSpeed: 11.8,       // squid submerged in own ink
+  swimSpeed: 11.8, // 【游泳】完全潜入己方墨中,全场最快的移动方式       // squid submerged in own ink
   enemyInkSpeed: 1.9,
   climbSpeed: 7.5,
   accelGround: 42,
@@ -36,7 +63,7 @@ export const PLAYER = {
   swimJumpVel: 9.4,
   gravity: 25,
   maxFall: 40,
-  inkMax: 100,
+  inkMax: 100, // 【墨槽上限】武器 inkPerShot 与副武器 inkCost 都以它为单位
   inkRefillSwim: 42,     // per second while submerged
   inkRefillKid: 9,       // per second in kid form after idle delay
   inkRefillDelay: 0.9,
@@ -45,7 +72,7 @@ export const PLAYER = {
   regenDelay: 1.3,
   regenRate: 22,
   regenRateSwim: 60,
-  respawnTime: 5.5,
+  respawnTime: 5.5, // 【重生罚时】被涂地后的等待秒数
   // share of the special gauge you keep when splatted (a special running at the time ends and the gauge restarts
   // from this share of full); the rest is lost, and what's kept carries through the respawn
   specialKeepOnSplat: 0.5,

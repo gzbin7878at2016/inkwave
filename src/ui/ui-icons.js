@@ -1,17 +1,37 @@
+// ============================================================================
+// 【中文导读】UI 图形资产库：内联 SVG 图标集、输入提示图形、logo 与插画，全是 markup 字符串。
+// ----------------------------------------------------------------------------
+// 【模块定位】src/ui/ 的纯数据模块，被 hud.js / menus.js / menu-art.js / hud-boss.js 消费。
+//   不含任何状态，只导出常量字符串与几个拼装函数；所有图形用 currentColor 或 CSS 类染色
+//   （.iw-fa = 队 A 墨色、.iw-fb = 队 B 墨色，见 ui.css），因此同一份图形能跟随队伍配色。
+// 【核心机制】
+//   ① svg(body, vb='0 0 64 64', cls) 把所有图标统一包装成 <svg class="iw-ico …">；绝大多数图标
+//      画布是 64×64 的"米制画布"，坐标即像素、可无损缩放到任意显示尺寸。
+//   ② 描边样式常量：K='#15121c' 勾线墨、DK 深塑料、LT 浅金属、O=统一描边（宽 3、圆角圆接）。
+//   ③ 武器/副武器/大招图标是"双色"——两处 fill 用 currentColor 表示队伍墨色，其余是固定的塑料/金属色。
+//   ④ markup 字符串的好处：innerHTML 克隆极便宜，且能被 h({html}) 直接塞进元素。
+// 【关键约定】图标坐标基于 64×64 viewBox（少数例外：logo 600×240、mapThumb 320×200、
+//   RULE_ART 120×80）；颜色一律 currentColor + CSS 变量，禁止在图形里写死队伍色。
+// 【配套阅读】docs/ASSETS.zh-CN.md；消费方 src/ui/hud.js、src/ui/menus.js；样式表 src/ui/ui.css。
+// ============================================================================
 // INKWAVE UI — inline SVG icon set, input glyphs, logo and illustrations.
 // Everything is a markup string (cheap to clone via innerHTML) using currentColor / CSS classes for team ink:
 //   .iw-fa = accent/team A ink, .iw-fb = accent/team B ink (see ui.css).
 import { esc, splatShape, blobPath } from './ui-util.js';
 import { t } from '../i18n/strings.js';
 
-const K = '#15121c';        // outline ink
-const DK = '#2b2735';       // dark plastic
-const LT = '#e4e8ef';       // light metal/plastic
-const O = `stroke="${K}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"`;
+// 【调色板常量】勾线墨与塑料/金属件固定色（不随队伍变），与 WEAK/队伍墨色区分开。
+const K = '#15121c';        // outline ink（勾线墨：全站统一描边色）
+const DK = '#2b2735';       // dark plastic（深色塑料件：握把/枪体阴影面）
+const LT = '#e4e8ef';       // light metal/plastic（浅色金属/塑料件：反光面）
+const O = `stroke="${K}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"`;   // 【统一描边】宽 3、圆角、圆接
 
+// 【SVG 包装器】默认 64×64 画布、加 aria-hidden——图标纯装饰，语义由外层 aria-label 提供。
 const svg = (body, vb = '0 0 64 64', cls = '') => `<svg class="iw-ico ${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
 
 // ------------------------------------------------------------------ weapons / subs / specials (two-tone, ink = currentColor)
+// 【武器/副武器/大招图标族】三类图标表；key 是武器 kind / 副武器 id / 大招 id。两处 fill=currentColor
+//   表示"队伍墨色"，其余用 K/DK/LT 固定色，故同一图形换队色无需重绘。
 export const WEAPON_ICONS = {
   shooter: svg(`<g ${O}>
       <path d="M17 37 L13.5 53.5 Q13 57 16.5 57 L22.5 57 Q25.5 57 26 54 L29 38 Z" fill="${DK}"/>
@@ -157,6 +177,7 @@ export const WEAPON_ICONS = {
     <path d="M11 29.5 L33 29.5" stroke="#fff" stroke-opacity=".6" stroke-width="2.6" stroke-linecap="round"/>`),
 };
 
+// 【副武器图标表】bomb/sticky/burst/seeker/scan/curtain/sprinkler/mine/beacon/mist 等；键与 config 的 SUB 对应。
 export const SUB_ICONS = {
   bomb: svg(`<g ${O}>
       <rect x="26.5" y="6" width="11" height="10" rx="3" fill="${DK}"/>
@@ -283,6 +304,8 @@ export const SUB_ICONS = {
     <path d="M18 27 Q20.5 21.5 26 19.5" stroke="#fff" stroke-opacity=".45" stroke-width="3" fill="none" stroke-linecap="round"/>`),
 };
 
+// 【大招图标表】slam/storm/barrage/bubbler/sonar/strike/zooka/wail/kraken/blower/jetpack/stamp/booyah/
+//   zipcaster/crab 等；键与 config 的 SPECIALS 对应（文件末尾还会补 barrage_* 变体）。
 export const SPECIAL_ICONS = {
   slam: svg(`<g ${O}>
       <ellipse cx="32" cy="51" rx="25" ry="7" fill="none" stroke="currentColor" stroke-width="4.6"/>
@@ -453,6 +476,7 @@ export const SPECIAL_ICONS = {
 };
 
 // ------------------------------------------------------------------ squid (team icons, avatar)
+// 【鱿鱼形象】队徽/头像用的鱿鱼 SVG；iw-squid 类让眼睛可单独动效（见 ui.css）。
 export const SQUID = svg(`<g ${O} stroke-width="3.4">
     <path d="M22 44 Q19 53 13 58 Q20 61 26 50 Z" fill="currentColor"/>
     <path d="M29 46 Q28.5 55 25 61 Q32.5 61 33 48 Z" fill="currentColor"/>
@@ -469,7 +493,9 @@ export const SQUID = svg(`<g ${O} stroke-width="3.4">
   </g>`, '0 0 64 64', 'iw-squid');
 
 // ------------------------------------------------------------------ line glyphs (single colour, currentColor)
-const G = `fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"`;
+// 【线性图标族】单色描边（G 常量）、全部走 currentColor，用于按钮/菜单/系统提示。GLYPHS 是 id→markup 表。
+const G = `fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"`;   // 【线性描边】宽 6
+// 【齿轮路径】程序化生成：绕圈 32 齿点、外齿 r=27 / 内谷 r=20 交替，闭合多边形。
 function gearPath() {
   const pts = []; const n = 8;
   for (let i = 0; i < n * 4; i++) {
@@ -480,7 +506,10 @@ function gearPath() {
   return 'M' + pts.join('L') + 'Z';
 }
 /** Squid silhouette (64 box): pointed mantle, fins, four tentacles. Shared by GLYPHS.squidlet and the splashtag art. */
+// 【鱿鱼剪影路径】64 画布内；被 GLYPHS.squidlet 与 menu-art 的 splashtag 复用（只需换 fill 就成各种贴纸）。
 export const SQUID_PATH = 'M32 3 C40 10 49 19 50 29 L44 31.5 L44 41 C44 44.5 42 46.5 39.5 46.5 L39.5 58 L35.5 53 L32 60 L28.5 53 L24.5 58 L24.5 46.5 C22 46.5 20 44.5 20 41 L20 31.5 L14 29 C15 19 24 10 32 3 Z';
+// 【线性图标字典】play/gear/star/back/check/close/clock/map/flag/reset/sun/moon/users/drop/swords/globe/
+//   sparkle/rotate/bolt/target/feather/online/copy/paste/exit/lock/plus/key/smile/hand/note/signal/squidlet…
 export const GLYPHS = {
   play: svg(`<path d="M21 12 L51 32 L21 52 Z" fill="currentColor" stroke="currentColor" stroke-width="7" stroke-linejoin="round"/>`),
   gear: svg(`<path d="${gearPath()}" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><circle cx="32" cy="32" r="8.5" fill="var(--k, #15121c)"/>`),
@@ -537,24 +566,29 @@ export const GLYPHS = {
 };
 
 /** Kill-feed / stat glyphs */
+// 【墨花图标】由 splatShape(32,32,17) 生成并加墨线描边；击杀信息流/得分表用。IIFE 只算一次。
 export const SPLAT_ICON = (() => {
   const s = splatShape(32, 32, 17, { seed: 11, arms: 8, drops: 4, armLen: 0.5 });
   return svg(`<path d="${s.core}" fill="currentColor" stroke="${K}" stroke-width="3" stroke-linejoin="round"/>${s.drops.map((d) => `<circle cx="${d.x}" cy="${d.y}" r="${Math.max(2.2, d.r)}" fill="currentColor" stroke="${K}" stroke-width="2"/>`).join('')}`);
 })();
+// 【阵亡图标】鱿鱼骷髅（X 眼）；信息流 death 用，与 hud.js 的 DEATH_MARK_SVG 同源视觉。
 export const DEATH_ICON = svg(`<g ${O} stroke-width="3.4">
     <path d="M32 6 C36.5 6 50 19 54.5 25.5 C56.5 28.5 54.5 31.5 50.5 30.7 L46 30 L46 40 C46 47 41.5 50 32 50 C22.5 50 18 47 18 40 L18 30 L13.5 30.7 C9.5 31.5 7.5 28.5 9.5 25.5 C14 19 27.5 6 32 6 Z" fill="currentColor"/>
   </g>
   <path d="M21.5 31.5 L29 39 M29 31.5 L21.5 39 M35 31.5 L42.5 39 M42.5 31.5 L35 39" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/>`);
 
 // ------------------------------------------------------------------ input glyphs
-const PAD_FACE = { A: '#3fc46e', B: '#ff4f5a', X: '#3c8cff', Y: '#ffc31d' };
+// 【输入提示图形】键帽 / 鼠标 / 手柄按钮 / richText 模板——UI 里所有"按 [键]"文案的统一渲染。
+const PAD_FACE = { A: '#3fc46e', B: '#ff4f5a', X: '#3c8cff', Y: '#ffc31d' };   // 【手柄面键配色】沿用 Xbox 惯例四色
 /** Keycap. `k` is the label ('W', 'SHIFT', 'SPACE', ...). */
+// 【键帽】把键名包成 <kbd>；长度 >2 的加 is-wide 类加宽；空格显示为 SPACE。
 export function keycap(k) {
   const s = String(k);
   const wide = s.length > 2 ? ' iw-key--wide' : '';
   return `<kbd class="iw-key${wide}">${esc(s === ' ' ? 'SPACE' : s)}</kbd>`;
 }
 /** Mouse glyph: which = 'L' | 'R' | 'M' (move) | 'W' (wheel) */
+// 【鼠标图形】which 决定高亮键：L/R 亮左/右键（--a 品牌色），M 额外画左右移动箭头。
 export function mouseGlyph(which = 'L') {
   const l = which === 'L' ? 'var(--a, #ff8a14)' : '#fff';
   const r = which === 'R' ? 'var(--a, #ff8a14)' : '#fff';
@@ -566,6 +600,7 @@ export function mouseGlyph(which = 'L') {
     <rect x="21.5" y="11" width="5" height="9" rx="2.5" fill="${K}"/></svg></span>`;
 }
 /** Gamepad glyph: 'A' 'B' 'X' 'Y' 'LB' 'RB' 'LT' 'RT' 'LS' 'RS' 'View' 'Start' 'DPad' */
+// 【手柄图形】按按钮类别分派：面键(配色) / 肩键 LB-RB / 扳机 LT-RT / 摇杆 LS-RS / 系统键 View-Start-DPad。
 export function padGlyph(b) {
   if (PAD_FACE[b]) return `<span class="iw-pad iw-pad--face" style="--pc:${PAD_FACE[b]}">${b}</span>`;
   if (b === 'LB' || b === 'RB') return `<span class="iw-pad iw-pad--bumper">${b}</span>`;
@@ -577,6 +612,8 @@ export function padGlyph(b) {
   return `<span class="iw-pad iw-pad--bumper">${esc(b)}</span>`;
 }
 /** Renders "Hold [SHIFT] to swim" → text with keycaps. `{A}` renders a gamepad glyph. */
+// 【富文本】先 esc 保证安全，再把 [XXX] 换成键帽/鼠标图形（LMB/RMB 特判）、{X} 换手柄图形。
+//   约定：1–10 字符的方括号段才是键帽，5 以内的大写字母花括号段才是手柄键。
 export function richText(str) {
   return esc(str)
     .replace(/\[([^\]]{1,10})\]/g, (_, k) => (k === 'LMB' ? mouseGlyph('L') : k === 'RMB' ? mouseGlyph('R') : keycap(k)))
@@ -585,6 +622,8 @@ export function richText(str) {
 
 // ------------------------------------------------------------------ logo
 /** Big display logo: letters + ink splat + animated drips. size: 'xl' | 'md' | 'sm' */
+// 【大 logo】标题字母（逐字 span，--i 索引供 CSS 延迟入场）+ 墨花底（600×240 viewBox，横向拉伸 1.7×）
+//   + 四条垂滴（drips，带 --d 延迟抖动）。子标题过 t() 本地化。size 决定 CSS 字号档。
 export function logoMarkup(title = 'INKWAVE', subtitle = 'Turf Riot', size = 'xl') {
   const sub = subtitle ? t(subtitle) : '';
   const letters = [...title].map((ch, i) => `<span class="iw-logo__l" style="--i:${i}" data-l="${esc(ch)}">${esc(ch)}</span>`).join('');
@@ -609,6 +648,8 @@ export function logoMarkup(title = 'INKWAVE', subtitle = 'Turf Riot', size = 'xl
 
 // ------------------------------------------------------------------ map thumbnails
 /** Stylised top-down illustration of an arena. theme: 'day' | 'sunset' */
+// 【地图缩略图】程序化生成的俯视竞技场插画（320×200 viewBox，slice 裁切）；theme 切换昼/暮色调，
+//   随机 id 保证同页多张图的渐变不冲突；两侧队的墨花数量/位置由 seed 决定以便同一关卡稳定。
 export function mapThumb(map, seed = 3) {
   const sunset = map && map.theme === 'sunset';
   const id = 'm' + Math.floor(Math.random() * 1e9).toString(36);
@@ -655,6 +696,7 @@ export function mapThumb(map, seed = 3) {
 }
 
 // ------------------------------------------------------------------ how-to illustrations (120 x 80)
+// 【玩法说明插画】turf/swim/enemy/climb 四张 120×80 的小插画，用在菜单"规则/教学"页。
 export const RULE_ART = {
   turf: `<svg viewBox="0 0 120 80" aria-hidden="true">
     <path d="M10 60 L60 34 L110 60 L60 78 Z" fill="#f4ecdc" stroke="${K}" stroke-width="2.5" stroke-linejoin="round"/>
@@ -690,8 +732,11 @@ export const RULE_ART = {
 };
 
 // ------------------------------------------------------------------ helpers
+// 【武器图标取用】id 或 kind 均可，找不到回退 shooter。
 export const weaponIcon = (idOrKind) => WEAPON_ICONS[idOrKind] || WEAPON_ICONS.shooter;
 // Bomb Barrage variants: three of the sub's own icon falling, under the barrage's motion streaks
+// 【Bomb Barrage 变体】为 barrage_sticky/burst/seeker/mist 生成图标：把对应副武器图标去壳后，
+//   用同一套"下坠拖尾 + 三枚缩放旋转"布局铺在 64 画布上——运行时在此动态补进 SPECIAL_ICONS。
 {
   const inner = (svgStr) => svgStr.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
   const streaks = `<g stroke-linecap="round"><path d="M12 3 L12 11 M32 2 L32 8 M52 3 L52 11" stroke="${K}" stroke-width="6.5"/><path d="M12 3 L12 11 M32 2 L32 8 M52 3 L52 11" stroke="currentColor" stroke-width="2.8"/></g>`;
@@ -701,4 +746,5 @@ export const weaponIcon = (idOrKind) => WEAPON_ICONS[idOrKind] || WEAPON_ICONS.s
       .map(([x, y, sc, r]) => `<g transform="translate(${x} ${y}) rotate(${r}) scale(${sc}) translate(-32 -32)">${body}</g>`).join(''));
   }
 }
+// 【大招图标取用】找不到回退 slam。
 export const specialIcon = (id) => SPECIAL_ICONS[id] || SPECIAL_ICONS.slam;

@@ -1,3 +1,19 @@
+// ============================================================================
+// 【中文导读】Boss 模式美术：HULLBREAKER 的贴纸风 SVG 插画，全为 markup 字符串。
+// ----------------------------------------------------------------------------
+// 【模块定位】src/ui/ 的纯数据模块，被 hud-boss.js（血条徽章、招式播报、标题卡）与 menus.js
+//   （模式选择卡、lobby、结算）共用；不含状态、不依赖 three.js。
+//   bossEmblem({cracked})  正视头壳徽章（100×100，血条/标题卡用）
+//   bossSilhouette()       侧视全身，朝左（360×240——模式选择卡的主图）
+//   MOVE_ICONS[id]         64×64 招式图标（currentColor），播报提示用
+//   BOSS_GLYPH             小号单色"盒中蟹"图标（currentColor），芯片/点数用
+// 【核心机制】颜色走 CSS 变量，故同一套美术能跟随对局配色：
+//   --boss（Boss 的污染墨 = 队 1）、--weak（弱点辉光 = 小队墨），各带 --enemy/--self 兜底。
+//   局部构件（eye/stalk/seg/leg）是参数化函数，把"复用的零件"装配成两张整图，避免重复路径。
+// 【关键约定】尺寸：徽章 100×100、全身 360×240、招式图标 64×64 的 viewBox；坐标即画布像素。
+//   蟹腿 leg() 用两段粗上段 + 尖细下段（seg 生成四边形）表现关节走路感。
+// 【配套阅读】docs/BOSS.zh-CN.md、docs/BOSS.md；消费方 src/ui/hud-boss.js、src/ui/menus.js、src/ui/news.js。
+// ============================================================================
 // INKWAVE UI — HULLBREAKER art (boss mode): original sticker illustrations as SVG markup strings, shared by the HUD
 // (boss bar emblem, move callouts, title card) and the menus (mode card, lobby, results).
 //   bossEmblem({ cracked })   front view head-and-shell badge (100×100)
@@ -7,37 +23,45 @@
 // Colours come from CSS custom properties so the same art follows the match palette:
 //   --boss (the boss's corrupt ink = team 1), --weak (weak-point glow = the squad's ink). Both have fallbacks.
 
-const K = '#15121c';
-const INK = 'var(--boss, var(--enemy, #2f5bff))';
-const WEAK = 'var(--weak, var(--self, #ff8a14))';
-const SHELL = '#23706b', SHELL_D = '#174c4a', SHELL_L = '#3c9a90';
-const RUST = '#c2602c', RUST_D = '#8e3d1b';
-const CARA = '#a8283f', CARA_D = '#6c1628', CARA_L = '#dc4d61';
-const CLAW = '#c5354c', CLAW_L = '#f07a82';
-const BELLY = '#f1c9a6';
+// 【配色常量】勾线墨 + 两支动态墨色（跟队色）+ 一组货柜/蟹身的固定色板。
+const K = '#15121c';                                  // 勾线墨
+const INK = 'var(--boss, var(--enemy, #2f5bff))';     // Boss 污染墨：优先 --boss，退回 --enemy，再退回蓝
+const WEAK = 'var(--weak, var(--self, #ff8a14))';     // 弱点辉光：优先 --weak，退回 --self，再退回橙
+const SHELL = '#23706b', SHELL_D = '#174c4a', SHELL_L = '#3c9a90';   // 生锈货柜壳：本体/暗面/亮面
+const RUST = '#c2602c', RUST_D = '#8e3d1b';           // 锈斑：本体/暗面
+const CARA = '#a8283f', CARA_D = '#6c1628', CARA_L = '#dc4d61';      // 蟹身甲壳：本体/暗面/亮面
+const CLAW = '#c5354c', CLAW_L = '#f07a82';           // 螯钳：本体/高光
+const BELLY = '#f1c9a6';                              // 腹部浅色
 
+// 【Boss 文案常量】名称/称号/简介为英文原文，展示处经 t() 本地化；is 为 message id，不随语言硬编码。
 export const BOSS_NAME = 'HULLBREAKER';
 export const BOSS_EPITHET = 'The Rust-Shelled Terror';
 export const BOSS_BLURB = 'A giant hermit crab living in a rusted shipping container. Everyone in the room teams up to sink it before time runs out.';
+// 【招式播报文案】id → 短标签，hud-boss.js 的 _showCall 会 t() 后显示。
 export const MOVE_LABELS = {
   slam: 'SLAM!', barrage: 'INCOMING!', sweep: 'SWEEP!', charge: 'CHARGE!', crablets: 'BROOD!', frenzy: 'FRENZY!', open: 'OPEN!',
 };
 
 // ------------------------------------------------------------------ bits
+// 【复用零件】把"眼/眼柄/几何段/蟹腿"做成参数化函数，供整图装配调用；坐标均为各自画布像素。
+// 【眼睛】外辉光圆（WEAK）+ 黑底 + 亮瞳 + 高光 + 可旋转的上眼睑弧；lidRot 控制眯眼角度。
 const eye = (x, y, r, lidRot = 0) => `
   <circle cx="${x}" cy="${y}" r="${r * 1.9}" fill="${WEAK}" opacity=".32" class="bx-glow"/>
   <circle cx="${x}" cy="${y}" r="${r}" fill="${K}"/>
   <circle cx="${x}" cy="${y}" r="${r * 0.62}" fill="${WEAK}" class="bx-eye"/>
   <circle cx="${x - r * 0.25}" cy="${y - r * 0.28}" r="${r * 0.2}" fill="#fff"/>
   <path d="M${x - r * 1.08} ${y - r * 0.05} A${r * 1.08} ${r * 1.08} 0 0 1 ${x + r * 1.08} ${y - r * 0.05} Z" fill="${CARA_D}" stroke="${K}" stroke-width="${r * 0.32}" stroke-linejoin="round" transform="rotate(${lidRot} ${x} ${y})"/>`;
+// 【眼柄】从 (x0,y0) 到 (x1,y1) 的二次曲线，先画加粗黑勾线再叠蟹色——做出"管状"立体感。
 const stalk = (x0, y0, x1, y1, w) => `<path d="M${x0} ${y0} Q${(x0 + x1) / 2 + (x1 - x0) * 0.35} ${(y0 + y1) / 2} ${x1} ${y1}" fill="none" stroke="${K}" stroke-width="${w + 5}" stroke-linecap="round"/>
   <path d="M${x0} ${y0} Q${(x0 + x1) / 2 + (x1 - x0) * 0.35} ${(y0 + y1) / 2} ${x1} ${y1}" fill="none" stroke="${CARA}" stroke-width="${w}" stroke-linecap="round"/>`;
+// 【锥形段】把线段 a→b 扩成四边形（两端半宽 wa/wb，法向取垂直方向），用于蛙腿粗段的形状。
 const seg = (a, b, wa, wb) => {
   const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
   const f = (v) => v.toFixed(1);
   return `M${f(a[0] + nx * wa)} ${f(a[1] + ny * wa)} L${f(b[0] + nx * wb)} ${f(b[1] + ny * wb)} L${f(b[0] - nx * wb)} ${f(b[1] - ny * wb)} L${f(a[0] - nx * wa)} ${f(a[1] - ny * wa)} Z`;
 };
 // jointed walking leg: thick upper segment, tapering to a pointed dark tip
+// 【蟹腿】a=根部、k=膝、t=脚尖；上下两段锥形段 + 深色尖，膝部加圆关节，腿面再叠一道 CARA_L 高光线。
 const leg = ([a, k, t], w, col) => {
   const m = [k[0] + (t[0] - k[0]) * 0.72, k[1] + (t[1] - k[1]) * 0.72];
   return `<g stroke="${K}" stroke-width="5" stroke-linejoin="round" paint-order="stroke">
@@ -48,10 +72,13 @@ const leg = ([a, k, t], w, col) => {
     </g>
     <path d="M${a[0]} ${a[1]} L${k[0]} ${k[1]}" stroke="${CARA_L}" stroke-width="${w * 0.22}" stroke-linecap="round" opacity=".55" transform="translate(${-w * 0.16} ${-w * 0.12})"/>`;
 };
+// 【大螯路径】蟹钳通用外形（满身用与徽章用同一份 path，靠 transform 缩放定位）。
 const CLAW_D = 'M90 134 C76 120 44 118 26 130 C16 137 9 144 5 152 C16 150 27 150 37 153 C27 159 17 167 10 177 C25 185 48 189 67 185 C86 181 99 168 99 154 C99 144 96 138 90 134 Z';
 
 // ------------------------------------------------------------------ emblem (front view)
 /** Head + container badge. cracked = phase 3 (split shell, hot eyes). */
+// 【正视徽章】100×100：货柜壳（9 条竖肋 SHELL_D）+ 眼柄双眼 + 甲壳脸 + 左右螯；cracked=true 时
+//   画壳裂 + 换裂缝眼（第三阶段），供血条/标题卡/结局多处复用。
 export function bossEmblem({ cracked = false } = {}) {
   const ribs = Array.from({ length: 9 }, (_, i) => `<path d="M${21 + i * 7.3} 19 V51" stroke="${SHELL_D}" stroke-width="2.2" opacity=".75"/>`).join('');
   const crack = cracked
@@ -78,6 +105,8 @@ export function bossEmblem({ cracked = false } = {}) {
 }
 
 // ------------------------------------------------------------------ full-body side view (menus)
+// 【侧视全身】360×240，朝左：底部墨影 + 远腿/近腿（各三条）+ 倾斜货柜壳（含锈斑、水滴、藤壶）+
+//   探出的蟹身与甲壳 + 眼柄双眼 + 喷墨炮口 + 大螯。模式选择卡与新闻卡的主图。
 export function bossSilhouette() {
   const ribs = Array.from({ length: 13 }, (_, i) => `<path d="M${166 + i * 13} 46 V138" stroke="${SHELL_D}" stroke-width="3.2" opacity=".7"/>`).join('');
   const drips = [[176, 1.2], [205, 0.7], [238, 1.5], [270, 0.9], [300, 1.25]].map(([x, k]) => `<path d="M${x - 7} 140 L${x + 7} 140 L${x + 5} ${140 + 18 * k} Q${x} ${150 + 18 * k} ${x - 5} ${140 + 18 * k} Z" fill="${INK}" stroke="${K}" stroke-width="3.4" stroke-linejoin="round"/>`).join('');
@@ -131,8 +160,9 @@ export function bossSilhouette() {
 }
 
 // ------------------------------------------------------------------ move glyphs (64×64, currentColor + outline)
+// 【招式图标】64×64、currentColor + 统一描边 OL；7 个招式（slam/barrage/sweep/charge/crablets/frenzy/open）。
 const svg = (body) => `<svg class="iw-ico" viewBox="0 0 64 64" aria-hidden="true">${body}</svg>`;
-const OL = `stroke="${K}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"`;
+const OL = `stroke="${K}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"`;   // 【图标描边】宽 4
 export const MOVE_ICONS = {
   slam: svg(`<path d="M20 6 C12 6 8 14 10 22 L16 20 L14 30 C22 34 34 32 38 24 C42 14 32 6 20 6 Z" fill="currentColor" ${OL}/>
     <path d="M26 34 L26 44" ${OL} fill="none"/><path d="M8 52 H56" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
@@ -155,6 +185,7 @@ export const MOVE_ICONS = {
   open: svg(`<path d="M32 4 L38 20 L55 20 L41 30 L47 47 L32 37 L17 47 L23 30 L9 20 L26 20 Z" fill="currentColor" ${OL}/>
     <path d="M22 56 Q32 50 42 56" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>`),
 };
+// 【小号徽记】"盒中蟹"单色图标（currentColor），芯片/点数等小尺寸处使用。
 export const BOSS_GLYPH = svg(`<rect x="10" y="8" width="44" height="24" rx="3" fill="currentColor"/>
   <path d="M16 12 V28 M24 12 V28 M32 12 V28 M40 12 V28 M48 12 V28" stroke="${K}" stroke-width="2.4" opacity=".45"/>
   <path d="M14 42 C14 34 22 30 32 30 C42 30 50 34 50 42 C50 50 42 56 32 56 C22 56 14 50 14 42 Z" fill="currentColor"/>

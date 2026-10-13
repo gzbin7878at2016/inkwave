@@ -1,3 +1,25 @@
+// ===============================================================================================================
+// 【中文导读】screenfx.js —— 屏幕层后处理 FX(全屏合成 pass + 镜头墨水场)。
+// 【模块定位】属于 fx 子系统,但是"镜头/屏幕"层而非世界层。main.js 在 boot 阶段 new ScreenFX(R, G)
+//         (R = core/renderer.js 的渲染器包装器),构造函数通过 R.setExtraPass(pass) 把自己作为一个 ShaderPass
+//         插在 grade pass 之后、OutputPass 之前(线性 HDR 空间,见 src/core/renderer.js 的 extraPass 注入位);
+//         此后 main.js 每帧在 composer 渲染前调用 sfx.update(dt, this)。它还把自身交给 hud.attachScreenFX(this)。
+// 【核心机制】两件东西:
+//   ① 一个全屏 composite pass(FRAG):把各种 uniform 强度合成到画面上——屏幕扭曲(uPunch/uStretch)、径向模糊
+//      (uSpeed 速度线 / uBlast 爆炸)、色散(uChroma)、暗角(uHeart/uHurt 低血心跳)、边缘敌墨 goo(uEdgeInk)、
+//      墨洪/虹膜揭示(uFlood/uHole)、白闪(uFlash)、去饱和(uDesat)等。TAPS 决定径向模糊采样数,随画质变。
+//   ② 一个独立的 GPU "镜头墨水场" LensInk:把镜头(屏幕)上的光泽墨珠画成一堆 metaball 光斑,渲染进半分辨率
+//      render target,再由 composite pass 采样并做厚度/法线着色;墨珠会 splat、滴落、滑动、蒸发。
+// 【零成本空闲】所有效果都由 uniform 强度驱动;当全部强度低于阈值时 this.pass.enabled = false,全屏 pass 整段不执行,
+//         静止时几乎零开销(见 update() 末尾的 any 判定)。
+// 【关键约定】① 高强度效果(模糊/色散/冲击/白闪)受 settings.cameraShake 与 prefers-reduced-motion 缩放系数 I 调制;
+//         ② 所有衰减/弹簧跑在"模拟时钟" sdt(暂停时为 0),冻结/单步审计可复现;③ LensInk 的 rt 为半分辨率
+//         (高画质 1/3,否则 1/4)以省填充率;④ 世界效应与屏幕效应分工:世界里的墨在 fx.js,镜头上的墨在这里。
+// 【配套阅读】docs/CONTRACTS.zh-CN.md §4(屏幕 FX 契约)、docs/EVENTS.zh-CN.md(订阅的事件)、docs/RENDERING-UE4.zh-CN.md
+//         (tonemapping/colorspace 注入点)、src/core/renderer.js(setExtraPass)、src/ui/hud.js(attachScreenFX)。
+// 【建议阅读顺序】FRAG(全屏合成,按段读)→ LensInk 类(镜头墨场)→ ScreenFX 构造函数(状态 + uniform)→ _bind(事件)→
+//         update → _sim → _simFlood。
+// ===============================================================================================================
 // INKWAVE — screen FX (stream 6). One full-screen composite pass inserted after the grade pass, before OutputPass
 // (linear HDR), plus a GPU "lens ink" field: glossy metaball ink blobs on the camera lens that splat, drip and slide.
 //
@@ -17,19 +39,25 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { on, G as CTX, clamp, damp, lerp } from '../core/ctx.js';
 import { QUALITY } from '../config.js';
 
+// 【模块级 scratch 与常量】同 fx.js 的零分配纪律:_v/_v2/_c/_cc 供 project/clamp 中转,不 new。
 const TAU = Math.PI * 2;
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const _c = new THREE.Color(), _cc = new THREE.Color();
-const SEA = new THREE.Color(0.06, 0.34, 0.62);
-const HOT = new THREE.Color(1.0, 0.16, 0.05);
+const SEA = new THREE.Color(0.06, 0.34, 0.62);   // 落水被击杀时的墨洪颜色(海蓝)
+const HOT = new THREE.Color(1.0, 0.16, 0.05);    // 读秒紧迫感的暖红
 const WHITE = new THREE.Color(1, 1, 1);
 const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
 const easeInOut = (t) => { t = clamp(t, 0, 1); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
 const rnd = (a, b) => a + Math.random() * (b - a);
+// 【无障碍】prefers-reduced-motion:若系统开启,所有剧烈效果乘以 0.35 的强度(见 update 里的 rm 系数)。
 const RM_Q = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 const reducedMotion = () => !!(RM_Q && RM_Q.matches);
 
 // ------------------------------------------------------------------------------------------------ composite shader
+// 【全屏合成 pass 着色器】VERT 只是标准全屏三角/四边形;FRAG 是全部屏幕效果的合成核心,按段罗列:
+//   uPunch/uStretch/uSwim/uBlast → 几何扭曲;blurDir+TAPS 循环 → 径向模糊;sceneTap → 带色散的采样;
+//   之后依次叠加饱和度/聚焦隧道/速度线/水下色调/暗角/紧迫感/光环/白闪/边缘 goo/镜头墨/flood 等。
+//   采样点全部走 sceneTap(单一入口,内部按 uChroma 决定 1 或 3 次采样),便于统一成本。
 const VERT = /* glsl */`varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 
 const FRAG = /* glsl */`
@@ -80,6 +108,7 @@ const FRAG = /* glsl */`
   }
   float fbm(vec2 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 3; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; } return s; }
 
+  // 【edgeD】到最近屏幕边缘的距离(以屏幕高度为单位),用 logsumexp 让四角圆滑过渡(避免内角尖点)。
   // distance (in screen-height units) to the nearest screen edge, with rounded inner corners
   float edgeD(vec2 uv) {
     vec2 p = uv * vec2(uAspect, 1.0);
@@ -87,6 +116,7 @@ const FRAG = /* glsl */`
     const float k = 16.0;
     return -log(exp(-k * dx) + exp(-k * dy)) / k;
   }
+  // 【gooBand】贴屏幕边缘的黏稠墨带:width 为带宽(高度单位),wob 让边缘用 fbm/vnoise 抖动;> 0 在墨内。
   // gooey ink band hugging the screen edges: > 0 inside the ink
   float gooBand(vec2 uv, float width, float wob, float seed) {
     vec2 p = uv * vec2(uAspect, 1.0);
@@ -94,6 +124,7 @@ const FRAG = /* glsl */`
     float n2 = vnoise(p * 10.0 + vec2(uTime * 0.25, seed * 1.7)) - 0.5;
     return width * (1.0 + n * wob * 2.2 + n2 * wob * 0.7) - edgeD(uv);
   }
+  // 【drips】从屏幕顶边垂下的墨滴:按 x 分 19 个 id 格,每格随机长度/宽度,末端有 bulb 球头;> 0 在墨内。
   // ink drips hanging from the top edge: > 0 inside
   float drips(vec2 uv, float len, float seed, float top) {
     const float N = 19.0;
@@ -113,6 +144,7 @@ const FRAG = /* glsl */`
     float d = length(vec2(fx, max(y - L, 0.0))) - rad;
     return -d;
   }
+  // 【inkShade】给定法线 n 的光泽湿墨着色:漫反射 + 两束高光 + 菲涅尔;thick 越大越不透明(越看不出背后)。
   // glossy wet-ink shading for a surface with normal n
   vec3 inkShade(vec3 inkCol, vec3 behind, vec3 n, float thick) {
     vec3 L = normalize(vec3(-0.42, 0.62, 0.66));
@@ -137,6 +169,8 @@ const FRAG = /* glsl */`
     vec2 q = c0 * vec2(uAspect, 1.0);
     float r = length(q);
 
+    // 【几何扭曲】先扭曲 uv(而非着色):冲击拉伸(以 uPunchPos 为中心放大)、游速/超级跳的镜头拉伸、
+    //  水下波动、爆炸冲击环的径向挤压——都在采样前完成,后续段只用扭曲后的 uv,保证一致。
     // ---------------------------------------------------------------- geometric distortion
     uv = uPunchPos + (uv - uPunchPos) * (1.0 - uPunch);
     if (uStretch > 0.0001) { vec2 d = uv - 0.5; vec2 da = d * vec2(uAspect, 1.0); uv = 0.5 + d * (1.0 - uStretch * dot(da, da)); }
@@ -148,6 +182,8 @@ const FRAG = /* glsl */`
       uv -= (bd / max(bl, 1e-4)) / vec2(uAspect, 1.0) * ring * 0.028 * uBlast;
     }
 
+    // 【采样:径向模糊 + 色散】blurDir 合并了速度线边缘模糊与爆炸径向模糊;TAPS 次采样每次走 sceneTap
+    //  (内部按 uChroma 决定 1 或 3 次纹理取样)。blurDir≈0 时直接单采样,省掉循环。
     // ---------------------------------------------------------------- sampling: radial blurs + chromatic split
     float edgeW = smoothstep(0.22, 0.95, r);
     vec2 blurDir = (vec2(0.5) - uv) * (uSpeed * 0.055 * edgeW) + (uBlastPos - uv) * (uBlast * 0.05);
@@ -164,6 +200,7 @@ const FRAG = /* glsl */`
       col = sceneTap(uv, ca);
     }
 
+    // 【分级式调整】饱和度/去饱和;uFocus 蓄力时中心保持、边缘压暗的"聚焦隧道",并叠一圈随蓄力内缩的充能环。
     // ---------------------------------------------------------------- grading-type adjustments
     float l0 = luma(col);
     col = max(mix(vec3(l0), col, uSat * (1.0 - uDesat)), 0.0);
@@ -173,6 +210,7 @@ const FRAG = /* glsl */`
       col += uCharge.rgb * exp(-abs(r - mix(0.95, 0.3, uCharge.a)) * 40.0) * uCharge.a * 0.35 * step(0.01, uCharge.a);
     }
 
+    // 【速度线】按角度分 96 lane,每 lane 随机宽度/相位,沿半径方向流动的虚线;只在外圈(r→1)显现。
     // ---------------------------------------------------------------- speed streaks
     if (uSpeed > 0.001) {
       float ang = atan(q.y, q.x);
@@ -188,6 +226,7 @@ const FRAG = /* glsl */`
       col += uSpeedTint * s * 1.3;
     }
 
+    // 【水下】游泳时整体偏水色,并叠焦散(caustic)闪点,越靠外圈越强。
     // ---------------------------------------------------------------- swim: submerged tint + caustic glints
     if (uSwim.a > 0.001) {
       float v = smoothstep(0.35, 1.05, r);
@@ -196,6 +235,7 @@ const FRAG = /* glsl */`
       col += uSwim.rgb * pow(cst, 3.0) * 1.6 * uSwim.a * v;
     }
 
+    // 【低血心跳暗角】uHeart.a 由 _sim 的心跳包络驱动,uHurt 提供持续压暗;噪声让暗角边缘不规整。
     // ---------------------------------------------------------------- low HP heartbeat vignette
     if (uHeart.a > 0.001 || uHurt > 0.001) {
       float v = smoothstep(0.42, 1.08, r + (fbm(q * 2.6 + uTime * 0.08) - 0.44) * 0.18);
@@ -203,12 +243,14 @@ const FRAG = /* glsl */`
       col = mix(col, col * 0.3 + uHeart.rgb * (0.12 + 0.22 * uHeart.a), k);
     }
 
+    // 【读秒紧迫】最后 10 秒边缘泛暖红、轻微发白,随 urg 强度脉冲。
     // ---------------------------------------------------------------- final-seconds urgency
     if (uUrgency.a > 0.001) {
       float v = smoothstep(0.5, 1.12, r);
       col = mix(col, col * vec3(1.1, 0.78, 0.72) + uUrgency.rgb * 0.2, v * uUrgency.a);
     }
 
+    // 【边框特效】特殊技光环(边缘流线 + 虚线)、击杀闪光、出生微光——都是沿屏幕边缘的加法亮度。
     // ---------------------------------------------------------------- special aura / super-jump charge / kill flash / spawn shimmer
     if (uAura.a > 0.001) {
       float e = edgeD(vUv);
@@ -227,12 +269,14 @@ const FRAG = /* glsl */`
       col += uShimmer.rgb * smoothstep(0.62, 1.12, r) * s * uShimmer.a * 0.35;
     }
 
+    // 【爆炸辉光】以 uBlastPos 为中心的高斯辉光,乘上 uBlastColor。
     // ---------------------------------------------------------------- blast glow
     if (uBlast > 0.001) {
       float bd = length((vUv - uBlastPos) * vec2(uAspect, 1.0));
       col += uBlastColor * exp(-bd * 6.0) * uBlast * 0.2;
     }
 
+    // 【脚下敌墨:边缘 goo】底部更宽,用 gooBand 的 SDF 反求法线做湿墨着色,覆盖度 m 抗锯齿。
     // ---------------------------------------------------------------- enemy ink underfoot: gooey edge band
     if (uEdgeInk.a > 0.001) {
       float bottom = smoothstep(0.6, 0.0, vUv.y);
@@ -247,6 +291,8 @@ const FRAG = /* glsl */`
       }
     }
 
+    // 【镜头墨水】采样 LensInk 的半分辨率 metaball 场 tLens:R/G 通道是该点两种墨色的权重(叠成 inkCol),
+    //  B 通道是水面膜的覆盖度;由 fs(=R+G)的反差求法线,做厚度/菲涅尔/折射着色;fs<0.03 时整段跳过(省成本)。
     // ---------------------------------------------------------------- lens ink (metaball field rendered by LensInk)
     if (uLensOn > 0.5) {
       vec4 Lc = texture2D(tLens, vUv);
@@ -287,6 +333,8 @@ const FRAG = /* glsl */`
       }
     }
 
+    // 【墨洪 / 重生虹膜】被击杀时边缘涌墨铺满(uFloodClear=1 时是半透明海水膜),重生时中心开出虹膜孔(uHole)露出画面,
+    //  孔缘叠一圈亮边(uHoleRim)。fbm 让墨面有起伏与厚度。
     // ---------------------------------------------------------------- splatted ink flood + respawn iris reveal
     if (uFlood.a > 0.001) {
       float width = uFlood.a * 1.05;
@@ -321,6 +369,7 @@ const FRAG = /* glsl */`
       }
     }
 
+    // 【白闪】先压向灰度再叠色,且按半径加权(边缘更亮、中心留可读性)——这是"不遮住战斗"的关键。
     // ---------------------------------------------------------------- whiteout flash
     if (uFlash.a > 0.001) {
       col = mix(col, vec3(luma(col)), clamp(uFlash.a * 0.35, 0.0, 0.5));
@@ -331,6 +380,8 @@ const FRAG = /* glsl */`
 `;
 
 // ------------------------------------------------------------------------------------------------ lens ink field
+// 【镜头墨场着色器】把每个墨珠当成一个屏幕空间的 metaball 光斑:片元输出 (R+G=覆盖/强度, B=水面膜),用加法混合
+//  叠加进半分辨率 rt,再在 composite 里按 iso 阈值(0.5)还原成墨面。iA=(uv, rx, ry),iB=(rot, intensity, channel, 未用)。
 const LENS_VERT = /* glsl */`
   attribute vec4 iA;   // x, y (uv), rx, ry (screen-height units)
   attribute vec4 iB;   // rotation, intensity, channel, unused
@@ -355,9 +406,13 @@ const LENS_FRAG = /* glsl */`
     gl_FragColor = vec4(vCh * k * vI, 0.0);
   }`;
 
+// 【容量与通道】MAXS=220 是墨珠/拖尾的上限(池);CH_* 是 meteball 的"墨通道",决定它叠进 R/G/B 哪个通道
+//  从而在 composite 里用不同颜色显示(enemy=R 敌方色 / own=G 己方色 / water=B 水膜)。
 const MAXS = 220;       // sprite capacity (drops + trails)
 const CH_ENEMY = 0, CH_OWN = 1, CH_WATER = 2;
 
+// 【LensInk 类】镜头墨水的 GPU 场管理器。自带一个半分辨率 HalfFloat render target、一个 InstancedBufferGeometry
+//  (每帧最多 MAXS 个 quad)与独立 Scene/Camera;parts/pool 是 CPU 侧的对象池,渲染时一次性写进实例属性。
 class LensInk {
   constructor(renderer) {
     this.r = renderer;
@@ -390,11 +445,14 @@ class LensInk {
     this.dirty = false;
   }
 
+  // 【改尺寸】窗口/画质变化时重设 rt 尺寸;texel 供 composite 里做邻域采样求法线。
   resize(w, h, scale) {
     const W = Math.max(64, Math.round(w * scale)), H = Math.max(36, Math.round(h * scale));
     if (this.rt.width !== W || this.rt.height !== H) { this.rt.setSize(W, H); this.texel.set(1 / W, 1 / H); this.dirty = true; }
   }
 
+  // 【取一个粒子】池空则新建;池满(≥MAXS)时优先淘汰"最弱/最老的 trail"(评分:trail 用 I,其余 I+10),
+  //  回收进 pool 复用。所有字段在此重置为初始值,避免上一任残留。
   _new() {
     if (this.parts.length >= MAXS) {
       // recycle the weakest/oldest trail first
@@ -408,6 +466,8 @@ class LensInk {
     return p;
   }
 
+  // 【加一个光斑】kind: 'drop'|'arm'|'sat'|'trail';ch 是墨通道;x/y 为 uv(注意 VERT 里 y 已翻成向上)。
+  //  stick 是开始下滑前的停留时间,pop 是出现时的膨胀时长(grow 0→1)。
   add(kind, ch, x, y, r, { rx = r, ry = r, rot = 0, I = 1, life = 1.5, stick = 99, pop = 0.09 } = {}) {
     const p = this._new();
     p.kind = kind; p.ch = ch; p.x = x; p.y = y; p.r = r; p.rx = rx; p.ry = ry; p.rot = rot; p.I0 = p.I = I;
@@ -415,6 +475,7 @@ class LensInk {
     return p;
   }
 
+  // 【墨溅】一次镜头溅墨 = 不规则核心 + 数条粗细不一、末端带球头的"臂" + 甩出的卫星小滴;重块稍后下滑并拖细膜拖尾。
   // One ink splat: a lumpy core, a few fat bulb-tipped arms of uneven length, flung satellite droplets. The heavy parts
   // slide down after a moment and leave a thin film trail; everything soaks away (shrinks through the iso-threshold).
   splat(ch, cx, cy, size, aspect, { arms = 6, sats = 6, life = 2.1 } = {}) {
@@ -452,6 +513,7 @@ class LensInk {
     this.dirty = true;
   }
 
+  // 【单滴】一颗小墨滴(雨点/脚步溅起/出墨带出);slide 是开始下滑的停留。
   // small single droplet (rain, stepping splashes, emerging from ink)
   droplet(ch, x, y, r, { slide = 0.25, life = 1.1 } = {}) {
     const d = this.add('drop', ch, x, y, r, { I: 1.3, life, stick: slide, pop: 0.05 });
@@ -460,8 +522,11 @@ class LensInk {
     return d;
   }
 
+  // 【清空】全部粒子退回池(重生/换局时调用)。
   clear() { while (this.parts.length) this.pool.push(this.parts.pop()); this.dirty = true; }
 
+  // 【每帧推进】生长、按 life 淡出(metaball 缩过阈值→读作蒸发/吸收)、重滴的 stick-slip 下滑与拖膜、
+  //  越界(y<-0.1)剔除。倒序遍历以便原地 splice。
   update(dt, aspect) {
     const P = this.parts;
     for (let i = P.length - 1; i >= 0; i--) {
@@ -502,6 +567,8 @@ class LensInk {
     this.dirty = true;
   }
 
+  // 【渲染墨场】把 CPU 粒子写进实例属性(iA/iB),在自身 rt 上清屏后一次性 draw;保存/恢复渲染器的 RT、
+  //  清屏色,确保不污染主渲染流程。grow 用 easeOut + 微弹(0.12*sin)做出"啪"的膨胀。
   render(aspect) {
     const P = this.parts, n = Math.min(P.length, MAXS);
     const A = this.aA.array, B = this.aB.array;
@@ -526,10 +593,13 @@ class LensInk {
     this.dirty = false;
   }
 
+  // 【释放】释放 rt / 几何 / 材质。
   dispose() { this.rt.dispose(); this.geo.dispose(); this.mat.dispose(); }
 }
 
 // ------------------------------------------------------------------------------------------------ ScreenFX
+// 【ScreenFX 主类】屏幕 FX 的总控:持有 composite ShaderPass、LensInk 场、全部效果状态与 uniform。
+//  构造即安装 pass 并订阅事件;之后由 main.js 每帧 update() 驱动。
 export class ScreenFX {
   constructor(R, Gctx) {
     this.R = R;
@@ -538,6 +608,8 @@ export class ScreenFX {
     this.time = 0;
     this.lens = new LensInk(this.renderer);
     this.taps = 0;
+    // 【合成材质】defines.TAPS 是径向模糊的采样数,update 里随画质改写并触发重编译;
+    //  所有 uniform 都是"强度"(0=无效果)。tLens 指向 LensInk 的半分辨率 rt 纹理。
     this.mat = new THREE.ShaderMaterial({
       name: 'InkwaveScreenFX',
       defines: { TAPS: 8 },
@@ -561,10 +633,13 @@ export class ScreenFX {
       depthTest: false, depthWrite: false,
     });
     this.U = this.mat.uniforms;
+    // 【安装 pass】包裹成 ShaderPass 并交给渲染器;初始 enabled=false——无效果时整段 pass 不执行(零成本)。
     this.pass = new ShaderPass(this.mat);
     this.pass.enabled = false;
     R.setExtraPass(this.pass);
 
+    // 【效果状态】所有衰减/弹簧都跑在模拟时钟上(暂停时 sdt=0),使冻结/单步审计可复现。
+    //  s.* 是各效果的当前强度/相位;flood 系列是墨洪序列器的状态;lastBlast 用于爆炸去重。
     // ---- effect state (all decays/springs run on the sim clock so frozen/stepped audits are deterministic)
     this.s = {
       speed: 0, stretch: 0, punch: 0, punchV: 0, blast: 0, blastT: 9, chroma: 0,
@@ -581,12 +656,14 @@ export class ScreenFX {
     this.debugHold = 0;          // >0: test effects keep running even outside a match (lab/audit)
     this.stats = { lensParts: 0, enabled: false };
     this._size = new THREE.Vector2();
+    // 【接线】订阅事件;把自己交给 HUD(接管损伤墨渍/暗角/阵亡去色),并在 G 上注册为 G.screenfx。
     this._bind();
     this.G.hud?.attachScreenFX?.(this);
     this.G.screenfx = this;
   }
 
   // ---------------------------------------------------------------------------------------------- events
+  // 【事件绑定】只对"本地玩家 + 进行中的对局"生效(live/isLocal 守卫);每个订阅把事件翻译成状态变化或 lens 调用。
   _bind() {
     const G = this.G;
     // only react to gameplay while a round is actually running (not over the judge / results screens)
@@ -666,8 +743,10 @@ export class ScreenFX {
     });
   }
 
+  // 【冲击弹簧】给 punch 速度注入冲量(×22 换算成弹簧单位);正值拉伸、负值收缩,由 _sim 里的临界阻尼弹簧回正。
   _kickPunch(v) { this.s.punchV += v * 22; }
 
+  // 【爆炸】把世界坐标投影到屏幕:若在视野内则设置爆炸中心/环/色,并注入冲击;chroma 恒加(即使不在视野也抖一下)。
   _blast(pos, amount, color) {
     const G = this.G, cam = G.camera;
     if (!cam) return;
@@ -688,8 +767,10 @@ export class ScreenFX {
     this._kickPunch(0.02 * k);
   }
 
+  // 【队伍色】取 G.teamColors[team],缺失回白色。
   _teamColor(team) { const c = this.G.teamColors?.[team]; return c || WHITE; }
 
+  // 【墨洪开始】被击杀:边缘涌墨铺满;cause==='water' 时用水蓝并额外在镜头上撒一堆水滴(CH_WATER)。
   _startFlood(attacker, cause) {
     const s = this.s, U = this.U;
     const col = cause === 'water' ? SEA : attacker ? this._teamColor(attacker.team) : this._teamColor(this._local ? this._local.enemyTeam : 1);
@@ -706,6 +787,7 @@ export class ScreenFX {
     }
   }
 
+  // 【重生揭示】用己方色铺满,再从中心开出虹膜孔(uHole)露出战场;清镜头墨、叠一点去饱和与微光。
   _startReveal(actor) {
     const s = this.s, U = this.U;
     const col = this._teamColor(actor.team);
@@ -719,6 +801,7 @@ export class ScreenFX {
     s.shimmer = 1;
   }
 
+  // 【超级跳落地冲击】底部的爆炸环 + 冲击 + 轻微白闪。0.3s 去抖:类型化事件与状态迁移兜底可能都触发。
   _land(actor) {
     const s = this.s;
     if (this.time - (this._landT ?? -9) < 0.3) return;   // typed event + state-transition fallback can both fire
@@ -733,6 +816,7 @@ export class ScreenFX {
     s.flash = Math.max(s.flash, 0.35);
   }
 
+  // 【损伤溅墨】把攻击者投影到屏幕,算出朝向他的边缘角度,在该侧溅墨(绝不盖住玩家角色本身);重击溅两团。
   // lens splat for a damage burst, placed on the screen edge toward the attacker (never over the player character)
   _damageSplat(amount, attacker) {
     const G = this.G, cam = G.camera, a = this._aspect;
@@ -756,6 +840,7 @@ export class ScreenFX {
     }
   }
 
+  // 【边缘取点】从中心沿角度 ang 打到屏幕边框、再向内缩 inset;避开下方中央(角色)与准星附近。
   // point on the screen border along a direction from the centre (uv, y up), pulled `inset` (height units) inward,
   // kept off the player character (bottom centre) and away from the crosshair
   _edgePoint(ang, inset) {
@@ -770,6 +855,7 @@ export class ScreenFX {
     return { x: clamp(u, 0.02, 0.98), y: clamp(v, 0.03, 0.97) };
   }
 
+  // 【重置】清空镜头墨并把所有效果强度归零(intro 开始 / 离开对局时调用)。
   reset() {
     const s = this.s;
     this.lens.clear();
@@ -777,6 +863,9 @@ export class ScreenFX {
   }
 
   // ---------------------------------------------------------------------------------------------- per frame
+  // 【每帧入口】main.js 调用。流程:判定是否在对局内 → 尺寸/画质(set TAPS、resize lens)→ 强度缩放系数 I
+  //  → 推进(_sim 或 _decayAll)→ 写 uniforms → 渲染镜头墨场 → 按"是否有可见效果"开关 pass。
+  //  暂停时 sdt=0(模拟冻结),但 dt 仍推进外层计时。
   update(dt, game) {
     const G = this.G, s = this.s, U = this.U;
     const m = game?.match || G.match;
@@ -791,6 +880,7 @@ export class ScreenFX {
     const sdt = paused ? 0 : dt;
     this.time += sdt;
 
+    // 【尺寸 / 画质】尺寸变化时同步 uRes;TAPS 与 lens 分辨率随 QUALITY.particles 缩放(TAPS 变化需重编译)。
     // size / quality
     this.renderer.getDrawingBufferSize(this._size);
     const W = this._size.x, H = this._size.y;
@@ -802,6 +892,7 @@ export class ScreenFX {
     if (taps !== this.taps) { this.taps = taps; this.mat.defines.TAPS = taps; this.mat.needsUpdate = true; }
     this.lens.resize(W, H, q.particles >= 1 ? 1 / 3 : 1 / 4);
 
+    // 【强度缩放】cameraShake 设置 × 减弱动效偏好;只作用于剧烈效果(模糊/色散/冲击/速度线/白闪等)。
     // intensity scaling for the intense (motion) effects
     const shake = clamp(G.settings?.cameraShake ?? 1, 0, 1);
     const rm = reducedMotion() ? 0.35 : 1;
@@ -812,6 +903,8 @@ export class ScreenFX {
     if (this.force && this.debugHold > 0) Object.assign(s, this.force);
     else if (this.force && this.debugHold <= 0) this.force = null;
 
+    // 【写 uniforms】把 s.* 强度 × 缩放 I 写进 uniform;队伍相关色(敌墨 goo、暗角、光环、速度线、闪光…)在下方
+    //  用 local 的队色重设 —— 所以这些效果的色调随你站哪队而变。
     // ---- uniforms
     const alive = !!(local && local.alive);
     U.uTime.value = this.time;
@@ -852,12 +945,14 @@ export class ScreenFX {
     }
     void alive;
 
+    // 【镜头墨场】有粒子才渲染;game._skipRender 时跳过(审计/单步用)。stats.lensParts 供 __inkwave 查询。
     // ---- lens field
     const lensOn = this.lens.parts.length > 0;
     U.uLensOn.value = lensOn ? 1 : 0;
     if (lensOn && !game?._skipRender) this.lens.render(this._aspect);
     this.stats.lensParts = this.lens.parts.length;
 
+    // 【空闲零成本】把所有效果强度做"或"判断:全部低于阈值时 pass.enabled=false,全屏 pass 整段不执行。
     // ---- enable the pass only when something is visible (idle = zero cost)
     const any = lensOn || s.speed > 0.002 || s.stretch > 0.0005 || Math.abs(s.punch) > 0.0004 || s.blast > 0.002 || s.chroma > 0.004 ||
       s.edgeInk > 0.002 || s.aura > 0.002 || s.heart > 0.002 || s.hurt > 0.002 || s.urg > 0.002 || s.swim > 0.002 || s.focus > 0.002 ||
@@ -867,6 +962,7 @@ export class ScreenFX {
     this.stats.enabled = any;
   }
 
+  // 【离开对局时的衰减】不在对局(菜单/结果页)时,把一切效果指数衰减收敛到 0,并继续推进/蒸发镜头墨。
   _decayAll(dt) {
     const s = this.s;
     const k = Math.exp(-dt * 6);
@@ -878,6 +974,8 @@ export class ScreenFX {
     if (this.lens.parts.length && dt > 0) { /* keep evaporating */ }
   }
 
+  // 【每帧模拟】对局进行中的核心推进:损伤爆发结算、游速/超级跳、水下、敌墨 goo、镜头雨点、低血心跳、
+  //  特殊技光环、蓄力聚焦、出生微光、读秒紧迫、结束去饱和、一次性效果衰减、punch 弹簧、墨洪序列器、镜头墨推进。
   _sim(dt, m, a) {
     const G = this.G, s = this.s;
     const alive = !!(a && a.alive);
@@ -995,6 +1093,7 @@ export class ScreenFX {
     s.chroma = Math.max(0, s.chroma - dt * 3.2);
     s.blast = Math.max(0, s.blast - dt * 2.4);
     s.blastT += dt;
+    // 【冲击弹簧】临界阻尼(不回弹抖动);按帧内子步(hP)积分,任意帧率都稳定。
     // punch spring: critically damped (no overshoot wobble), sub-stepped so it's stable at any frame rate
     const wP = 16, nP = Math.max(1, Math.ceil((wP * dt) / 0.12)), hP = dt / nP;
     for (let i = 0; i < nP; i++) { s.punchV += (-wP * wP * s.punch - 2 * wP * s.punchV) * hP; s.punch += s.punchV * hP; }

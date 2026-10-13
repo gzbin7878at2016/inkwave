@@ -1,3 +1,37 @@
+// ============================================================================
+// 【中文导读】Terrace Heights（梯田山城）关卡的几何布局（layout）：用「等高线区域」这种自建的
+//             2D 几何工具描述一座白墙山城，再烘焙成盒状关卡（地面板块/护墙压顶/鹅卵石水槽/台阶/房屋）。
+// ----------------------------------------------------------------------------
+// 【模块定位】四件套中最底层、也最复杂的一件：
+//   layout.js（本文件）—— 等高线工具 + 地面生成器 + 特色物件；产出 LAYOUT 与供 props.js 复用的 TERRAIN
+//   surfaces.js        —— 三个 texlib 槽（calce/cotto/pebble）的材质，被这里的 cotto()/pebble()/house() 引用
+//   murals.js          —— 本关卡贴花 id（4-10），这里的 mural:[{n,id}] 用到 MURAL.*
+//   props.js           —— 据 HOUSES/UPPERS 表给房屋"穿衣"、摆栏杆灯具；引用 TERRAIN 的几何参数
+//   依赖顺序：surfaces.js / murals.js（提供 SURF/MURAL）→ layout.js → props.js；
+//   ../index.js 装配成 STAGES['terraces']。
+// 【核心机制】
+//   · 阶梯高程：地面不是一个平面，而是五级等高台 H0=0（广场/滨海步道）→ H1=1.2 → H2=2.4（Largo）
+//     → H3=3.6（Caffè 屋顶）→ H4=4.8（出生露台 belvedere）；FL=-1.2 是所有实心基座的下缘
+//     （海平面以下），保证从任何方向看地面都封底、海面轮廓精确。
+//   · 等高线工具（Contour kit）：区域 Region = { iv(x)→若干 z 区间, curves:边界候选 }。原始图元
+//     disc/rect/halfplane/poly，组合子 union/inter/diff；"某高度以上的全部区域"即该级的高程区，
+//     它的等高线被离散成一道道直压顶条（rim），内部地面再铺成几块大板块（slab）+ 缝里的鹅卵石槽（gutter）。
+//   · 三轮烘焙：rimBars 造压顶 → laySlabs 贪心铺板块 → layGutters 补缝；结果烘焙进 GROUND_DATA，
+//     避免每次启动重算（耗时）。改区域/特色后跑 tools/bake-ground.mjs 重新生成。
+// 【关键约定】
+//   · 单位为米（metres）；Y 轴向上，H0 基准 0，逐级 +1.2。
+//   · `half` 里每个盒子绕 Y 轴 180° 镜像（(x,z)→(-x,-z)）：只写 Alpha（−Z / 西南）的一半，
+//     Bravo（+Z / 东北）是 180° 孪生；`single` 不镜像。两半必须一致，否则地形接缝。
+//   · 可玩墙面与采样规则：面可涂墨当且仅当 `b.paint && n.y > -0.5`；roof/perch 顶面永不可涂；
+//     noPaint 列出的法线方向不可涂。本文件把上层楼/背墙/教堂统一用 upper() 包成「纯布景」——
+//     noPaint 全部四侧面 + 顶面、roof:true（谁也站不上、落上去会滑走）。竖直墙面取贴地底部采样。
+// 【配套阅读】docs/ARCHITECTURE.zh-CN.md、docs/ASSETS.zh-CN.md、docs/INK.zh-CN.md；
+//             ../../mapkit.js（B/R/O/PATTERN）、../../level.js（镜像与可涂面）、../../variants.js、
+//             同目录 surfaces.js / murals.js / props.js、tools/bake-ground.mjs。
+// 【建议阅读顺序】先读变量区（H0..H4/TH/预设）→ Contour kit（Region 与图元）→ 地形区 R0..R4 的构造
+//             → 特色 HOUSES/FEATURES → 地面生成器（rimBars/laySlabs/layGutters/generateGround）
+//             → 烘焙常量 GROUND_DATA → 装配 TERRACES 与导出 TERRAIN。
+// ============================================================================
 // Terrace Heights — stage layout (src/world/stages/terraces/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
@@ -27,32 +61,49 @@ import { MURAL } from './murals.js';
 //   • piazza: ringed by the house crescent, San Vito on its sagrato in the middle (the chapel itself, its dome and bell
 //     gables are off-limits), arrow bastions with pebble compass roses projecting over the sea on both sides
 // ------------------------------------------------------------------------------------------------------------
+// 【阶梯高程常量】H0..H4 = 五级台地的顶面高度（每级 +1.2 m）；FL = 所有实心体的底面（海面下）。
+// 地图上任何高度都由这五个值之一构成，是"梯田山城"读感的基础。
 const H0 = 0, H1 = 1.2, H2 = 2.4, H3 = 3.6, H4 = 4.8, FL = -1.2;
+// 【调色板 TH】白墙山城的亮色调：white/warm/ochre/pink/sky/lemon 是房屋立面色；wall=挡土墙、
+// step=石灰岩台阶、cotto/pebble=铺地与鹅卵石、spawn/villa/station/rim=各功能区主色。
 const TH = {
   white: '#f3efe6', warm: '#f1e8d6', ochre: '#e9cf9c', pink: '#efcdbd', sky: '#dfe8ea', lemon: '#f0e2a8',
   wall: '#ddd3c1',          // retaining walls: limewash over rubble, warm grey
   step: '#ddd4c3',          // limestone steps
   cotto: '#d9d2c6', pebble: '#d8d2c6', spawn: '#eae6de', villa: '#f2e6cf', station: '#e8d9b8', rim: '#e2d6c4',
 };
+// 【T：台地盒子】从 FL 底面到 top 的实心体，最常用的地面/建筑体块写法（x0..x1, z0..z1 为平面范围）。
 const T = (x0, x1, z0, z1, top, o) => B(x0, x1, FL, top, z0, z1, o);
+// 【四种铺面预设】都带颜色 + texlib pattern，`?? ` 起到对旧 SURF 缺字段的回退（PATTERN.tiles/render/pavers）。
+//   cotto=陶砖铺地、pebble=鹅卵石铺地、house(c)=石灰墙面（c 为立面色）、stair=石灰岩台阶。
 const cotto = (o = {}) => ({ color: TH.wall, pattern: SURF.cotto ?? PATTERN.tiles, ...o });
 const pebble = (o = {}) => ({ color: TH.wall, pattern: SURF.pebble ?? PATTERN.pavers, ...o });
 const house = (c, o = {}) => ({ color: c, pattern: SURF.calce ?? PATTERN.render, ...o });
 const stair = (o = {}) => ({ color: TH.step, pattern: PATTERN.stonestep, ...o });
 // upper storeys, back walls, the chapel: scenery only — never inked, never climbed, and their tops are off-limits
 // (`roof`: nobody can stand there, anyone who lands on one slides off; the pitched roofs / domes on top are props)
+// 【NOPAINT：纯布景体不可涂面】四侧面 + 顶面全部屏蔽涂墨（上层楼/背墙/教堂统一用它）。
 const NOPAINT = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
+// 【upper：纯布景包装】house() + NOPAINT 四侧与顶面不可涂 + roof:true（顶面不可站、落上去滑走）。
+//   坡屋顶/穹顶另行用 props 摆。
 const upper = (c, o = {}) => house(c, { noPaint: NOPAINT, roof: true, ...o });
+// 度 ↔ 弧度换算常数（1 rad = 180/π 度）。
 const DEG = 180 / Math.PI;
 
 // ============================================================================================================
+// 【等高线工具 Contour kit】用 2D 区域代数描述山体轮廓：Region = { iv(x)→排序去重后的 z 区间表, curves:边界候选 }。
+//   图元：disc 圆盘 / rect 矩形 / halfplane 半平面（有向线左侧）/ poly 多边形；组合子 union / inter / diff。
+//   某级台地 = "高度 ≥ 该级"的所有区域并集；它的等高线（标了 norim 的曲线是裁剪线，如背墙、z=0 中线、
+//   自带边缘的坡道）被离散成压顶条，内部地面由下方 ground builder 铺开。
 // Contour kit. A region is { iv(x) → sorted disjoint z-intervals, curves: boundary candidates [{ pts, nrm, norim }] }.
 // Primitives: disc, rect, halfplane (line through a point, inside = left of its direction), poly; combinators union /
 // inter / diff. A level = the nested region of everything at or above that height. Its contour line (curves marked
 // norim are clip lines: the back wall, the half line z = 0, the incline which covers its own edge) becomes the rim — a
 // chain of coping bars RIM_W wide — and the floor inside is laid by the ground builder further down.
 // ============================================================================================================
+// 【边界常量】ZBACK 背墙 z（地图北缘，Alpha 侧）；ZMID=0 半区分界线（镜像轴）；RIM_W=0.8 压顶条进深。
 const ZBACK = -45.4, ZMID = 0, RIM_W = 0.8;
+// 【Iv：z 区间代数】norm 排序+合并重叠；union/inter/diff 是区间的并/交/差，全部输出规范化区间表。
 const Iv = {
   norm(a) { a = a.filter(([l, h]) => h - l > 1e-6).sort((p, q) => p[0] - q[0]); const o = []; for (const s of a) { if (o.length && s[0] <= o[o.length - 1][1] + 1e-9) o[o.length - 1][1] = Math.max(o[o.length - 1][1], s[1]); else o.push([s[0], s[1]]); } return o; },
   union(a, b) { return Iv.norm([...a, ...b]); },
@@ -60,15 +111,19 @@ const Iv = {
   diff(a, b) { let o = a.map((s) => [...s]); for (const [l2, h2] of b) { const n = []; for (const [l, h] of o) { if (h2 <= l || l2 >= h) { n.push([l, h]); continue; } if (l2 > l) n.push([l, l2]); if (h2 < h) n.push([h2, h]); } o = n; } return Iv.norm(o); },
 };
 const INF = 1e6;
+// 【disc：圆盘区域】按弧长 (~0.08 m) 采样出闭合边界曲线与逐点外法线；iv(x) 返回圆在该 x 处的 z 跨度。
 function disc(cx, cz, r, o = {}) {
   const n = Math.max(24, Math.ceil((2 * Math.PI * r) / 0.08)), pts = [], nrm = [];
   for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; pts.push([cx + Math.cos(a) * r, cz + Math.sin(a) * r]); nrm.push([Math.cos(a), Math.sin(a)]); }
   return { iv: (x) => { const d = r * r - (x - cx) * (x - cx); return d > 0 ? [[cz - Math.sqrt(d), cz + Math.sqrt(d)]] : []; }, curves: [{ pts, nrm, closed: true, norim: o.norim }] };
 }
+// 【rect：矩形区域】四条边各采样成边界曲线；xs 记录 x 范围供后续用。
 function rect(x0, x1, z0, z1, o = {}) {
   const e = (ax, az, bx, bz, nx, nz) => { const L = Math.hypot(bx - ax, bz - az), n = Math.max(2, Math.ceil(L / 0.08)), pts = [], nrm = []; for (let i = 0; i <= n; i++) { pts.push([ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n]); nrm.push([nx, nz]); } return { pts, nrm, norim: o.norim }; };
   return { iv: (x) => (x >= x0 && x <= x1 ? [[z0, z1]] : []), xs: [x0, x1], curves: [e(x0, z0, x1, z0, 0, -1), e(x1, z0, x1, z1, 1, 0), e(x1, z1, x0, z1, 0, 1), e(x0, z1, x0, z0, -1, 0)] };
 }
+// 【halfplane：半平面区域】取有向线 (ax,az)→(bx,bz) 的左侧为内部；边界只在这两点之间采样。
+//   iv(x) 用直线方程求出该 x 处的 z 阈值：nz>0 取 z≤zc，否则 z≥zc。
 // half-plane on the left of the directed line (ax,az)→(bx,bz); the boundary is sampled between the two points only
 function halfplane(ax, az, bx, bz, o = {}) {
   const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz), nx = dz / L, nz = -dx / L;   // outward normal (right side)
@@ -78,6 +133,8 @@ function halfplane(ax, az, bx, bz, o = {}) {
   const iv = (x) => { if (Math.abs(nz) < 1e-9) return nx * (x - ax) <= 0 ? [[-INF, INF]] : []; const zc = az - (nx * (x - ax)) / nz; return nz > 0 ? [[-INF, zc]] : [[zc, INF]]; };
   return { iv, curves: [{ pts, nrm, norim: o.norim }] };
 }
+// 【poly：简单多边形区域】顶点按序（任意绕向）；每条边都是压顶候选。
+//   iv(x) 用扫描线求与各边的交点、排序配对成 z 区间；每条边先算出朝外法线（用中点旁的 inside 测试翻转）。
 // simple polygon (vertices in order, either winding); every edge is a rim candidate
 function poly(pts, o = {}) {
   const n = pts.length;
@@ -92,11 +149,16 @@ function poly(pts, o = {}) {
   }
   return R;
 }
+// 【组合子】union 并（把所有区域的 z 区间并起来，曲线全收集）；inter 交；diff 差。
+//   diff 把 b 的曲线法线取反（因为"减掉"后边界朝向翻转），保证等高线仍指回区域内部。
 const union = (...rs) => ({ iv: (x) => rs.reduce((a, r) => Iv.union(a, r.iv(x)), []), curves: rs.flatMap((r) => r.curves), xs: rs.flatMap((r) => r.xs || []) });
 const inter = (...rs) => ({ iv: (x) => rs.slice(1).reduce((a, r) => Iv.inter(a, r.iv(x)), rs[0].iv(x)), curves: rs.flatMap((r) => r.curves), xs: rs.flatMap((r) => r.xs || []) });
 const diff = (a, b) => ({ iv: (x) => Iv.diff(a.iv(x), b.iv(x)), curves: [...a.curves, ...b.curves.map((c) => ({ ...c, nrm: c.nrm.map(([p, q]) => [-p, -q]) }))], xs: [...(a.xs || []), ...(b.xs || [])] });
+// 【inside：点是否在区域内】查 iv(x) 的 z 区间是否包含该点。
 const inside = (r, x, z) => r.iv(x).some(([l, h]) => z >= l - 1e-7 && z <= h + 1e-7);
 
+// 【转向矩形的 SAT 相交深度】矩形 { c:[x,z] 中心, ax:[两个正交单位轴], h:[半宽,半高] }。
+// corners 求出四角世界坐标；pen 沿两矩形的 4 条轴投影，返回最小重叠量（>0 即相交，<=0 分离）。
 // SAT penetration of two turned rectangles { c:[x,z], ax:[[ux,uz],[vx,vz]], h:[hu,hv] }
 const corners = (s) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, k]) => [s.c[0] + s.ax[0][0] * s.h[0] * i + s.ax[1][0] * s.h[1] * k, s.c[1] + s.ax[0][1] * s.h[0] * i + s.ax[1][1] * s.h[1] * k]);
 function pen(A, Bs) {
@@ -105,86 +167,128 @@ function pen(A, Bs) {
   return min;
 }
 // ============================================================================================================
+// 【地形区：只写 Alpha 的一半（z ≤ 0），镜像自动生成 Bravo 的一半】构建 R0..R4 五级等高区。
 // The ground (Alpha's half, z ≤ 0; the mirror builds Bravo's)
 // ============================================================================================================
+// 【山心与朝向】C = Alpha 山丘的顶心（出生飞地，西南）；toO = 从 C 指向广场中心 O(0,0) 的单位向量（"前方"）。
 const C = [-12, -35];                                  // Alpha's hilltop (the spawn wing, south-west)
 const toO = [12 / Math.hypot(12, 35), 35 / Math.hypot(12, 35)];
+// 【缆车坡道 FUNICOLARE】沿西侧崖缘下行的直线坡道：top=上站(H4)、foot=广场旁(H0)、w=轨宽 3.8 m。
 // the funicular incline down the west cliff edge: top at the upper station, foot by the piazza
 const INC = { top: [-24.3, H4, -41.4], foot: [-17.6, H0, -10.4], w: 3.8 };
+// incDir = [ux, uz, L]：坡道平面方向单位向量 + 实际长度；incN 为其东侧（下山右侧）的单位法线。
 const incDir = (() => { const dx = INC.foot[0] - INC.top[0], dz = INC.foot[2] - INC.top[2], L = Math.hypot(dx, dz); return [dx / L, dz / L, L]; })();
 const incN = [incDir[1], -incDir[0]];                  // unit normal pointing east of the incline (+x-ish)
+// 【incP(t, off)】坡道上取点：t 从 0(顶) 到 1(脚)，off = 向东偏移的米数。台地裁剪/楼梯定位都用它。
 // points along the incline: t 0 (top) … 1 (foot), off = metres to its east (right-hand side going down)
 const incP = (t, off = 0) => [INC.top[0] + (INC.foot[0] - INC.top[0]) * t + incN[0] * off, INC.top[2] + (INC.foot[2] - INC.top[2]) * t + incN[1] * off];
+// 【hpN：带外法线的半平面】过点 P、外法线 n（即内部在 -n 侧），边界沿线向 ±E 采样。
 // half-plane with outward normal n through P (the boundary sampled ±E along the line)
 const hpN = (P, n, E = 40, o = {}) => { const d = [-n[1], n[0]]; return halfplane(P[0] - d[0] * E, P[1] - d[1] * E, P[0] + d[0] * E, P[1] + d[1] * E, o); };
+// NORTH：坡脚以北的矩形（那里没有坡道，不裁剪）；eastOfIncline/W：坡道东缘(台地止于此)与西护栏面。
 // the hill levels stop 0.8 m in under the incline's east edge (the ramp hides their ends); the footprint stops at its
 // west parapet. North of the foot there is no incline, so nothing is clipped there.
 const NORTH = rect(-28, 28, INC.foot[2] - 0.01, ZMID, { norim: true });
 const eastOfIncline = union(hpN(incP(0.5, INC.w / 2 - 0.8), [-incN[0], -incN[1]], 40, { norim: true }), NORTH);
 const eastOfInclineW = union(hpN(incP(0.5, -INC.w / 2 - 0.3), [-incN[0], -incN[1]], 40, { norim: true }), NORTH);
+// 【Salita 阶梯街】坡道旁一条 4 m 宽的街，随坡道逐段下沉：第 L 级台地在 t_L 之外被切掉
+//   （地面永不高于轨道），每处切口是一级 1.2 m 台阶 + 一段楼梯。T_CUT[L] 是各级切点所在的 t 值。
 // the Salita: a 4 m street beside the incline that steps down with it — level L stops there beyond t_L (so the ground
 // never rises above the track), each cut a 1.2 m step with a flight of stairs
 const SAL_W = 4.2, T_CUT = { 4: 0.02, 3: 0.245, 2: 0.495, 1: 0.745 };
+// salitaCut(L)：第 L 级被切掉的条带（坡道东侧的街）；zone()：把区域 r 与"坡道东、背墙内、z≤0"求交，
+//   并按 L 级裁掉 Salita 切带——这是所有台地区域的统一收边函数。
 const salitaCut = (L) => inter(hpN(incP(T_CUT[L]), [-incDir[0], -incDir[1]], 12), hpN(incP(0.5, INC.w / 2 + SAL_W), incN, 40));
 const zone = (r, west = eastOfIncline, L = 0) => inter(L ? diff(r, salitaCut(L)) : r, west, rect(-28, 28, ZBACK, ZMID, { norim: true }));
+// 【wedge 楔形缺角】出生露台前方无 H3 的扇形扇区（露台直落 2.4 m 到 Largo）；以 C 为顶点、朝向广场 ±27° 的两条半平面相交。
 // the north sector in front of the spawn where H3 is missing (the spawn terrace drops 2.4 m straight to the Largo)
 const wedge = (() => { const a = Math.atan2(toO[1], toO[0]), h = (27 * Math.PI) / 180, L = 20; const p1 = [C[0] + Math.cos(a - h) * L, C[1] + Math.sin(a - h) * L], p2 = [C[0] + Math.cos(a + h) * L, C[1] + Math.sin(a + h) * L]; return inter(halfplane(C[0], C[1], p1[0], p1[1]), halfplane(p2[0], p2[1], C[0], C[1])); })();
+// 【广场与观景堡参数】PIAZZA_R=广场半径；BELV=观景堡(箭头棱堡)中心；BELV_D=其尖角半对角（决定 45° 尖）。
 const PIAZZA_R = 14.8, BELV = [18.9, -1.2], BELV_D = 5.0;   // belvedere bastion: flanks off the piazza, a 45° prow (half-diagonal BELV_D)
+// 【五级台地区 R4..R0】自山顶向下逐级扩大：R4 山顶圆盘+背墙条；R3 加山肩圆盘(柠檬园)与 Largo 圆盘(挖掉 wedge)。
+//   全部经 zone() 收边（东止于坡道、西背墙内、裁掉 Salita）。
 // hill levels: discs round the hilltop with a few lobes (the lemon-garden shoulder, the Largo), clipped at the incline
 const R4 = zone(union(disc(C[0], C[1], 8.5), rect(-26.8, -4.4, ZBACK, -41.3)), eastOfIncline, 4);
 const R3 = union(R4, zone(diff(union(disc(C[0], C[1], 13.5), disc(-1.5, -33.5, 6.5)), wedge), eastOfIncline, 3));
+// 【绕广场的方位工具】ψ = 绕中心 O 的罗盘角（从 −Z 起，向 +x 为正）；uO(ψ) 给出该角度的单位方向。
 // sector of the ring round the piazza (ψ = compass angle round O from −Z, + toward +x; radii from O)
 const uO = (psi) => [Math.sin((psi * Math.PI) / 180), -Math.cos((psi * Math.PI) / 180)];
+// sectorO：绕 O 的扇环区域（半径 r0..r1、角度 ψ0..ψ1），用圆盘减去内圆、并用两条半平面夹出扇区。
 const sectorO = (r0, r1, psi0, psi1) => { const a = (psi0 * Math.PI) / 180, b = (psi1 * Math.PI) / 180; return diff(inter(disc(0, 0, r1), hpN([0, 0], [-Math.cos(a), -Math.sin(a)]), hpN([0, 0], [Math.cos(b), Math.sin(b)])), disc(0, 0, r0)); };
+// 【广场框架参数】HOUSE_R* = 新月形房屋环的内/外半径（4.4 m 进深，正面朝广场圆心）；
+//   STREET_R* = 房屋背后的 H2 街道；GAPS = 两处缺口（Vicolo 巷 / Passo 梯），H1 平台。
 // the piazza frame: a crescent of houses on the piazza's rim (fronts on the circle, 4.4 m deep), the H2 street behind
 // them, H1 landings in the gaps between them (the Vicolo, the Passo)
 const HOUSE_R0 = PIAZZA_R, HOUSE_R1 = PIAZZA_R + 4.4, STREET_R0 = PIAZZA_R + 3.9, STREET_R1 = PIAZZA_R + 8.0;
 const GAPS = { vicolo: [-28, -10], passo: [11, 20] };
+// R2：加 H2 大圆与 Orto 圆盘、广场后街扇环；R1：再加 H1 大圆（挖掉街环）与两处缺口扇环。
 const R2 = union(R3, zone(union(disc(C[0], C[1], 19.0), disc(2.5, -27.5, 7.0), sectorO(STREET_R0, STREET_R1, -52, 34)), eastOfIncline, 2));
 const R1 = union(R2, zone(union(diff(union(disc(C[0], C[1], 23.5), disc(6.5, -22, 7.5)), disc(0, 0, STREET_R0)),
   sectorO(PIAZZA_R, STREET_R0 + 0.3, ...GAPS.vicolo), sectorO(PIAZZA_R, STREET_R0 + 0.3, ...GAPS.passo)), eastOfIncline, 1));
+// 【岸线 SHORE】不规则海堤轮廓（山城步道、Case sul Mare 岬角、广场周边的直线段码头墙）——
+//   岸线是折线多边形，控制地图精确的"海上足迹"。BELV_D 决定两座箭头棱堡的 45° 尖角。
 // the footprint: an irregular sea wall (straight runs of quay wall) round the hill's promenade, the Case sul Mare
 // headland and the piazza, and the belvedere bastions either side of the piazza — arrow bastions pointing out to sea
 // (the west one is Bravo's twin, mirrored); a cove between the headland and the east bastion, an inlet by the funicular
 const SHORE = poly([[-29.0, -45.4], [10.0, -45.4], [16.0, -36.0], [16.0, -26.4], [20.0, -22.0], [20.0, -15.0], [14.4, -9.4], [14.4, 0.0],
   [-14.4, 0.0], [-14.4, -6.8], [-17.4, -6.8], [-20.8, -8.6], [-21.6, -12.6], [-29.0, -12.6]]);
+// 【棱堡 bastion】从广场海堤(x=14.4)向外伸出的直侧翼 + 两片 45° 尖角面；s=±1 决定东西（互为镜像）。
 // a bastion: straight flanks out from the piazza's sea wall (x = 14.4) and a prow of two 45° faces
 const bastion = (s) => poly([[14.4 * s, (BELV[1] - BELV_D) * s], [BELV[0] * s, (BELV[1] - BELV_D) * s], [(BELV[0] + BELV_D) * s, BELV[1] * s], [BELV[0] * s, (BELV[1] + BELV_D) * s], [14.4 * s, (BELV[1] + BELV_D) * s]]);
+// 【R0：海平面级】把岸线、东/西两座棱堡并入 R1，用 eastOfInclineW（略宽松的西边界）收边——
+//   这就是最终完整的 promenade 足迹（地面生成器会在整个 R0 下铺实底，保证无孔洞）。
 const R0 = union(R1, zone(union(SHORE, bastion(1), bastion(-1)), eastOfInclineW));
 
 // ============================================================================================================
+// 【山丘特色物件】用"以山心 C 为极点的极坐标 (r, φ)"摆放房屋与坡道；φ 以"指向广场"为 0°，向东为正。
 // Features on the hill: frames round the hilltop (φ in degrees from the direction to the piazza, + = east)
 // ============================================================================================================
+// 【基底方向】F=前方（指向广场）、SD=侧向（东）；P(r,φ) 返回该极坐标的世界点 + 方向向量 (dx,dz)。
 const F = toO, SD = [F[1], -F[0]];                     // forward (to the piazza), side (east)
 const P = (r, phi) => { const a = (phi * Math.PI) / 180, dx = F[0] * Math.cos(a) + SD[0] * Math.sin(a), dz = F[1] * Math.cos(a) + SD[1] * Math.sin(a); return [C[0] + dx * r, C[1] + dz * r, dx, dz]; };
+// 【rotOf】给出使局部 +Z 轴朝向 (dx,dz) 的旋转角（度），供 O()/props 的 rotY 使用。
 const rotOf = (dx, dz) => Math.atan2(dx, dz) * DEG;   // O() / prop rotY (deg) that turns local +Z to (dx, dz)
+// 【carveR(φ)】广场开挖圆与射线 φ 的交点半径（该处 H1 台地的边缘）——解射线与圆的二元一次方程取近根。
 // where the piazza carve meets the ray φ (the H1 terrace's edge there)
 const carveR = (phi) => { const [, , dx, dz] = P(1, phi), b = C[0] * dx + C[1] * dz, c = C[0] * C[0] + C[1] * C[1] - PIAZZA_R * PIAZZA_R; return -b - Math.sqrt(Math.max(0, b * b - c)); };
+// 【rRamp：径向坡道】沿射线 φ 从半径 r0(高 y0) 到 r1(高 y1)；自动按高低调换起止点，使 R 的起点在低处。
 // a radial ramp from radius r0 (height y0) to r1 (height y1) along φ
 const rRamp = (phi, r0, y0, r1, y1, w, o) => { const a = P(r0, phi), b = P(r1, phi); return y0 < y1 ? R([a[0], y0, a[1]], [b[0], y1, b[1]], w, o) : R([b[0], y1, b[1]], [a[0], y0, a[1]], w, o); };
+// 【hut：贴等高线的小屋】背面(靠山)在 rIn、正面(下坡)在 rOut、宽 w、以 φ 为中心；返回中心/尺寸/朝向。
 // a house turned to the contour: its back (hill side) at rIn, its front (downhill) at rOut, w wide, centred on φ
 function hut(phi, rIn, rOut, w) { const m = P((rIn + rOut) / 2, phi); return { cx: m[0], cz: m[1], w, d: rOut - rIn, rot: rotOf(m[2], m[3]) }; }
+// 【frame：广场新月房屋】位于罗盘角 ψ0..ψ1 之间，正面贴圆、朝向广场中心；宽度由角宽×半径算弧长。
 // a house on the piazza crescent between compass angles psi0..psi1 (front on the circle, facing the piazza centre)
 function frame(psi0, psi1, r0 = HOUSE_R0, r1 = HOUSE_R1) { const pc = (psi0 + psi1) / 2, u = uO(pc), rm = (r0 + r1) / 2, w = 2 * r0 * Math.tan(((psi1 - psi0) * Math.PI) / 360); return { cx: u[0] * rm, cz: u[1] * rm, w, d: r1 - r0, rot: rotOf(-u[0], -u[1]), psi: pc }; }
+// 【HOUSES：Alpha 村的三栋主屋】props.js 依此表给它们"穿衣"（相同的中心/尺寸/朝向）：
+//   caffe=Caffè（H3 屋顶可上，中庭目标）、ceramiche=陶瓷店、mare=Case sul Mare（海边屋，H2+0.2）。
 // the houses of Alpha's village (props.js dresses them from this table: same centre / size / turn)
 const HOUSES = {
   caffe: { ...frame(-52, -28), y0: FL, top: H3, color: TH.ochre, tag: 'caffe' },
   ceramiche: { ...frame(-10, 11), y0: FL, top: H3, color: TH.white, tag: 'ceramiche' },
   mare: { ...frame(20, 38), y0: FL, top: H2 + 0.2, color: TH.sky, tag: 'case-sul-mare' },
 };
+// 【houseBlock】把 HOUSES/UPPERS 表项变成一个 O() 转向盒子（可涂墨的房屋主体）。
 const houseBlock = (h, o = {}) => O(h.cx, h.cz, h.w, h.d, h.y0, h.top, h.rot, house(h.color, { tag: h.tag, ...o }));
+// 【upperOf：在一栋房上加建上层】用房屋自身轴偏移（lx 沿正面、lz 从后到前）算出上层中心，y0 从下层顶起。
 // an upper storey on part of a house: offsets along the house's own axes (lx across the front, lz back → front)
 function upperOf(h, lx, lz, w, d, top, color, o = {}) { const a = (h.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a); return { cx: h.cx + c * lx + sn * lz, cz: h.cz - sn * lx + c * lz, w, d, rot: h.rot, y0: h.top, top, color, ...o }; }
+// 【UPPERS：各主屋的上层楼】纯布景（upper）；Caffè 上层挂日晷 mural、Case sul Mare 上层挂 ghost 招牌。
 const UPPERS = {
   caffe: upperOf(HOUSES.caffe, -1.1, -1.0, 4.2, 2.4, 6.4, TH.ochre, { tag: 'caffe-upper' }),
   ceramiche: upperOf(HOUSES.ceramiche, 1.2, -1.0, 3.6, 2.4, 6.0, TH.white, { tag: 'ceramiche-upper' }),
   mare: upperOf(HOUSES.mare, 1.2, -0.7, 2.6, 3.0, 5.6, TH.sky, { tag: 'case-sul-mare-upper' }),
 };
+// 【faceN：转向盒某面的世界法线】(sx,sz)=(±1,0) 取局部 x 的两侧，(0,±1) 取局部前/后面——
+//   用于给 mural 指定"挂在哪个面"（layout 的 mural:[{n,id}] 需匹配面法线）。
 // world normal of a turned block's face: (sx, sz) = (±1, 0) side faces along local x, (0, ±1) front / back
 const faceN = (h, sx, sz) => { const a = (h.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a); return [c * sx + sn * sz, 0, -sn * sx + c * sz]; };
+// 【upperBlock】把 UPPERS 表项变成不可涂墨的纯布景盒子。
 const upperBlock = (u, o = {}) => O(u.cx, u.cz, u.w, u.d, u.y0, u.top, u.rot, upper(u.color, { tag: u.tag, ...o }));
+// 【oRamp：绕广场中心的径向坡道】沿 ψ 从半径 r0(高 y0) 到 r1(高 y1)（同样自动按高低调换起止）。
 // radial ramp round the piazza centre along ψ: from r0 (height y0) to r1 (y1)
 const oRamp = (psi, r0, y0, r1, y1, w, o) => { const u = uO(psi), a = [u[0] * r0, u[1] * r0], b = [u[0] * r1, u[1] * r1]; return y0 < y1 ? R([a[0], y0, a[1]], [b[0], y1, b[1]], w, o) : R([b[0], y1, b[1]], [a[0], y0, a[1]], w, o); };
+// 【salitaFlight(L)】Salita 段楼梯：从下级街面升到第 L 级切点 t_L，宽 2.6 m 落在台阶带中线上。
 // Salita flights beside the incline: from the lower street up to each cut (t_L), 2.6 m wide in the middle of the band
 const salitaFlight = (L, y0, y1) => { const run = 3.1 / incDir[2], off = INC.w / 2 + SAL_W / 2 + 0.2, a = incP(T_CUT[L] + run, off), b = incP(T_CUT[L] - 0.005, off); return R([a[0], y0, a[1]], [b[0], y1, b[1]], 2.6, stair({ tag: 'salita-flight' })); };
 

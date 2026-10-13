@@ -1,4 +1,23 @@
 // Match: turf-war rules, lifecycle (intro → countdown → play → time's up → judge → results), team setup.
+// ============================================================
+// 【中文导读】match.js —— 对局中枢(两模式对局流程的状态机)
+// 职责:
+//   1) 管理一场对局的完整生命周期:init → intro(开场) → playing(进行) → finish(时间到)
+//      → judge(裁判结算) → results(结果展示,由 HUD 监听事件驱动)。
+//   2) 组队与出兵:按配置生成双队 Actor(本地玩家 + Bot),分配武器/副武器/大招/外观,
+//      摆放到各自出生台的环绕位置;attract(展示)与 practice(练习)模式降级为无对抗的 turf。
+//   3) 模式分发:turf(涂地,比覆盖率)/ zones(区域控制,委托 zones.js 的 ZoneControl)/
+//      boss(单队讨伐 BOSS,委托 boss/bossMode.js)。
+//   4) 每帧推进:状态计时、倒计时广播、Bot 意图清空(非 playing 时)、Actor 更新、
+//      在线模式远程玩家插值(netm.applyRemote)、Actor 之间的软推挤。
+// 与其他模块的关系:
+//   · actor.js(Actor 实体)、bots.js(BotBrain 驱动 Bot)、player.js(PlayerController 驱动本地玩家)
+//   · zones.js(ZoneControl,mode='zones' 时挂在 this.zones)、boss/bossMode.js(boss 模式)
+//   · 通过 ctx.js 的 emit/on 广播 match:state / match:oneminute / match:count 等事件,
+//     HUD、小地图、音频都订阅这些事件;胜负数据由 _judge() 汇总进 this.result。
+// 在线:setup 走 _setupRoster(由主机下发的 roster 建队),follower(客机)不本地裁决,
+//   只回放主机结果(netm.sendResult / netm.applyRemote)。
+// ============================================================
 import * as THREE from 'three';
 import { G, emit, on, clamp } from '../core/ctx.js';
 import { MATCH, PLAYER, WEAPON_ORDER, SUB_ORDER, SPECIAL_ORDER, BOT_NAMES, TEAM_NAMES, ZONES } from '../config.js';

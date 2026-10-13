@@ -1,3 +1,25 @@
+// ============================================================================
+// 【中文导读】squidkid 的脸 —— 头部解析雕塑 + 无缝颈/脸曲面 + 眼窝眼球 + 建模口腔
+// ----------------------------------------------------------------------------
+// 【模块定位】叶子模块(只 import three + ctx),被 character-geo.js 与 character-mats.js 共用
+//   而不产生依赖环。character-geo.js 以 addHeadSkin()/addEyeballs() 把几何并进皮肤网格;
+//   character-mats.js 取 FACE_SHADER(眼球/嘴的常量包)供皮肤与眼球 shader 使用。构建期一次性
+//   生成,动画期脸部由 shader(眼睑/嘴)+ jaw/cheek 骨驱动,本文件不在每帧运行。
+// 【核心机制】
+//   1. 拓扑:一张 lat-long 的"载体(carrier)"网格覆盖头部,在 (az,el) 上挖三个矩形洞(两眼 + 嘴);
+//      每个洞由一个环状补丁填上,补丁外圈即洞的边界(共享顶点,无缝合)。补丁的环向内收拢成眼缝 /
+//      唇线,再向内翻卷(眼睑缘 / 内唇),嘴的环继续向内成口腔袋。
+//   2. 眼空间:右眼的坐标架是左眼的镜像,故 +s.x 恒为外眼角、所有公式与左右无关。眼球 = 单位球在
+//      仿射映射 kid = C + M·s 下。眼睑在眼睛着色器里"在眼空间绕眼球水平轴旋转"闭合,精确贴合椭球
+//      且永不切入;注视也是同一旋转。
+//   3. 头部雕塑 headShape 是隐式函数:方向(dx,dy,dz)→ 相对 HEAD_C 的表面点;嘴巴、眉笔、发帽都
+//      通过 headSurfFace 贴到它上面(AO 也用其法线)。
+// 【关键约定】faceLevel(lod, quality) → 0 far · 1 game@low/med · 2 game@high/ultra(及 hero@low)·
+//   3 hero@med/high · 4 hero@ultra;RES 表给每级的分辨率。FACE_BONES 的索引必须与 BONE_INDEX 一致
+//   (character-geo.js 启动时 assert)。
+// 【配套阅读】docs/RIG.zh-CN.md(jaw/cheek/ear 骨与"眼睑不是骨骼"的说明)、
+//   docs/ASSETS-CHARACTER.zh-CN.md(几何/权重管线)、src/game/character-mats.js(皮肤/眼球 shader)。
+// ============================================================================
 // INKWAVE — squidkid FACE: sculpted head + neck as one seamless surface, socketed eyeballs under sliding lids, a modelled
 // mouth (lips, inner lips, cavity, teeth, tongue) that opens with the jaw, cupped ears, and a baked vertex AO.
 //
@@ -27,6 +49,7 @@ const gauss = (x, s) => Math.exp(-((x / s) ** 2));
 const smaxK = (a, b, k) => { const h = clamp(0.5 + (0.5 * (a - b)) / k, 0, 1); return lerp(b, a, h) + k * h * (1 - h); };
 const sminK = (a, b, k) => { const h = clamp(0.5 + (0.5 * (b - a)) / k, 0, 1); return lerp(b, a, h) - k * h * (1 - h); };
 
+// 【头部雕塑】解析式:发帽、刘海、眉毛都经由 character-geo.js 的 headSurf 贴合它。
 // ------------------------------------------------------------------------------------------------
 // Head sculpt (analytic: the hair cap, bangs and brows hug it through headSurf in character-geo.js)
 // ------------------------------------------------------------------------------------------------
@@ -36,10 +59,15 @@ export const EYE = { az: 0.355, el: 0.14, daz: 0.172, del: 0.222, tilt: 0.1 };
 export const MOUTH = { el: -0.41, halfAz: 0.12 };
 export const BROW = { az0: 0.19, az1: 0.54, el: 0.455 };
 export const EAR = { az: 1.5, el: -0.035 };
+// 【固定骨骼索引】按 character-geo.js 的 BODY_BONES 顺序;rig 只增不改,故这些索引永不移动。
+// character-geo.js 启动时会 assert 它等于 BONE_INDEX 的对应项。
 // fixed core-skeleton indices (BODY_BONES order in character-geo.js; the rig is append-only so these never move)
 export const FACE_BONES = { head: 4, eyeL: 19, eyeR: 20 };
 
 /** Mask (Inkling eye mask) signed distance in the head's (az, el): > 0 inside. Same shape as the skin shader's pigment. */
+// 【面罩 SDF】"鱿鱼小子眼罩"在头部 (az,el) 上的有向距离:> 0 在面罩内。形状与皮肤 shader 里画的
+// 墨色颜料一致 —— 几何与着色必须共享同一定义,否则面具的凹槽会与画上去的色块错位。
+// 由多个圆/条(smaxK 平滑并集)拼成:两片眼窝 lobe + 鼻梁 bridge + 两翼 wing。
 export function visorSD(az, el) {
   const ax = Math.abs(az);
   const lobe = (1 - Math.hypot((ax - 0.355) / 0.3, (el - 0.15) / 0.29)) * 0.26;
@@ -51,6 +79,7 @@ export function visorSD(az, el) {
   return smaxK(smaxK(lobe, bridge, 0.06), wing, 0.07);
 }
 /** Scalp (hair cap) hairline elevation as a function of azimuth. */
+// 【发际线】头皮(发帽)发际线高度随方位角 az 变化:正面高、两侧下降、后脑降到低值。
 export function hairline(az) {
   const a = Math.abs(az) / Math.PI;
   let h = lerp(0.58, 0.3, sstep(0.1, 0.42, a));
@@ -58,6 +87,9 @@ export function hairline(az) {
   return h;
 }
 
+// 【头部雕塑函数】单位方向 (dx,dy,dz) → 相对 HEAD_C 的表面点。先做轮廓变形(下脸"倒蛋"、脸颊最宽、
+// 尖下巴、下颌平面),再叠加一堆高斯细节(眉弓、面罩凹槽、鼻头/鼻翼/鼻孔、人中、嘴丘、颏唇沟等),
+// 最后按半径整体缩放。每个 gauss/exp 项的振幅(米)就是该特征的凸起量。JAW_PLANE 是下颌平面(只作用前脸)。
 /** Sculpted head: unit direction (dx,dy,dz) → surface point relative to HEAD_C.
  *  Silhouette (pass 2): an Inkling "mochi" — the back of the skull stays the round egg the hair was fitted to, but
  *  front-on the head is widest across the cheek line just under the eyes and tapers quickly into a small soft chin;
@@ -73,6 +105,7 @@ export function headShape(dx, dy, dz, out) {
   const front = Math.max(0, dz);
   if (dy < 0) {
     const k = Math.pow(-dy, 1.3);
+    // 【下脸"倒蛋"】颊线全宽,再较快收成小下巴(exponent 与各 sstep 决定收窄节奏)。
     // inverted egg: full width through the cheek line, then a quicker taper into a small chin
     x *= 1 - 0.235 * k - 0.1 * sstep(-0.3, -0.66, el) - 0.19 * sstep(-0.6, -1.05, el);
     if (dz > 0) z *= 1 - 0.04 * k - 0.085 * sstep(-0.55, -0.95, el) * front;  // chin tucks back under the mouth
@@ -104,6 +137,8 @@ export function headShape(dx, dy, dz, out) {
   off -= 0.0005 * sstep(-0.02, 0.05, visorSD(az, el));                                    // mask: a whisper of a recess
   let r = Math.hypot(x, y, z);
   const r1 = r + off;
+  // 【下颌平面】只作用前脸:用 sminK 把球面与一张"从下巴向后上方延伸"的平面平滑求交,
+  // 从而在平面与侧面相接处自然长出下颌棱线;后脑与后颈round仍保持蛋形不动。
   // under-jaw plane (front half only; the round back of the skull and the nape are left alone)
   const nd = JAW_PLANE.n.y * dy + JAW_PLANE.n.z * dz;
   let rr = r1;
@@ -111,8 +146,11 @@ export function headShape(dx, dy, dz, out) {
   return out.set(x, y, z).multiplyScalar(rr / r);
 }
 const _d = new V3(), _q0 = new V3(), _q1 = new V3(), _q2 = new V3(), _qa = new V3(), _qn = new V3();
+// 【方位/仰角→单位向量】az 绕 +Y(0=+Z 正前),el 为俯仰;c=cos(el) 保证是单位向量。
 export function dirAE(az, el, out) { const c = Math.cos(el); return out.set(Math.sin(az) * c, Math.sin(el), Math.cos(az) * c); }
 /** Head surface point (kid space) at (az, el), offset `off` along the surface normal (nOut receives the normal). */
+// 【头部表面点(带法线)】用相邻方向点的差分叉乘出表面法线,再把点沿法线偏 off 并平移到 kid 空间。
+// 发/眉/AO/耳根都靠它贴合头部;clamp el 到 ±1.555 以免极区数值退化。
 export function headSurfFace(az, el, off, out, nOut) {
   dirAE(az, el, _d); headShape(_d.x, _d.y, _d.z, _q0);
   const e = clamp(el, -1.555, 1.555);
@@ -126,6 +164,7 @@ export function headSurfFace(az, el, off, out, nOut) {
   return out.copy(_q0).addScaledVector(_qn, off).add(HEAD_C);
 }
 /** Radial head field (≈ signed distance near the surface): < 0 inside. */
+// 【头部场函数】近似有向距离(界面附近):< 0 在头内、> 0 在外。用于射线求交与平滑并集。
 const _hf = new V3(), _hs = new V3();
 function headField(p) {
   _hf.subVectors(p, HEAD_C); const r = _hf.length(); if (r < 1e-6) return -0.15;
@@ -133,25 +172,33 @@ function headField(p) {
   return r - _hs.length();
 }
 
+// 【颈部】椭圆管(略前倾),用平滑最小值(sminK)与颅骨并成一体,故颈从头部自然"长"出、无缝。
 // ------------------------------------------------------------------------------------------------
 // Neck: elliptic tube (slight forward lean) unioned with the skull by a smooth minimum
 // ------------------------------------------------------------------------------------------------
+// 【颈剖面表】NECK_Y 高度采样 → NECK_R 半径;neckR 在表内平滑插值,neckZ 是颈轴 z 随高度的前倾。
 const NECK_Y = [0.84, 0.935, 0.985, 1.04, 1.09, 1.18], NECK_R = [0.0386, 0.0382, 0.0392, 0.0373, 0.0352, 0.0338];
 const neckR = (y) => { let i = 0; while (i < NECK_Y.length - 2 && y > NECK_Y[i + 1]) i++; const t = clamp((y - NECK_Y[i]) / (NECK_Y[i + 1] - NECK_Y[i]), 0, 1); return lerp(NECK_R[i], NECK_R[i + 1], t * t * (3 - 2 * t)); };
 const neckZ = (y) => lerp(-0.0135, -0.0035, clamp((y - 0.93) / 0.2, 0, 1));
+// 【颈场函数】把 (x,z) 缩放到椭圆度量后取径向距离;并 max 一个"下界平面"(0.8 − y) 让颈在底部截断。
 function neckField(p) {
   const dx = p.x / 1.05, dz = (p.z - neckZ(p.y)) / 0.95;
   return Math.max(Math.hypot(dx, dz) - neckR(p.y), 0.8 - p.y);
 }
 const NECK_K = 0.017;
+// 【头∪颈的并集场】NECK_K 控制融合圆角半径。
 const unionField = (p) => sminK(headField(p), neckField(p), NECK_K);
+// 【颈射线原点】下颌/颈行的射线起点,位于颅骨∩颈内;两个体由此点看均为星形(star-shaped),故射线求交无歧义。
 const NECK_O = new V3(0, 1.075, -0.001); // ray origin for the jaw/neck rows (inside skull ∩ neck, both star-shaped from it)
 const NECK_BOTTOM = 0.935;                // bottom ring (under the tee collar)
 
+// 【细节阶梯】faceLevel 把 (LOD 档 × 画质) 折成 0…4 的整数级;RES[级] 给载体步长、眼/嘴/耳/眼球
+// 各环数。步长(rad)越小越密。数字级也允许直接传入(测试用)。
 // ------------------------------------------------------------------------------------------------
 // Detail ladder
 // ------------------------------------------------------------------------------------------------
 const QI = { low: 0, medium: 1, high: 2, ultra: 3 };
+// 【LOD×画质 → 细节级 0…4】far=0;game 在高画质以上=2,否则 1;hero 在 ultra=4、≥medium=3、否则 2。
 export function faceLevel(lod = 'hero', quality = G.settings?.quality || 'high') {
   if (typeof lod === 'number') return clamp(Math.round(lod), 0, 4);
   const q = QI[quality] ?? 2;
@@ -159,6 +206,8 @@ export function faceLevel(lod = 'hero', quality = G.settings?.quality || 'high')
   if (lod === 'game') return q >= 2 ? 2 : 1;
   return q >= 3 ? 4 : q >= 1 ? 3 : 2;
 }
+// 【分辨率表】step:脸部载体角步长(rad)· low:下颌/颈行数 · eye:[眼睑环, 缘翻卷] ·
+// mouth:[唇环, 内唇翻卷, 口腔环] · ear:[长, 周] · cap:眼球 [环, 段] · teeth:段数 · lash:睫毛段。
 // step: carrier angular step in the face (rad) · low: jaw/neck rows · eye: [lid rings, margin roll] ·
 // mouth: [lip rings, inner-lip roll, cavity rings] · ear: [along, around] · cap: eyeball [rings, segments] · teeth: segments
 const RES = [
@@ -169,19 +218,27 @@ const RES = [
   { step: 0.027, low: 23, eye: [14, 3], mouth: [9, 3, 6], ear: [28, 30], cap: [22, 60], teeth: 22, lash: 8 },
 ];
 
+// 【眼空间】眼球 = 单位球经仿射 kid = C + M·s;右眼的 frame 是左眼的镜像,故 +s.x 恒为外眼角。
+// 眼缝、眼睑行程、虹膜全都活在此空间,瞳孔/眨眼即绕眼球水平轴旋转。
 // ------------------------------------------------------------------------------------------------
 // Eye space
 // ------------------------------------------------------------------------------------------------
+// 【眼球常量】rx/ry/rz:眼球椭球半径(m) · xh:眼缝半宽(眼空间 x) · hu/hl:上/下眼缝高(λ) ·
+// l0:眼缝中心 λ · close:闭合时眼睑相接处(自下睑上移比例) · over:上睑过冲 · lidU/lidL:睑壳半径
+// (眼空间,1=眼球) · k:睑/眼窝融合 · dip:眼窝凹陷 · apex:眼球顶点在(凹陷的)皮肤下的深度 ·
+// yaw:视轴外转 · rest:虹膜静置偏转(使视线会聚) · iris/pupil 半径。
 // rx/ry/rz: eyeball ellipsoid radii (m) · xh: aperture half-width (eye-space x) · hu/hl: upper/lower aperture height (λ) ·
 // l0: aperture centre λ · close: where the lids meet (fraction up from the lower lid) · over: upper-lid overshoot ·
 // lidU/lidL: lid shell radius (eye space, 1 = eyeball) · k: lid/socket blend · dip: socket hollow · apex: eyeball apex
 // depth under the (recessed) skin · yaw: eye axis turned outward · rest: iris rest yaw (converges the gaze) · iris/pupil radii
 export const EYEB = { rx: 0.052, ry: 0.0605, rz: 0.035, xh: 0.5, hu: 0.6, hl: 0.57, l0: 0.0, close: 0.22, over: 0.035,
   lidU: 1.075, lidL: 1.05, k: 0.07, dip: 0.055, apex: 0.0008, yaw: 0.2, rest: -0.06, iris: 0.37, cornea: 0.045 };
+// 【眼缝上/下/闭线】λ(x) 为眼空间 x 处眼缝的上下边界(椭圆弧),lamClose 在两者间按 close 比例插值。
 const lamU = (x) => { const u = x / EYEB.xh, q = 1 - u * u; return q <= 0 ? EYEB.l0 : EYEB.l0 + EYEB.hu * Math.sqrt(q); };
 const lamL = (x) => { const u = x / EYEB.xh, q = 1 - u * u; return q <= 0 ? EYEB.l0 : EYEB.l0 - EYEB.hl * Math.sqrt(q); };
 const lamClose = (x) => lamL(x) + EYEB.close * (lamU(x) - lamL(x));
 /** Full-close rotation (rad, eye space) of the upper / lower lid edge at eye-space x. */
+// 【睑行程】在眼空间 x 处,上/下眼睑从张开到全闭需旋转的角度(rad);上睑含 over 过冲(闭合略过头)。
 export const lidTravel = (x) => [lamU(x) - lamClose(x) + EYEB.over, lamClose(x) - lamL(x)];
 function apertureDir(phi, e, out) {
   const s = Math.sin(phi);
@@ -191,12 +248,16 @@ function apertureDir(phi, e, out) {
   return out.set(x, c * Math.sin(lam), c * Math.cos(lam));
 }
 /** Normalised aperture coordinates of an eye-space direction: e (1 on the aperture) and angle φ (0 = outer corner). */
+// 【归一化眼缝坐标】把眼空间方向映射成 (e, φ):e=1 恰在眼缝边界上、<1 在缝内,φ 为绕缝的角度(0=外眼角)。
+// 眼睑补丁、睫毛、眼窝凹陷都以它作参数。
 function apertureCoords(d) {
   const lam = Math.atan2(d.y, d.z);
   const xn = d.x / EYEB.xh, ln = (lam - EYEB.l0) / (lam >= EYEB.l0 ? EYEB.hu : EYEB.hl);
   return { e: Math.hypot(xn, ln), phi: Math.atan2(ln, xn), lam };
 }
 
+// 【建眼坐标架】以头表面点为原点,构正交基 (X,Y,Z),按 sx 镜像(+x=外眼角),再绕眼轴 tilt 使外眼角上挑;
+// 最后得到仿射 M = [X·rx, Y·ry, Z·rz](3×3)与逆 Mi,以及球心 C。C 由表面点沿 Z 后退 (rz+apex) 得到。
 function makeEyeFrame(sx) {
   const E0 = headSurfFace(sx * EYE.az, EYE.el, 0, new V3());
   const Z = new V3(Math.sin(EYEB.yaw) * sx, 0, Math.cos(EYEB.yaw)).normalize();
@@ -211,11 +272,14 @@ function makeEyeFrame(sx) {
   const Mi = M.clone().invert();
   return { sx, C, X, Y, Z, M, Mi, E0 };
 }
+// 【两眼坐标架】[左(右?), 右] —— 索引 0 为 +x 侧、索引 1 为 −x 侧。左右公式通用。
 export const EYE_FRAMES = [makeEyeFrame(1), makeEyeFrame(-1)];
+// 【kid↔眼空间】toEye:kid→眼空间(减 C 再乘 Mi);fromEye:眼空间→kid(乘 M 再加 C)。
 const toEye = (F, p, out) => out.copy(p).sub(F.C).applyMatrix3(F.Mi);
 const fromEye = (F, s, out) => out.copy(s).applyMatrix3(F.M).add(F.C);
 
 /** Distance (eye-space units) along eye-space direction d from C to the head surface. */
+// 【沿眼空间方向到头表面】18 步二分的 ray-march(在眼空间参数 [0.3,4] 内),返回自 C 沿 d 的命中距离。
 const _ra = new V3(), _rp = new V3();
 function headTAlong(F, d) {
   _ra.copy(d).applyMatrix3(F.M);
@@ -224,6 +288,8 @@ function headTAlong(F, d) {
   return 0.5 * (a + b);
 }
 /** Skin radius along an eye-space direction: the recessed socket (hollowed around the eye) draped over the lid shells. */
+// 【眼周皮肤半径】在头表面之上叠加:眼窝凹陷(sock,在缝内向下抠 0.42,补丁外缘归零)与盖在睑壳上的
+// 皮肤(上睑 lidU / 下睑 lidL,缝缘再 +0.018);用 smaxK 平滑取"更高者",保证皮肤始终包住眼睑。
 function eyeSkinT(F, d, wr = 1) {
   const tH = headTAlong(F, d);
   const { e, lam } = apertureCoords(d);
@@ -233,6 +299,8 @@ function eyeSkinT(F, d, wr = 1) {
   return smaxK(tH - sock, lid, EYEB.k);
 }
 /** Lid rotation angles (upper, lower) at full close for a rest-pose point, [0,0] away from the eyes. */
+// 【静置点的睑角】给每个皮肤顶点算它全闭时需绕眼球轴转的角度(上睑 in x[0],下睑 in x[1]);
+// 远离眼睛/在缝外(e>1.4)的点返回 [0,0]。眼睑在着色器里按这些值旋转,故此函数是"眼睑运动"的数据源。
 const _le = new V3();
 function lidAngles(p) {
   const F = p.x >= 0 ? EYE_FRAMES[0] : EYE_FRAMES[1];
@@ -247,6 +315,8 @@ function lidAngles(p) {
   return [0, tl * sstep(1.22, 1.03, e)];
 }
 
+// 【嘴部坐标系(kid 空间)】与皮肤 shader 共享,用于表情形变与口腔明暗。C=嘴中心面点,U=顶向(去法线的 +Y)、
+// F=前法线、X=+X、hw=嘴角半宽。JAW_PIVOT 是下颌旋转枢轴(head 中心下移后移)。
 // ------------------------------------------------------------------------------------------------
 // Mouth frame (kid space) — shared with the skin shader (expression deformation, cavity shading)
 // ------------------------------------------------------------------------------------------------
@@ -260,6 +330,8 @@ export const MOUTH_FRAME = MF;
 export const JAW_PIVOT = HEAD_C.clone().add(new V3(0, -0.035, -0.035));
 
 /** Constants for the skin / eye shaders (character-mats.js). */
+// 【shader 常量包】把上面算好的眼球(球心、眼空间矩阵、仿射半径)、眼缝参数、虹膜、嘴部 frame 与网格尺寸、
+// 面部骨骼索引打包,交给 character-mats.js 的皮肤/眼球着色器使用(几何与着色共用同一套定义)。
 export const FACE_SHADER = {
   eyeC: EYE_FRAMES.map((f) => f.C), eyeM: EYE_FRAMES.map((f) => f.M), eyeMi: EYE_FRAMES.map((f) => f.Mi),
   ap: new THREE.Vector4(EYEB.xh, EYEB.hu, EYEB.hl, EYEB.l0), lid: new THREE.Vector4(EYEB.close, EYEB.over, EYEB.lidU, EYEB.lidL),
@@ -267,11 +339,15 @@ export const FACE_SHADER = {
   mouthC: MF.C, mouthU: MF.U, mouthF: MF.F, mouthHW: MF.hw, mouthEl: MOUTH.el, mouthAz: MOUTH.halfAz, bones: FACE_BONES,
 };
 
+// 【网格累加器】收集位置与每顶点面部数据,最终转成一张索引 BufferGeometry。
+// 每顶点并行数组:P 位置 · sub 子材质 · w 蒙皮权重 · lid 睑角 · mw 嘴权(带符号) · hd 是否用解析法线 ·
+// uv · part 分区 · an 覆盖法线 · nb 需向头骨融合法线的耳根/补丁缘。
 // ------------------------------------------------------------------------------------------------
 // Mesh accumulator (positions + per-vertex face data), turned into one indexed BufferGeometry per part
 // ------------------------------------------------------------------------------------------------
 class Acc {
   constructor() { this.P = []; this.idx = []; this.sub = []; this.w = []; this.lid = []; this.mw = []; this.hd = []; this.uv = []; this.part = []; this.an = []; this.nb = {}; }
+  // 【加顶点】返回新顶点索引;o 可给 { sub, w, lid, mw, hd, uv, part, n(覆盖法线) },缺省用中性值。
   v(p, o = {}) {
     this.P.push(p.clone()); this.sub.push(o.sub || 0); this.w.push(o.w || null); this.lid.push(o.lid || [0, 0]);
     this.mw.push(o.mw || 0); this.hd.push(o.hd === undefined ? true : o.hd); this.uv.push(o.uv || [0, 0]); this.part.push(o.part || 0); this.an.push(o.n ? o.n.clone() : null);
@@ -280,6 +356,8 @@ class Acc {
   tri(a, b, c) { this.idx.push(a, b, c); }
   quad(a, b, c, d) { this.idx.push(a, b, c, a, c, d); }
   /** Flip the winding of triangles [t0, t1) if their normals mostly face toward `inside(p) → V3`. */
+  // 【统一朝向】对索引区间 [t0,t1) 的三角,若法线整体朝向 inside(p) 返回的点(即"朝向内部"),
+  // 则整段翻转绕序。返回是否翻转过,便于调用方对相关联的后续环做一致处理。
   orient(t0, t1, inside) {
     const e1 = new V3(), e2 = new V3(), n = new V3(), c = new V3(), o = new V3(); let acc = 0;
     for (let t = t0; t < t1; t += 3) {
@@ -291,13 +369,16 @@ class Acc {
     if (acc < 0) for (let t = t0; t < t1; t += 3) { const k = this.idx[t + 1]; this.idx[t + 1] = this.idx[t + 2]; this.idx[t + 2] = k; }
     return acc < 0;
   }
+  // 【强制翻转】不看朝向,直接翻 [t0,t1) 段绕序(与 orient 的联动用)。
   flip(t0, t1) { for (let t = t0; t < t1; t += 3) { const k = this.idx[t + 1]; this.idx[t + 1] = this.idx[t + 2]; this.idx[t + 2] = k; } }
 }
 
+// 【采样助手】piecewise 按密度函数 ρ 在区间上分布采样点,并强制落在每个 knot 上。
 // ------------------------------------------------------------------------------------------------
 // Sampling helpers
 // ------------------------------------------------------------------------------------------------
 /** Samples over [knots[0], knots[n-1]] including every knot; interval counts from ∫rho / step, rho-distributed inside. */
+// 【按密度采样】区间内点数 = ∫ρ / step,点按 ρ 分布(每段用 64 点数值累积再反查),且每段端点必被包含。
 function piecewise(knots, rho, step) {
   const out = [knots[0]];
   for (let k = 0; k < knots.length - 1; k++) {
@@ -313,18 +394,23 @@ function piecewise(knots, rho, step) {
   }
   return out;
 }
+// 【最近索引】在升序数组 arr 中找最接近 v 的下标(用于把洞的边界对齐到网格线)。
 const nearestIdx = (arr, v) => { let b = 0; for (let i = 1; i < arr.length; i++) if (Math.abs(arr[i] - v) < Math.abs(arr[b] - v)) b = i; return b; };
 
+// 【洞的矩形】从载体上挖掉的矩形(az/el 的 knot 恰为网格线)。眼:两只;嘴:一只。
 // rectangles cut out of the carrier (az / el knots are exact grid lines)
 const EYE_RECT = { az0: 0.085, az1: 0.625, el0: -0.25, el1: 0.44 };
 const MOUTH_RECT = { az: 0.3, el0: -0.6, el1: -0.27 };
 
+// 【蒙皮权重】按静置位置算权重:jaw/cheek/neck/chest/head 的分配。权重即代码——无权重贴图。
 // ------------------------------------------------------------------------------------------------
 // Skin weights (rest-pose position → bones)
 // ------------------------------------------------------------------------------------------------
 const _wv = new V3();
+// 【到颈轴的距离】把点缩放到颈的椭圆度量下算径向距离。
 function neckAxisDist(p) { return Math.hypot(p.x / 1.05, (p.z - neckZ(p.y)) / 0.95); }
 /** Jaw influence for a skin point: the lower face below the mouth line, off toward the jaw angle and the throat. */
+// 【下颌影响】嘴线以下、靠近下颌角与喉部的下脸:0.97 × below × lat × throat(均用 sstep 平滑过渡)。
 function jawCarrier(p) {
   _wv.subVectors(p, HEAD_C); const r = _wv.length();
   const az = Math.atan2(_wv.x, _wv.z), el = Math.asin(clamp(_wv.y / r, -1, 1));
@@ -333,18 +419,23 @@ function jawCarrier(p) {
   const throat = sstep(0.046, 0.072, neckAxisDist(p)) + sstep(1.1, 1.14, p.y) * (1 - sstep(0.046, 0.072, neckAxisDist(p)));
   return 0.97 * below * lat * clamp(throat, 0, 1);
 }
+// 【脸颊影响】以 (|az|, el) 为中心的高斯鼓包,最大 0.55(见 RIG 章 cheekL/R 上限)。
 function cheekCarrier(p) {
   _wv.subVectors(p, HEAD_C); const r = _wv.length();
   const az = Math.atan2(_wv.x, _wv.z), el = Math.asin(clamp(_wv.y / r, -1, 1));
   return 0.55 * gauss(Math.abs(az) - 0.6, 0.24) * gauss(el + 0.31, 0.16);
 }
 /** Head / neck / chest split by height and by distance from the neck axis (the under-jaw stays on the head). */
+// 【头/颈/胸分配】按高度与到颈轴距离划分三者;下颚仍留在 head(不与颈一分为二)。
 function neckSplit(p) {
   const w1 = sstep(0.975, 1.02, p.y);
   const w2 = Math.max(sstep(1.05, 1.1, p.y), sstep(0.05, 0.078, neckAxisDist(p)) * sstep(1.0, 1.05, p.y));
   return { chest: 1 - w1, neck: w1 * (1 - w2), head: w1 * w2 };
 }
+// 【下颌增益上限】jaw 权重封顶 0.65(见 docs/RIG.zh-CN.md:rotation.x=0.3 时下唇约降 3.5cm)。
 const JAW_GAIN = 0.65;   // jaw influence cap (see docs/RIG.md: ~3.5 cm lip drop at rotation.x 0.3)
+// 【算权重】按 neckSplit 分出 head/neck/chest,再在 head 内按 jawW/cheekW 拆给 jaw 与 cheekL/R;
+// 输出 [['骨名', 权重], …],权重之和为 1。cheek 权重过小(<1e-4)则不输出该骨。
 function skinWeights(p, jawW, cheekW) {
   const s = neckSplit(p);
   const h = s.head, jaw = h * jawW * JAW_GAIN, ck = h * cheekW * (1 - jawW);
@@ -353,11 +444,15 @@ function skinWeights(p, jawW, cheekW) {
   return out;
 }
 
+// 【下颌/颈剖面列】把下颌→衣领的剖面预烘成 PROF_COLS 列、每列 PROF_SAMPLES 点,跨档缓存(懒建一次),
+// 载体行按 az 在列间插值取点 —— 避免每行重做昂贵的射线求交。
 // ------------------------------------------------------------------------------------------------
 // Jaw / neck profile columns (cached across tiers, interpolated per carrier column)
 // ------------------------------------------------------------------------------------------------
 const PROF_COLS = 120, PROF_SAMPLES = 72;
 let _prof = null;
+// 【预烘剖面】对每个方位角,自 NECK_O 向外做射线,从下颌行一路求到衣领环,裁剪到 NECK_BOTTOM 高度,
+// 再按弧长重采样成 PROF_SAMPLES 段。首次调用后缓存在 _prof,后续直接复用。
 function neckProfiles() {
   if (_prof) return _prof;
   const cols = [];
@@ -397,6 +492,7 @@ function neckProfiles() {
   return (_prof = cols);
 }
 /** Point k/n down the jaw→collar profile at azimuth az (interpolated between cached columns). */
+// 【取剖面点】在方位角 az 处、下颌→衣领剖面 f 处的点(在相邻两列间线性插值,使环在列间保持圆润)。
 function profilePoint(az, f, out) {
   const cols = neckProfiles();
   const u = ((az + Math.PI) / TAU) * PROF_COLS; const c0 = Math.floor(u), t = u - c0;
@@ -408,10 +504,12 @@ function profilePoint(az, f, out) {
 }
 const _pa = new V3(), _pb = new V3(), _cn = new V3();
 
+// 【耳朵】尖耳,含杯状 scapha、卷起的 helix 缘、concha 碗与真实厚度。earFrame 也供头发模块的朋克耳环使用。
 // ------------------------------------------------------------------------------------------------
 // Ears (pointed, with a cupped scapha, rolled helix rim, concha bowl and real thickness)
 // ------------------------------------------------------------------------------------------------
 /** Ear frame (also used by the punk hoops in the hair code): root inside the skull, A along the ear, F out of the cup. */
+// 【耳坐标架】根在颅骨内,轴向 A、出碗方向 F、横 W;width(u) 给沿耳的宽度轮廓(尖端收窄)。
 export function earFrame(sx) {
   const root = headSurfFace(sx * EAR.az, EAR.el, -0.0085, new V3());
   const A = new V3(sx * 0.63, 0.43, -0.65).normalize();
@@ -419,6 +517,8 @@ export function earFrame(sx) {
   const W = new V3().crossVectors(A, F).normalize();
   return { root, A, F, W, L: 0.106, width: (u) => 0.0268 * Math.pow(Math.max(0, 1 - u), 0.8) * sstep(-0.4, 0.28, u) + 0.0011 };
 }
+// 【耳横截面】耳平面内 u(0 根…1 尖)处的截面:由背凸 → 卷起 helix(在 scapha 上卷的管)→ 碗底 →
+// 镜像 组成的闭合环,用固定的分段预算(nB/nR/nW)保证各行顶点一一对应。碗比缘厚,故成真实凹杯。
 /**
  * Ear cross-section at u (0 root … 1 tip) in the ear plane: X across (W), Y out of the cup (F). A closed loop built from
  * explicit pieces with fixed vertex budgets (so rows correspond): convex back → rolled helix (a tube that curls over the
@@ -439,6 +539,7 @@ function earSection(u, w, nB, nR, nW, out) {
   const yb = Math.max(-tb + 0.0012, yc + rr - bd);                     // bowl floor (keeps ≥ 1.2 mm of ear)
   return { half, E, yb, nW, tb };
 }
+// 【耳闭环】把 earSection 的半侧 + 碗底镜像成完整闭合环(anti 加一条 antihelix 脊)。返回按顺序的 [X,Y] 点表。
 function earLoop(u, w, nB, nR, nW, anti) {
   const { half, E, yb } = earSection(u, w, nB, nR, nW);
   const bowl = (sgn) => { const pts = []; for (let i = 0; i < nW; i++) { const t = i / nW, X = Math.max(0, E[0]) * (1 - t); const f = 1 - t; let Y = yb + (E[1] - yb) * Math.pow(f, 1.6); Y += anti * gauss(f - 0.45, 0.16) * (sgn > 0 ? 1 : 0.25); pts.push([sgn * X, Y]); } return pts; };
@@ -449,6 +550,9 @@ function earLoop(u, w, nB, nR, nW, anti) {
   for (let i = left.length - 1; i >= 1; i--) loop.push(left[i]);
   return loop;
 }
+// 【加耳】按 rowU(从颅骨内 u<0 的喇叭根到尖端,两端加密)铺行;根布用 headField 把耳"熔"进颅骨
+// (皮下点抬到皮肤下、皮上点向皮肤收)以消除接缝;权重在耳前 20% 内从 head 过渡到 earL/R 骨;
+// 尖端收成一点,最后统一定向。nb 记录需融合法线的根点。
 function addEar(acc, sx, R) {
   const { root, A, F, W, L, width } = earFrame(sx);
   const [nU, nAround] = R.ear;
@@ -495,9 +599,12 @@ function addEar(acc, sx, R) {
   acc.orient(t0, acc.idx.length, (p) => { const k = clamp(p.clone().sub(root).dot(A), 0, L); return root.clone().addScaledVector(A, k); });
 }
 
+// 【头 + 脸装配】载体网格(挖三洞)+ 眼/嘴环补丁 + 内唇 + 口腔袋 + 牙 + 舌 + 耳,一次装配成皮肤网格。
 // ------------------------------------------------------------------------------------------------
 // Head + face assembly
 // ------------------------------------------------------------------------------------------------
+// 【建面部皮肤】按 LOD 档装配整张头脸;返回 { geo, acc, ao },geo 为索引 BufferGeometry(position/normal/uv),
+// acc 保留每顶点数据供 Builder 取(权重、子材质、aHead、aFace=[上睑角,下睑角,嘴权,AO])。
 /**
  * Build the head skin for a LOD tier: carrier + eye/mouth ring patches + inner lips + cavity + teeth + tongue + ears.
  * Returns { geo, data } — geo: indexed BufferGeometry (position, normal, uv); data: per-vertex arrays for the Builder
@@ -506,6 +613,8 @@ function addEar(acc, sx, R) {
 export function buildFaceSkin(lod = 'hero') {
   const lv = faceLevel(lod); const R = RES[lv];
   const acc = new Acc();
+  // 【载体采样】经线(a)严格关于 az=0 镜像(先采样半侧再镜像),保证左右完全对称;
+  // 纬线(e)分两段:下部 nLow 行是下颌/颈剖面,上部是固定仰角行(含眼的上下界)。
   // ---- carrier sampling (columns mirrored exactly about az = 0)
   const rhoAz = (a) => 1 + 0.55 * gauss(a, 0.09) - 0.4 * sstep(0.85, 1.25, a) + 0.1 * gauss(a - EAR.az, 0.25) - 0.3 * sstep(1.9, 2.4, a);
   const half = piecewise([0, EYE_RECT.az0, MOUTH_RECT.az, EYE_RECT.az1, 0.95, 1.3, 1.75, 2.3, Math.PI], rhoAz, R.step);
@@ -523,6 +632,8 @@ export function buildFaceSkin(lod = 'hero') {
   const d = new V3(), p = new V3();
   const covered = (az, el) => el > hairline(az) + 0.22;
   const rowEl = (j) => (j >= nLow ? elsUp[j - nLow] : -2);
+  // 【可见性裁剪】先算哪些四边形完全在发帽下或落在某个洞里(skipQ),据此只给"被引用"的顶点建顶,
+  // 省去被头发遮住的头顶与洞内的无用顶点。need[] 标记保留者。
   // which vertices are needed: skip quads fully under the cap or inside a hole
   const iEye0 = nearestIdx(azs, EYE_RECT.az0), iEye1 = nearestIdx(azs, EYE_RECT.az1);
   const iEyeR0 = mir(iEye1), iEyeR1 = mir(iEye0);
@@ -536,6 +647,8 @@ export function buildFaceSkin(lod = 'hero') {
   for (let j = 0; j < nRows - 1; j++) for (let i = 0; i < nAz; i++) if (!skipQ(i, j)) {
     for (const [a, b] of [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]]) need[b * nAz + (a % nAz)] = 1;
   }
+  // 【载体顶点】上半用 headSurfFace(带解析法线 hd),第一固定行(岔口)用 headShape,下部行用 profilePoint。
+  // 每点附带 jaw/cheek 权重与睑角 lidAngles。
   // carrier vertices
   const carrierVertex = (i, j) => {
     const az = azs[i];
@@ -553,6 +666,8 @@ export function buildFaceSkin(lod = 'hero') {
     acc.quad(vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1));
   }
   acc.orient(tC0, acc.idx.length, () => HEAD_C);
+  // 【洞边界环】按"从正面看逆时针"(底→右→顶→左)收集四个边,作为补丁外圈(与载体共享顶点,无缝合)。
+  // 三个洞(左右眼、嘴)各自补上对应补丁;最后装双耳。
   // ---- hole boundary loops (counter-clockwise seen from the front: bottom → right → top → left)
   const rectLoop = (i0, i1, j0, j1) => {
     const L = [];
@@ -569,6 +684,8 @@ export function buildFaceSkin(lod = 'hero') {
   return finishFace(acc);
 }
 
+// 【眼环补丁】从洞边界朝眼缝 slerp 方向收拢(K 环),半径由 eyeSkinT 的"眼窝皮肤"给出;
+// 再翻卷 m 环成眼睑缘(湿线)。面向外 = 背离眼球中心,据此定向。
 // ---- eye ring patch -----------------------------------------------------------------------------
 function addEyePatch(acc, F, loop, R) {
   const [K, m] = R.eye;
@@ -623,9 +740,11 @@ function addEyePatch(acc, F, loop, R) {
   if (flipped) acc.flip(tOuter, acc.idx.length);
   if (R.lash) for (const L of LASHES) addLash(acc, F, L, R.lash);
 }
+// 【睫毛片表】以眼缝坐标 (e,φ) 给中心与半径(归一化眼缝单位),tip 指出泪滴状尖的方向。
 // lash tabs in aperture coordinates: centre (e, φ), radius (normalised aperture units)
 export const LASHES = [{ e: 0.91, phi: 0.58, r: 0.155, tip: -1.2 }, { e: 0.93, phi: 0.24, r: 0.115, tip: -0.7 }];
 const lashR = (L, a) => L.r * (1 + 0.9 * Math.pow(Math.max(0, Math.cos(a - L.tip)), 5)); // teardrop, tip down-and-out
+// 【加睫毛】在眼缝边缘贴一片泪滴状薄片(中心 + 若干环),随上睑角度旋转,故会一起闭眼。
 function addLash(acc, F, L, n) {
   const segs = Math.max(8, n * 2), rings = Math.max(2, Math.round(n / 2));
   const cx = L.e * Math.cos(L.phi), cy = L.e * Math.sin(L.phi);
@@ -649,7 +768,10 @@ function addLash(acc, F, L, n) {
   acc.orient(t0, acc.idx.length, () => F.C);
 }
 
+// 【嘴】唇环 → 内唇翻卷 → 口腔袋;再补牙与舌。上唇挂 head、下唇挂 jaw(嘴角共享),故张口自然。
 // ---- mouth: lip rings → inner lip roll → cavity bag; teeth + tongue --------------------------------
+// 【唇部起伏】嘴坐标 (a∈[-1,1] 横向, b=el−嘴线)上的沿法线偏移:上唇 + 丘比特弓、下唇更饱满、
+// 唇线沟、嘴角收拢。单位米。
 function mouthLip(az, el) {
   // lip relief (m, along the head normal) in mouth coordinates: a ∈ [-1, 1] across, b = el − mouth line (rad)
   const a = clamp(az / MOUTH.halfAz, -1.4, 1.4), b = el - MOUTH.el, aw = Math.max(0, 1 - a * a);
@@ -660,16 +782,20 @@ function mouthLip(az, el) {
   off -= 0.0011 * gauss(Math.abs(a) - 1.0, 0.13) * gauss(b, 0.03);                                                   // corner tuck
   return off;
 }
+// 【嘴面点】头表面点沿法线叠上唇部起伏。
 function mouthPoint(az, el, out) {
   headSurfFace(az, el, 0, out, _mn);
   return out.addScaledVector(_mn, mouthLip(az, el));
 }
 const _mn = new V3();
 /** Analytic skull normal at the direction of a rest-pose point (from HEAD_C). */
+// 【头骨法线】由点相对 HEAD_C 的方向求解析法线,用于补丁外缘与载体无缝衔接。
 function skullNormal(p) {
   const v = p.clone().sub(HEAD_C); const r = v.length();
   const n = new V3(); headSurfFace(Math.atan2(v.x, v.z), Math.asin(clamp(v.y / r, -1, 1)), 0, new V3(), n); return n;
 }
+// 【加嘴】从洞边界向唇线收拢(K 环,唇部按 a=cosφ 插值权重),再内唇翻卷(m 环),再向口腔袋推进(nb 环);
+// 用 bagRing 在嘴坐标系里造腔体(带横向/纵向缩放),末端以扇面封口。下唇权重归 jaw、上唇归 head。
 function addMouth(acc, loop, R) {
   const [K, m, nb] = R.mouth;
   const N = loop.length;
@@ -751,6 +877,7 @@ function addMouth(acc, loop, R) {
   if (R.teeth) addTeethTongue(acc, R);
 }
 /** Upper + lower teeth (smooth stylised bands, the shader draws the tooth gaps) and the tongue. */
+// 【牙 + 舌】上下牙做两条光滑带(shader 再画牙缝),上牙挂 head、下牙挂 jaw;舌是口腔底上的一块压扁团。
 function addTeethTongue(acc, R) {
   const X = MF.X, U = MF.U, Fw = MF.F, n = R.teeth, ns = Math.max(6, Math.round(n / 2));
   const band = (y0, hh, th, z0, bend, wx, bone, sub) => {
@@ -796,7 +923,10 @@ function addTeethTongue(acc, R) {
   acc.orient(t0, acc.idx.length, () => tc);
 }
 
+// 【法线/AO/打包】算面法线、用覆盖法线修正耳根与补丁缘、烘 AO,再打成 BufferGeometry。
 // ---- normals, AO, packing -----------------------------------------------------------------------
+// 【收尾】先生成 position/index → computeVertexNormals,再用 acc.an 的覆盖法线、acc.nb 的融合法线
+// (耳根朝头骨法线 lerp,消除接缝明暗)修正;写出 uv;调 bakeAO 得到每顶点 AO。
 function finishFace(acc) {
   const n = acc.P.length;
   const pos = new Float32Array(n * 3);
@@ -816,6 +946,8 @@ function finishFace(acc) {
   return { geo: g, acc, ao };
 }
 
+// 【烘顶点 AO】用表面自身的邻近性(沿法线做 Evans 式距离探针,对顶点哈希网格;眼球作为遮挡体),
+// 再补解析项处理比探针更细的特征(鼻孔、眼睑缘、口腔),最后沿网格边做一次平滑去噪。结果 clamp 到 [0.08,1]。
 /** Vertex AO from the surface's own proximity (Evans-style distance probes along the normal against a vertex hash, with
  *  the eyeballs as occluders), plus analytic terms for features finer than the probes (nostrils, lid margin, cavity). */
 function bakeAO(acc, N) {
@@ -827,6 +959,7 @@ function bakeAO(acc, N) {
     const z = 1 - (i + 0.5) / 260 * 1.2, r = Math.sqrt(Math.max(0, 1 - z * z)), ph = i * 2.39996;
     if (z < -0.2) continue; s.set(r * Math.cos(ph), r * Math.sin(ph), z); pts.push(fromEye(F, s, new V3()));
   }
+  // 【探针表】[沿法线距离, 权重] 四档;粗探针用抽稀的点集(stride)以省时间。
   const probes = [[0.0035, 0.3], [0.0075, 0.28], [0.014, 0.24], [0.026, 0.18]];
   const occ = new Float32Array(n);
   for (const [dist, wgt] of probes) {
@@ -856,6 +989,7 @@ function bakeAO(acc, N) {
     const sub = acc.sub[i];
     if (acc.part[i] === 1 || acc.part[i] === 3 || acc.part[i] === 4) {
       v.subVectors(acc.P[i], HEAD_C); const r = v.length(); const az = Math.atan2(v.x, v.z), el = Math.asin(v.y / r);
+      // 【解析补项】鼻孔与鼻翼沟比探针更细,用高斯直接压暗(part 1 载体 / 3 眼补丁 / 4 嘴)。
       a *= 1 - 0.45 * gauss(Math.abs(az) - 0.027, 0.016) * gauss(el + 0.178, 0.013);   // nostrils
       a *= 1 - 0.12 * gauss(Math.abs(az) - 0.058, 0.03) * gauss(el + 0.17, 0.02);     // nose-wing crease
     }
@@ -875,6 +1009,8 @@ function bakeAO(acc, N) {
 }
 
 /** Add the head skin to a character-geo.js Builder (one draw call with the rest of the skin). */
+// 【并入皮肤网格】把 buildFaceSkin 的结果加进 character-geo.js 的 Builder(与其余皮肤同一次 draw call):
+// v3=aHead(是否解析法线方向)、ex=子材质、color=轻量腔体压暗、face=[上睑角,下睑角,嘴权,AO]、weights。返回顶点/三角数。
 export function addHeadSkin(B, lod = 'hero') {
   const { geo, acc, ao } = buildFaceSkin(lod);
   const hd = new V3();
@@ -890,10 +1026,13 @@ export function addHeadSkin(B, lod = 'hero') {
 }
 const _col = new THREE.Color();
 
+// 【眼球】在眼空间造单位球帽 + 角膜凸起(眼材质按 aEyeS 旋转它实现注视)。蒙皮到 head 骨。
 // ------------------------------------------------------------------------------------------------
 // Eyeballs (unit-sphere caps + cornea bulge in eye space; the eye material rotates them for the gaze)
 // ------------------------------------------------------------------------------------------------
 /** Add both eyeball caps to a Builder: build it with B.build('aEx', 'aEyeS'). aEx = ±2 marks this socketed-eye mode. */
+// 【加眼球】给 Builder 加左右两颗球帽:用 B.build('aEx','aEyeS') 消费。aEx=±2 标记"眼窝式"模式;
+// aEyeS 是眼空间坐标(供材质转向);uv 存眼空间 x/y 供虹膜采样。TH=1.2 半角(恒在眼睑/眼窝之下)。
 export function addEyeballs(B, lod = 'hero') {
   const [nR, nS] = RES[faceLevel(lod)].cap;
   const TH = 1.2;                                                     // cap half-angle (always under the lids / socket)

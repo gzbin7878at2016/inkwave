@@ -1,3 +1,21 @@
+// ============================================================================
+// 【中文导读】触手发 + 鱿鱼形态的"几何内核" —— 解析曲面 S(t, θ)
+// ----------------------------------------------------------------------------
+// 【模块定位】被 character-geo.js 调用(buildStrand / buildHair / buildSquid),是生成触手
+//   与鱿鱼几何的数学底座。本文件不持有角色状态、不每帧运行 —— 只在构建 / 换档(getHairStyle
+//   缓存未命中)时执行。character.js 经 character-geo.js 间接使用它。
+// 【核心机制】一根触手 = 一条解析曲面 S(t, θ):以向心(centripetal)Catmull-Rom 脊线为骨
+//   (弧长参数 t ∈ [0,1]),携带平行传输(parallel transport)坐标架(O = "顶",背离头皮;
+//   B = 横),截面可锥化 / 压扁 / 扭转。管体、建模吸盘、圆头全部从同一 S(t, θ) 生成,故吸盘
+//   能"共形"贴到皮肤上(不悬空、不陷入),且每个顶点都知道自己的脊参数 t(→ 沿发丝蒙皮)与
+//   局部半厚(→ 半透明 shader)。
+// 【关键约定】hairDetail(lod, quality) 给出各档的 ring / radial / cup 分辨率('hero'|'game'|'far'
+//   × 设置画质 'low'…'ultra'),但骨骼静置位置永不随细节变化(rig 只增不改契约)。far 档按
+//   ~1.8k 三角就地生成,不再被 character-lod.js 的聚类器二次减面。
+// 【配套阅读】docs/ASSETS-CHARACTER.zh-CN.md(几何 / 权重管线)、docs/RIG.zh-CN.md(发丝骨
+//   hair{s}_0..2 与 hairTip 契约)、src/game/character-geo.js(getHairStyle / buildStrand /
+//   buildSquid 的真实调用点)。
+// ============================================================================
 // INKWAVE — tentacle hair + squid-form geometry kernel (used by character-geo.js: buildStrand / buildHair / buildSquid).
 //
 // A tentacle is an analytic surface S(t, θ): a centripetal Catmull-Rom spine (arc-length t ∈ [0, 1]) carrying a
@@ -18,11 +36,13 @@ const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t 
 const TAU = Math.PI * 2;
 const even = (n) => Math.max(4, 2 * Math.round(n / 2));
 
+// 【细节阶梯】按 LOD 档 × 设置画质给出分辨率;far 档为省三角用极简参数,hero 档最高。
 // ------------------------------------------------------------------------------------------------
 // Detail ladder
 // ------------------------------------------------------------------------------------------------
 const QK = { low: 0.6, medium: 0.8, high: 1, ultra: 1.25 };
 /** Current settings quality (defaults to 'high' outside the game, e.g. in the labs). */
+// 【当前画质】读 G.settings.quality;在游戏外(labs 等)缺省 'high'。返回值保证是 QK 里存在的键。
 export function hairQuality() { const q = G.settings?.quality; return QK[q] ? q : 'high'; }
 export const HAIR_LOD_NAMES = ['hero', 'game', 'far'];
 /**
@@ -31,6 +51,11 @@ export const HAIR_LOD_NAMES = ['hero', 'game', 'far'];
  *  cups: modelled suction cups ({ radial, prof, gap } — gap scales the spacing) or null (the shader prints them),
  *  cap: scalp-cap grid (around × rows), brow: brow stroke rings × radial.
  */
+// 【分辨率查询】返回触手发 / 鱿鱼在"LOD 档 × 画质"下的分辨率。
+// 【far 档】仅几十像素高,按 far 发丝目标(~1.8k 三角)就地生成,直接被采用(不再被聚类)。
+// 【game 档】比赛内距离(头高约 60–120px):ultra 以下吸盘交给 shader 印(建模的 2–4px 只会闪烁),
+//   截面仍足够圆以维持干净剪影。
+// 【hero 档】最高分辨率:建模吸盘 hi 剖面、加密脊环、scalp cap 与眉笔都最细。
 export function hairDetail(lod = 'hero', quality = hairQuality()) {
   const k = QK[quality] ?? 1;
   // far: a few dozen px tall — sized under the far hair target (~1.8k tris) so it is used as-is (never re-clustered)
@@ -53,6 +78,8 @@ export function hairDetail(lod = 'hero', quality = hairQuality()) {
   };
 }
 
+// 【触手曲面】预采样脊线为 N+1 个点/切线/坐标架,供 frame() 插值。_a.._e 是模块级临时 Vector3
+// (构建期单线程使用,复用避免每次分配 —— 本文件所有几何函数都只在这些共享临时量上工作)。
 // ------------------------------------------------------------------------------------------------
 // Tentacle surface
 // ------------------------------------------------------------------------------------------------
@@ -62,7 +89,11 @@ const _a = new V3(), _b = new V3(), _c = new V3(), _d = new V3(), _e = new V3();
  * o.radius(t) half-width · o.flat(t) thickness ratio · o.twist(t) rad · o.section(c, s, t) → [c', s'] unit-section reshape
  * o.outward(P, out, t) "top" hint · o.transport: carry the frame (no flips at curled tips), biased toward the hint.
  */
+// 【TentacleSurface 类】一根触手的脊线 + 平行传输坐标架。o 可给 radius/flat/twist/section/outward/
+// transport/curveType/samples 等回调,决定截面形状与坐标架朝向。构造即预采样,运行期只读。
 export class TentacleSurface {
+  // 【构造】把控制点变成向心 Catmull-Rom 曲线,采样 N+1 个点与归一化切线,再逐点建立坐标架:
+  // 通过 transport(平行传输)避免卷曲尖端处坐标架翻转,同时按 wStep 朝 outward 提示缓慢回正。
   constructor(points, o = {}) {
     this.o = o;
     const curve = this.curve = new THREE.CatmullRomCurve3(points.map((p) => (p.isVector3 ? p.clone() : new V3(...p))), false, o.curveType || 'centripetal');
@@ -72,6 +103,8 @@ export class TentacleSurface {
     for (let i = 0; i <= N; i++) { P.push(curve.getPointAt(i / N)); T.push(curve.getTangentAt(i / N).normalize()); }
     const hint = new V3(), prev = new V3();
     const wStep = (hl) => 1 - Math.pow(1 - 0.22 * hl * hl, 18 / N); // same bias per unit length as the old 18-ring sweep
+    // 【坐标架回正权重】hl 是提示向量在切向外的长度(0..1);wStep 把它换算成"每单位长度相同的回正量"
+    // (与旧 18 环扫掠一致),故 N 或采样密度改变也不影响外观。
     for (let i = 0; i <= N; i++) {
       const Ti = T[i];
       if (o.outward) o.outward(P[i], hint, i / N); else hint.set(0, 1, 0);
@@ -89,6 +122,8 @@ export class TentacleSurface {
     }
   }
   /** Spine frame at t (t outside [0, 1] extrapolates along the end tangents). */
+  // 【取架】在弧长参数 t 处插值出位置 P、切向 T、顶向 O、横向 B(t 越界则沿端点切线外推)。
+  // 复用调用方传入的 P/T/O/B 输出对象以零分配;写进 out 的是 P。
   frame(t, P, T, O, B) {
     const N = this.N;
     const tc = clamp(t, 0, 1);
@@ -101,8 +136,11 @@ export class TentacleSurface {
     return P;
   }
   /** Section at t: { r, flat, tw } (profiles are evaluated at the clamped t). */
+  // 【截面参数】返回该处 { r(半宽), flat(厚度比), tw(扭转角 rad) };回调按 clamp 后的 t 求值。
   section(t) { const o = this.o, tc = clamp(t, 0, 1); return { r: o.radius(tc), flat: o.flat ? o.flat(tc) : 1, tw: o.twist ? o.twist(tc) : 0 }; }
   /** Local (O, B) offset of ring angle th at t (scale shrinks the section, e.g. for the rounded tip). */
+  // 【截面偏移】给定环角 th,返回在 (O, B) 平面内的偏移(以及第三分量=外法向厚度 h,
+  // 供半透明与吸盘定位用)。scale 缩放截面(圆头收拢时用)。
   offset(t, th, scale = 1, sec = null) {
     const s0 = sec || this.section(t);
     let c = Math.cos(th), s = Math.sin(th);
@@ -112,12 +150,15 @@ export class TentacleSurface {
     return [xo * ct - xb * st, xo * st + xb * ct, Math.abs(c) * s0.r * s0.flat * scale];
   }
   /** Surface point S(t, th). */
+  // 【曲面点】S(t, th) = 脊点 + O·x + B·y + T·shift;写入 out 并返回(out 由调用方复用)。
   point(t, th, out, scale = 1, shift = 0) {
     const P = this.frame(t, _a, _b, _c, _d);
     const [x, y] = this.offset(t, th, scale);
     return out.copy(P).addScaledVector(_c, x).addScaledVector(_d, y).addScaledVector(_b, shift);
   }
   /** Outward unit normal of the surface at (t, th) (finite differences; oriented away from the spine). */
+  // 【曲面法线】用有限差分(t、th 各 ±1e-3)叉乘求法线,再按"背离脊线"定向。吸盘贴合皮肤的
+  // 关键:法线朝外,吸盘剖面才能沿它压印。注:此处会 new V3(非零分配),仅构建期调用。
   normal(t, th, out) {
     const e = 1e-3;
     const p0 = this.point(t, th, new V3());
@@ -129,6 +170,9 @@ export class TentacleSurface {
     return out;
   }
   /** Curvature-adaptive ring params: n + 1 values on [0, 1], denser in tight curls, at the root and toward the tip. */
+  // 【自适应环参数】在 [0,1] 上给出 n+1 个位置,环在弯得急处、根部与靠近尖端处更密。
+  // 实现:先按曲率 κ=Δangle/ds 生成密度 ρ(并压低 κ 上限 3.5 防爆),两次箱式模糊去噪(样条曲率噪声大),
+  // 再对 ρ 做累积分布并按 k/n 反查插值 → 得到按密度分布、且首尾恰为 0、1 的位置数组。
   ringParams(n, tipBias = 1) {
     const N = this.N, rho = new Float64Array(N);
     const ds = this.len / N;
@@ -152,9 +196,12 @@ export class TentacleSurface {
   }
 }
 
+// 【管网格】沿 S 生成闭合管体:起点埋入圆帽、末端圆头(tipSteps 环收成一点)。
 // ------------------------------------------------------------------------------------------------
 // Tube mesh
 // ------------------------------------------------------------------------------------------------
+// 【建管】每顶点带 t(脊参数)、cs/sn(环角 cos/sin)、thick(该处半厚,米),供蒙皮与半透明 shader 使用。
+// 环按 ringParams 自适应分布;起点可埋入(capStart)、末端用 tipLen×半径长的圆头收拢。
 /**
  * Closed tube over S with a buried rounded start cap and a rounded tip (tipSteps rings closing on a point).
  * opts: rings (spine rings), radial, tipSteps, startSteps, t0/t1 (build only [t0, t1]), tipLen (tip cap length / r).
@@ -209,14 +256,20 @@ export function tentacleTube(S, opts = {}) {
   return { geo, t: new Float32Array(tt), cs: new Float32Array(cs), sn: new Float32Array(sn), thick: new Float32Array(th), rings: ts };
 }
 
+// 【吸盘】沿底面按两行交错排布的小环状杯:每条剖面点都沿 S 的法线偏置,故共形贴合皮肤。
 // ------------------------------------------------------------------------------------------------
 // Suction cups: small ringed cups stamped onto S in two staggered rows along the underside
 // ------------------------------------------------------------------------------------------------
+// 【杯剖面】[半径/R, 高/h] 从埋入的脚(融进皮肤)→ 裙边 → 卷起的边缘 → 盘 → 中心。
+// hi 用 7 点、lo 用 5 点;rimK 指向"卷边顶点"(高度≥0.99 的第一个剖面项)。
 // cup profile: [radius / R, height / h] from the buried foot (fillet into the skin) → skirt → rolled rim → dish → centre
 const CUP_PROF = {
   hi: [[1.22, -0.1], [0.98, 0.36], [0.84, 0.94], [0.68, 1.0], [0.55, 0.72], [0.34, 0.3], [0.0, 0.16]],
   lo: [[1.18, -0.1], [0.92, 0.7], [0.7, 1.0], [0.52, 0.55], [0.0, 0.2]],
 };
+// 【压印吸盘】rows 给截面角与相位(相位错开两行),size(t) 给杯半径;沿 S 逐杯把剖面点沿法线偏置生成,
+// 返回 { geo, t(每顶点=杯心的脊参数)、ring(0 中心…1 卷边顶…≥1 脚)、list:[{t,th,R}] }。
+// 结尾用循环向外的朝向修正:若整体法线朝向脊线内侧则翻面(取决于局部坐标架手性)。
 /**
  * opts: rows [{ th, phase }] (section angles; phase 0..1 staggers the row), from/to (t range), size(t) → cup radius R (m),
  * gap (spacing multiplier), radial, prof ('hi' | 'lo'), skip(C, t) → true drops a cup (inside the head / another strand).
@@ -286,9 +339,12 @@ export function suctionCups(S, opts) {
   return { geo, t: new Float32Array(tt), ring: new Float32Array(rr), list };
 }
 
+// 【卷尖 + 雕琢刘海】在发丝末端追加一段螺旋卷曲,并可由主发丝派生多缕"刘海"(bangs)。
 // ------------------------------------------------------------------------------------------------
 // Curled tips + sculpted locks
 // ------------------------------------------------------------------------------------------------
+// 【卷尖】在脊线末端沿 (d, o) 平面卷起一段逐渐收紧的螺旋(约 0.25…0.75 圈),返回新的点表(不改动入参)。
+// curl 为卷曲强度(可正负=方向),lift 给一个沿 +Y 的小抬升避免扎进头皮。
 /**
  * Roll the end of a spine: extend the last segment and curl it toward `outDir(b)` (away from the head) in a tightening
  * spiral (≈ a quarter to three-quarter turn for curl 0.5 … 1.2). Returns a new point list.
@@ -313,6 +369,8 @@ export function curlTip(pts, curl, outDir, lift = 0.35) {
   return out;
 }
 
+// 【雕琢刘海】围绕一根主发丝生成多缕刘海:每缕沿主脊走其长度的 len,横向按 d 张开(尖端处全幅、
+// 根部约 35%)、按 h 沿顶向分层,再各自 curlTip 卷曲。返回若干点表(V3 数组)。
 /**
  * Sculpted locks around a main strand (bangs): each lock follows the main spine for `len` of its length, fanned sideways
  * by `d` (m, at the lock's tip; ~35 % of it at the root) and layered by `h` (m along the top direction), then curls.
@@ -335,10 +393,12 @@ export function lockSpines(S, locks, outDir, n = 12) {
   return res;
 }
 
+// 【烘焙接触遮蔽】为头发烘 AO:计算点到一组遮挡体(头 / 其它发丝)的距离。
 // ------------------------------------------------------------------------------------------------
 // Baked contact occlusion for the hair: distance of a point to a set of occluders (head / other strands)
 // ------------------------------------------------------------------------------------------------
 /** Spine samples of a surface (for proximity tests): [{ p, r, h }] every ~1 cm. */
+// 【脊线采样】为邻近测试取发丝脊线样本,约每 1cm 一个;每点带位置 p、半径 r、厚 h 及坐标架 O/T、参数 t。
 export function spineSamples(S, from = 0, to = 1) {
   const out = []; const P = new V3(), T = new V3(), O = new V3(), B = new V3();
   const n = Math.max(4, Math.ceil((S.len * (to - from)) / 0.008));

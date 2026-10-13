@@ -1,3 +1,24 @@
+// ============================================================================
+// 【中文导读】关卡陈设摆放表 —— “哪些道具放在世界的哪个位置”
+// ----------------------------------------------------------------------------
+// 【模块定位】数据 + 一个展开函数。数据被 src/main.js 的 _buildWorldNow() 消费:
+//   对 dressingFor(layoutId) 的每一项调 PropKit.add(it.type, it) 生成道具并收集
+//   碰撞盒(见 main.js 装配线第 ①步“道具先行”)。道具几何由 src/world/props.js
+//   的 PropKit 程序化生成,本文件只管“摆在哪”。
+// 【核心机制】
+//   - DRESSING[<id>] 只写 Alpha 半场(half)的列表;dressingFor() 把每一项连同
+//     其 180° 镜像副本(x,z → -x,-z,rotY + π,team 取反)一起输出,两半场逐点对称。
+//   - 标了 mirror:false 的项只放一次(不在中线上的共享陈设)。
+//   - EXTRA 汇总“自带摆放表的舞台包”:Halyard 的船只单独放 props-marina-vessels.js,
+//     其余舞台若导出了 PLACEMENTS 也并入 —— 于是合并了手写表与舞台包两条来源。
+// 【关键约定】
+//   - 单位世界米、Y 向上;pos 是道具的【地面基点】(多数是底面中心;pieredge 等
+//     “延伸型”run 的起点,沿局部 +X 延伸)。
+//   - rotY = 0 时道具朝 +Z(镜像时自动 +π);run 型道具长度以 length 计。
+//   - 每条目的字段含义见下方【字段图例】,具体取默认值由 props.js 的类型表 D 决定。
+// 【配套阅读】src/world/props.js(PropKit.add 与类型表 D)、src/main.js(_buildWorldNow)、
+//   src/world/props-marina-vessels.js、docs/ASSETS-WEAPONS.zh-CN.md §5.2
+// ============================================================================
 // Set dressing per stage: PropKit placements (see src/world/props.js). Everything listed for team 0's half is mirrored
 // by the map's 180° rotation (x,z → -x,-z, rotY + π) exactly like the level blocks, so both sides stay identical.
 // Only `mirror: false` items are placed once.
@@ -6,6 +27,18 @@ import { STAGES } from './stages/index.js';
 
 const P = Math.PI;
 
+// 【陈设总表】键 = 图 id;值是“Alpha 半场”的摆放数组(会被 dressingFor 镜像)。
+// 【字段图例】(由 props.js 类型表 D 与各 build 配方解释,常用者):
+//   type      道具类型名,查 PropKit 类型表 D(如 'bench' / 'pieredge' / 'trawler')
+//   pos       [x, y, z] 世界坐标地面基点(米);run 型为起点
+//   rotY      绕 Y 的朝向(弧度);0 = 朝 +Z;镜像时自动 +π
+//   team      归属队(0/1);缺省 = 中立;镜像时取反
+//   length/width/run/rise/thick  尺寸类(随 type 解释,如 pieredge 的护栏长度)
+//   s0/s1     延伸型 run 两端内缩量(米);0.75 = 让护栏离角一定距离
+//   ext0/ext1 端点相对分界线的外/内缩(米),用于凹角“让位/顶死”相邻护栏
+//   cleats/fenders/ladders/skip  run 上的系缆桩/防撞垫/爬梯位置、需跳过的区段(局部 X 上)
+//   variant/color/count/…  透传给该 type 的造型参数
+//   mirror:false  该项不再生成镜像副本(只放一次)
 export const DRESSING = {
   halyard: [
     // owner: docks stream (src/world/props-marina-dock.js). Alpha half; every entry is mirrored (x,z → -x,-z).
@@ -112,10 +145,14 @@ export const DRESSING = {
 };
 
 // stage packs that own their own placement lists
+// 【外挂摆放表】Halyard 的船只列表来自 props-marina-vessels.js;其余舞台若导出了
+// PLACEMENTS 也并入 EXTRA —— 于是 dressingFor 统一从两条来源取数。
 const EXTRA = { halyard: HALYARD_VESSELS };
 for (const [id, st] of Object.entries(STAGES)) if (st.PLACEMENTS) EXTRA[id] = st.PLACEMENTS;
 
 // Expand the half-list into world placements for both halves.
+// 【展开为全场摆放】合并手写表与舞台包列表后,逐项输出:原项 + 其 180° 镜像副本
+// (pos 取相反数、rotY + π、team 取反);mirror:false 的项跳过镜像只放一次。
 export function dressingFor(layoutId) {
   const src = [...(DRESSING[layoutId] || []), ...(EXTRA[layoutId] || [])];
   const out = [];

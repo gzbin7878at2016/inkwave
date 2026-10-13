@@ -9,6 +9,33 @@
 //   5. apply: body/shell/head FK, 3-segment leg IK to the planted feet, 2-bone claw IK, eyes, hatches, flaps
 //   6. verlet secondary (kelp, chains, tyre, buoy, anchor, flag, antennae) in world space
 // Pose channels are a flat Float32Array so blending is trivial and nothing allocates per frame.
+
+/*
+ * 【中文导读】HULLBREAKER 动画器 —— 全程序化、无关键帧
+ *
+ * 本文件延续项目"程序化、无关键帧"的动画哲学(见 docs/ASSETS-RIG.zh-CN.md):
+ * 没有任何 .anim 剪辑文件,每一帧的姿态都是代码现场算出来的。与传统
+ * "关键帧 → 状态机混合"不同,这里是一台"实时运行的物理-风格系统":
+ *   游戏事件(受击/阶段推进)──► 弹簧冲量 ──► 每帧姿态函数 ──► 骨骼
+ *   意图状态(st:招式/阶段/硬直)──► 阻尼权重与剪辑时钟 ──┘
+ *
+ * 【姿态通道】全 Boss 的"这一帧该怎么摆"压缩在一个 Float32Array(P)里,
+ *   40 个浮点通道(C.bx / C.by / …,见下方 NAMES 表):体位移/俯仰/横滚/偏航、
+ *   壳、头、左右螯(各 7 通道:腕 xyz + 姿态 + 张合)、眼、口、舱盖、发光……
+ *   【要点】平铺数组 + 无每帧分配,混合就是逐元素 lerp。
+ *
+ * 【每帧流水线】(update 内六个步骤,与英文头注一一对应)
+ *   1 选剪辑:死亡 > 出场 > 硬直 > 吼叫 > 招式阶段 > 恢复 > 基础步态
+ *   2 基础步态打底,剪辑叠加,切换时交叉淡入
+ *   3 加性弹簧(受击抽动、甲壳哐当、眼球抖动、门摆)
+ *   4 步态:世界锁定落脚,三足相位步态与实测根速度/转向率锁定
+ *   5 应用:体/壳/头 FK,腿三段 IK,双骨螯 IK,眼柄、舱盖、旗帜
+ *   6 次级 Verlet 链(海带、铁链、轮胎、浮标、锚、旗、触角)世界空间模拟
+ *
+ * 【关键约定】剪辑只往姿态上加量(增量叠加),基础步态永远在场;
+ *   共享关键姿势(slamUp/slamHit 等)是函数,保证 前摇→生效→后摇 连续;
+ *   触发类事件用 cross(t)(本帧跨过时刻 t 才为真)精确对准某一帧。
+ */
 import * as THREE from 'three';
 import { LEGS, ARMS, HEAD, BODY, CONT, MC, UP, frameQuat, ik2, ankleFor, legPole } from './bossModelGeo.js';
 
@@ -18,6 +45,11 @@ const NAMES = ['bx', 'by', 'bz', 'bp', 'br', 'byaw', 'sp', 'sr', 'sy', 'hp', 'hy
   'splay', 'curl', 'belly', 'steam', 'paw', 'slide', 'mand', 'tuck', 'bellyOut'];
 export const C = Object.fromEntries(NAMES.map((n, i) => [n, i]));
 const NC = NAMES.length;
+
+// 【通道表速查】bx/by/bz=体位移 bp/br/byaw=体俯仰/横滚/偏航 | sp/sr/sy=壳俯仰/横滚/升降
+//   hp/hy/hr=头 | lx..lo / rx..ro =左/右螯(腕 xyz、俯仰、偏航、横滚、张合) | ey/ep/es/ed=眼 看/俯/展/垂
+//   mouth=口开 mand=颚 steam=蒸汽 splay=腿外张 belly/bellyOut=软腹 露出/鼓出 paw=刨地 slide=滑铲
+//   sipP/sipY=吸盘俯仰/偏航 cannon=炮充能 glowL=左螯发光 hA/hB/hC=三个舱盖 curl=腿蜷缩 tuck(预留)
 // default phase lengths (the sim passes st.phaseDur; these are the fallbacks, = bossHazards MOVES)
 const DUR = { slam: [1.15, 1.2, 1.0], barrage: [0.85, 2.0, 0.8], sweep: [1.15, 2.1, 0.9], charge: [1.15, 1.5, 0.9], crablets: [0.9, 0.8, 0.6], frenzy: [1.2, 3.0, 1.7] };
 const PH = { tele: 0, act: 1, rec: 2 };

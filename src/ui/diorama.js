@@ -1,3 +1,24 @@
+// ============================================================================
+// 【中文导读】地图鸟瞰层（diorama）：按住地图键时，把"实时渲染画面"斜俯视，并在此图层上钉人物/地点/超跳。
+// ----------------------------------------------------------------------------
+// 【模块定位】DOM 覆盖层（不是 Canvas）。由 UI 装配方在根节点 `root.prepend(this.el)` 挂载，每帧被调
+//   `update(dt, k)`（k 为地图开启进度 0..1，由 CameraRig.mapK 提供）。本层只负责"HUD 级"的标记/游标/弧线，
+//   真正的镜头飞入由 `src/game` 的 CameraRig（mapK/_diorama）驱动——本文件不改场景，只贴 DOM。
+// 【核心机制】
+//   ① 投影钉点：11 个 pin（NPIN=11）——0..2 队友、3 己方基地、4 自己、5..10 己方 Hop Beacon。每帧把世界点
+//      用 `THREE.Vector3.project(cam)` 投到 NDC 再转 CSS 像素，写 transform；相机后方的点（_v.z>1）隐藏。
+//   ② 超跳弧线：屏幕空间二次贝塞尔（lobCtl 把控制点朝屏幕上方一侧外凸——竖直跳时不会折回）。计划跳的预览弧
+//      与在途跳的实时线共用同一套曲线函数（qAt/qPiece/qLen 做 De Casteljau 子段与弧长）。
+//   ③ 游标吸附：游玩中指针被锁，用鼠标增量/右摇杆推一个虚拟游标，吸附到 72 px 内最近的可跳 pin；点它=超跳。
+//      自己已阵亡时改为"计划跳"（写 player.js 的 queueJump），复活时执行。
+//   ④ 死亡标记：G.deathMarks 的池化记录 → 固定 12 个 squid-skull 元素，按 id 变化重播 is-new 动画。
+// 【关键约定】坐标：世界用米，屏幕用 CSS 像素（y 向下）；NDC→px 换算 `(v.x*0.5+0.5)*W`、`(0.5-v.y*0.5)*H`。
+//   性能：每帧只投影少量点，写入 transform / CSS 变量（--c/--pinK/--zc/--dc），其余靠类名切换；用 this._last
+//   做脏检查避免重复写。指针必须保持 Pointer Lock（鼠标增量驱动，不用真实光标位置）。
+// 【配套阅读】docs/CONTRACTS.zh-CN.md（超跳/beacon 契约）、docs/BOSS.zh-CN.md 无关；兄弟文件 src/ui/hud.js、
+//   src/game/minimap.js（superJumpInfo）、src/fx/zoneMarks.js（地面上的 zone 本体）、src/game/player.js（queueJump）。
+// 【建议阅读顺序】先 update（总调度）→ _liveJumps（在途超跳）→ _pin（钉点结构）→ _zones/_deathMarks/_plan。
+// ============================================================================
 // Map diorama overlay. While the map is held, the camera rig swoops the RENDERED view up into a tilted overhead shot of
 // the real stage (the live scene with its live ink — nothing is rebuilt; see CameraRig.mapK / _diorama). This layer
 // pins the people and places onto that view, Splatoon-style:
@@ -21,8 +42,11 @@ import { t } from '../i18n/strings.js';
 import * as THREE from 'three';
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+// 【复用向量】模块级的两枚 Vector3，避免每帧 new（投影只需临时中转）。
 // the super-jump lob on screen: a quadratic from (x0,y0) to (x1,y1) bowed out to the side facing up-screen (a straight
 // up/down jump bows sideways instead of folding back). Shared by the planned-jump preview and the live travel line.
+// 【跳跃弧控制点】二次贝塞尔的控制点：取起点→终点连线的法线方向，强制指向屏幕上方一侧（ny>0 或纯水平时取反），
+//   外凸 lift=min(170, 弧长*0.4+30)，再整体上抬 lift*0.25——让"抛物线"看起来是向上抛出的弧，而非折返。
 function lobCtl(x0, y0, x1, y1, out) {
   const len = Math.hypot(x1 - x0, y1 - y0) || 1;
   let nx = -(y1 - y0) / len, ny = (x1 - x0) / len;
@@ -31,8 +55,10 @@ function lobCtl(x0, y0, x1, y1, out) {
   out.x = (x0 + x1) / 2 + nx * lift; out.y = (y0 + y1) / 2 + ny * lift - lift * 0.25;
   return out;
 }
+// 【二次贝塞尔求值】B(u) = (1-u)²·a + 2u(1-u)·c + u²·b；对 x/y 各调一次。
 const qAt = (a, c, b, u) => (1 - u) * (1 - u) * a + 2 * u * (1 - u) * c + u * u * b;
-const f1 = (n) => n.toFixed(1);
+const f1 = (n) => n.toFixed(1);   // 数值→一位小数字符串（SVG path 用，省字节）
+// 【取子段】用 De Casteljau 把 [u0,u1] 段提取成一条独立二次贝塞尔，返回 SVG path 串。控制点由两端切线交点推出。
 // the quadratic's piece [u0, u1] as its own quadratic (De Casteljau), as an SVG path
 function qPiece(x0, y0, cx, cy, x1, y1, u0, u1) {
   const ax = qAt(x0, cx, x1, u0), ay = qAt(y0, cy, y1, u0), bx = qAt(x0, cx, x1, u1), by = qAt(y0, cy, y1, u1);
@@ -41,23 +67,33 @@ function qPiece(x0, y0, cx, cy, x1, y1, u0, u1) {
   const k = (u1 - u0);
   return `M${f1(ax)} ${f1(ay)} Q${f1(ax + tx0 * k)} ${f1(ay + ty0 * k)} ${f1(bx)} ${f1(by)}`;
 }
+// 【弧长近似】把 [u0,u1] 段按 8 等分折线累加长度——用来给虚线动画定相位（stroke-dashoffset）。
 function qLen(x0, y0, cx, cy, x1, y1, u0, u1) {
   let L = 0, px = qAt(x0, cx, x1, u0), py = qAt(y0, cy, y1, u0);
   for (let i = 1; i <= 8; i++) { const u = u0 + ((u1 - u0) * i) / 8, x = qAt(x0, cx, x1, u), y = qAt(y0, cy, y1, u); L += Math.hypot(x - px, y - py); px = x; py = y; }
   return L;
 }
+// 【复用输出对象】superJumpInfo 的 from/to/info 出参，以及弧线控制点出参——全部模块级复用，零 GC。
 const _jf = { x: 0, y: 0, z: 0 }, _jt = { x: 0, y: 0, z: 0 }, _ji = { phase: '', k: 0, e: 0, home: false }, _ctl = { x: 0, y: 0 };
-const NJ = 4;             // live super-jump lines: you + three teammates
-const K = '#15121c';
+const NJ = 4;             // 【在途超跳上限】你 + 三个队友 = 4 条实时线
+const K = '#15121c';       // 【描边黑】所有内联 SVG 图标的深色描边色（配合白填充做"贴纸"感）
+// 【基地图标】靶心+向上箭头，深色描边+白色内描边两层画法（先粗黑再细白，得到清晰描边）。
 const HOME_ICON = `<svg viewBox="0 0 64 64" aria-hidden="true"><ellipse cx="32" cy="46" rx="22" ry="8.5" fill="none" stroke="${K}" stroke-width="8"/><ellipse cx="32" cy="46" rx="22" ry="8.5" fill="none" stroke="#fff" stroke-width="4"/><path d="M32 8 L32 34 M21 24 L32 36 L43 24" fill="none" stroke="${K}" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 8 L32 34 M21 24 L32 36 L43 24" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+// 【自己图标】面朝方向的箭头（默认指上，运行时由 pin.icon 的 rotate 转向玩家朝向）。
 const ARROW = `<svg viewBox="-16 -16 32 32" aria-hidden="true"><path d="M0 -12 L10 10 L0 5 L-10 10 Z" fill="${K}" stroke="${K}" stroke-width="5" stroke-linejoin="round"/><path d="M0 -12 L10 10 L0 5 L-10 10 Z" fill="#fff"/></svg>`;
+// 【smoothstep】把 x 从 [a,b] 平滑映射到 0..1（t²(3-2t)），用于地图开启的渐入。
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 // Zone Control tag icon (the HUD's zone box): fill = currentColor
+// 【区域图标】Zone Control 的方框图标；填充用 currentColor，便于随持有者墨色（--zc）着色。
 const ZONE_ICON = `<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="7" width="18" height="18" rx="3.5" fill="currentColor" stroke="${K}" stroke-width="3"/><path d="M3.5 11 V6 a2.5 2.5 0 0 1 2.5 -2.5 H11 M21 3.5 H26 a2.5 2.5 0 0 1 2.5 2.5 V11 M28.5 21 V26 a2.5 2.5 0 0 1 -2.5 2.5 H21 M11 28.5 H6 a2.5 2.5 0 0 1 -2.5 -2.5 V21" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>`;
-const NPIN = 11;          // 0–2 allies, 3 base, 4 you, 5–10 team Hop Beacons
+const NPIN = 11;          // 【钉位数量】0–2 队友、3 基地、4 自己、5–10 己方 Hop Beacon
+// 【取 beacon 列表】从 G.subs 取本队 beacon，按诞生时间升序（保证 pin 编号稳定、老 beacon 先占低位）。
 const beaconsOf = (team) => (G.subs ? G.subs.beaconsFor(team).sort((x, y) => x.born - y.born) : []);
 
+// 【DioramaOverlay 类】一块 DOM 层：钉点/游标/超跳弧/区域标签/死亡标记/计划面板。构造时一次性建好并 prepend 到 root。
 export class DioramaOverlay {
+  // 【构造函数】搭全部子节点：11 个 pin、arcWrap（含 4 条 jumps 组）、状态位（cx/cy 游标、hover、_last 脏检查缓存）。
+  //   注意 arcWrap 用 html 字符串解析——h('svg') 会成为 HTML 元素、不绘制，必须走 innerHTML 拿 SVG 命名空间。
   constructor(root) {
     this.pins = Array.from({ length: NPIN }, (_, i) => this._pin(i));
     // (parsed as markup so the <svg> + paths get the SVG namespace — an h('svg') element is an HTML element and never drew)
@@ -99,6 +135,7 @@ export class DioramaOverlay {
     this.ztags = [];
   }
 
+  // 【建单个钉点】按序号确定角色（自己/基地/beacon/队友），造图标+名字+状态+按键提示，返回引用与状态字段。
   _pin(i) {
     const self = i === 4, home = i === 3, beacon = i >= 5;
     const icon = h('span', { class: 'iw-pin__icon', html: self ? ARROW : home ? HOME_ICON : beacon ? (SUB_ICONS.beacon || '') : '' });
@@ -113,6 +150,8 @@ export class DioramaOverlay {
     return { el, icon, name, state, x: 0, y: 0, vis: false, key: '', weapon: null, target: null, ok: false, queued: false };
   }
 
+  // 【每帧总调度】k=地图开启进度。处理开关切换、整体渐变、逐 pin 投影/吸附/朝向、在途超跳、区域、死亡标记、
+  //   计划面板、虚拟游标与点击跳。所有写入都走脏检查（this._last）。
   update(dt, k) {
     const was = this.on;
     this.k = k;
@@ -210,6 +249,7 @@ export class DioramaOverlay {
       }
     }
     // snap: nearest jumpable pin within reach
+    // 【吸附】72 px 内最近的可跳 pin（含徽章上方的偏移 34，匹配 pin 视觉中心）。
     let best = -1, bd = 72;
     for (let i = 0; i < NPIN; i++) {
       if (i === 4) continue;
@@ -257,6 +297,8 @@ export class DioramaOverlay {
   // off to where it lands, with a landing ring on the floor. Charging, the line draws out to the landing and the ring
   // closes in on it; in flight the flown part fades to a thin trail, ink dots stream on ahead (anchored to the line, not
   // to its moving start) and the jumper's pin rides the line (this.jpos → the pins loop).
+  // 【在途超跳】本队（自己+队友）正在进行的 Super Jump：先自己后队友两趟收集，最多 NJ 条；画出已飞段（细 trail）、
+  //   待飞段（虚线朝落点流动）、落点地面环（home 跳不画环，beacon 已标位），飞行中的 pin 由 this.jpos 骑线。
   _liveJumps(dt, me, cam, W, H) {
     this.jpos.clear();
     this._jclk = (this._jclk || 0) + dt;
@@ -286,6 +328,7 @@ export class DioramaOverlay {
       const trail = done > 0.002 ? qPiece(x0, y0, cx, cy, x1, y1, 0, done) : '';
       if (trail !== S.dk) { S.dk = trail; S.d.setAttribute('d', trail); }
       // dash period 15 px (2 on / 13 off); flowing toward the landing at 40 px/s
+      // 【虚线流动】stroke-dashoffset 按"已飞弧长 - 时间*40"取模 15，得到 15 px 周期、朝落点流动的虚线。
       const off = done > 0 ? qLen(x0, y0, cx, cy, x1, y1, 0, done) : 0;
       S.i.style.strokeDashoffset = ((((off - t * 40) % 15) + 15) % 15).toFixed(1);
       // landing ring on the floor (none for an Ink Jet / Zipline jump home: its beacon marks the spot)
@@ -293,6 +336,7 @@ export class DioramaOverlay {
       if (!J.home) {
         const pulse = 0.5 + 0.5 * Math.sin(t * 9);
         const R = (self ? 1.2 + 0.3 * pulse : 0.9 + 0.15 * pulse) * (1 + (flight ? 0 : Math.pow(1 - J.k, 2) * 1.8));
+        // 【落点环】绕落点 20 等分投影出一条闭合多段线（半径随脉动与飞行状态缩放）。
         for (let s = 0; s < 20; s++) {
           const ang = (s / 20) * Math.PI * 2;
           _v.set(_jt.x + Math.cos(ang) * R, _jt.y + 0.06, _jt.z + Math.sin(ang) * R).project(cam);
@@ -308,6 +352,8 @@ export class DioramaOverlay {
   // Zone Control: a tag over every zone — the operational objective's in its holder's ink (light grey while neutral) with
   // its name, the others small and faint so the next rotation isn't a surprise. The zones themselves are drawn on the
   // stage floor (src/fx/zoneMarks.js), which the map view is looking straight down at.
+  // 【区域标签】每个 zone 头顶一个标签：当前目标区用持有者墨色（中立浅灰）+ 名字，其他区小且淡。
+  //   双 zone 的中央点只在其首块上出名字，另一块仅出图标。
   _zones(cam, W, H, me) {
     const Z = G.match && !G.match.attract ? G.match.zones : null;
     const n = Z ? Z.zones.length : 0;
@@ -340,6 +386,8 @@ export class DioramaOverlay {
     }
   }
 
+  // 【发起跳】阵亡中→改为计划跳（写 queueJump，不立即跳）；存活→按 pin 类型（基地 clone / beacon / 队友）真正超跳，
+  //   播成功/失败音效并让 pin 闪一下。
   _jump(i, me) {
     const p = this.pins[i];
     // splatted: plan (queue) the jump for the respawn — never a jump now (player.js queueJump plays the cue)
@@ -357,11 +405,13 @@ export class DioramaOverlay {
     G.audio?.play?.(ok ? 'ui_confirm' : 'ui_error', { volume: 0.55 });
   }
 
+  // 【闪一下】重播 is-press 动画（先移除、强制 reflow、再加回，确保同名动画能重触发）。
   _flash(i) {
     const el = this.pins[i]?.el; if (!el) return;
     el.classList.remove('is-press'); void el.offsetWidth; el.classList.add('is-press');
   }
 
+  // 【头部/底栏文案】标题=地图名、时段（DUSK/DAY），底栏按当前设备（键鼠/手柄）与是否 plan 状态给不同操作提示。
   _head() {
     const m = G.game?.mapDef;
     this.title.textContent = t(m?.name || 'Stage').toUpperCase();
@@ -376,6 +426,7 @@ export class DioramaOverlay {
   }
 
   // death markers: a squid-skull in the victim's ink on the spot, fading with the record (main.js G.deathMarks)
+  // 【死亡标记】G.deathMarks 的池化记录 → 固定 12 个 squid-skull；按 id 变化重播 is-new，透明度跟记录 k 衰减。
   _deathMarks(cam, W, H) {
     const list = G.deathMarks;
     for (let i = 0; i < this.dms.length; i++) {
@@ -395,6 +446,7 @@ export class DioramaOverlay {
   }
 
   // splatted: the respawn countdown + what's planned
+  // 【计划面板】阵亡时显示复活倒计时与已计划的超跳目标；目标变化时弹一下缩放动画。
   _plan(me, q) {
     const n = String(Math.max(1, Math.ceil(me.respawnTimer || 0)));
     if (n !== this._last.planN) { this._last.planN = n; this.planN.textContent = n; }

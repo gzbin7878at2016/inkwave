@@ -1,3 +1,27 @@
+// ============================================================================
+// 【中文导读】Kelpline(海带线码头)关卡的贴花/标识绘制——把本关的地面标线、箱侧船公司 logo 等画进 mural 图集。
+// ----------------------------------------------------------------------------
+// 【模块定位】
+//   本文件是 Kelpline"四件套"中的 murals。它由 src/world/murals.js 的 setStage(id) 在切换关卡时调用(把本关区域
+//   重绘进 2048×2048 的 mural 画布);运行期 levelMaterial.js 按面 flags.z 采样对应贴花。几何由 layout.js 提供
+//   (box 的 mural 字段、地面板的 mural 字段引用这里的 id)。
+// 【核心机制】
+//   drawMurals(g, R, kit) 在"本关区域" R = {x,y,w,h}(2048×1008 像素)里绘制,返回 id 4…11 的贴花表:
+//     { id, x, y, w, h, place: [x0, xLen, y0, yLen], fx: [weather, chip] }
+//   • rect  = 该贴花在画布上的像素矩形(x/y/w/h);
+//   • place = 它映射到的世界"米"矩形(x0 起点,xLen 宽,y0 起点,yLen 高;地面板为俯视 x×z,箱侧为立面);
+//   • fx    = [weather 风化, chip 掉漆] 两个强度,喂给 levelMaterial 做脏化/剥落。
+//   地面标线画在 layout.js 各"地面板"的顶面;顶面 u = −x, v = +z,原点在板的 (maxX,minZ) 角,故画布看起来
+//   就是"基座处 Alpha 玩家朝中场望"的视角;Bravo 镜像板在自己坐标系里把同一画布转 180° 采样——所以这里每块板的
+//   绘制都关于板中心点对称(每个特征画一次、再绕中心转 180° 画一次,孪生点躲在箱/建筑下或正是另一半需要的标记)。
+//   (全部在突堤的 LOCAL 坐标系里;layout.js 会把板整体转 35°,但旋转板的顶面 u/v 不变。)
+// 【关键约定】
+//   • 坐标是"米制世界米"(Alpha 玩家视角),不是像素;像素只由 onSlab 的 sx/sz 缩放决定。
+//   • 点对称是硬约束:漏画一半会导致 Bravo 半场标线缺失/错位。
+//   • id 对应:4=4A 堆场板,5=车道板,6=前沿板,7=基座板,8=冷藏板,9/10=船公司 logo,11=Landing(单板,只画一次)。
+// 【配套阅读】src/world/murals.js(图集管理/rect-place-fx 定义)、docs/ASSETS.zh-CN.md、docs/RENDERING-UE4.zh-CN.md;
+//   同目录 layout.js(mural 字段引用这些 id)与 surfaces.js。
+// ============================================================================
 // Kelpline Terminal — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
 // drawMurals(g, R, kit) draws into the stage region R = { x, y, w, h } (2048 x 1008 px) and returns the table for mural

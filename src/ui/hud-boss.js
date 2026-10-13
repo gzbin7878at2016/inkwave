@@ -1,3 +1,23 @@
+// ============================================================================
+// 【中文导读】Boss 模式 HUD 扩展层：血条/标题卡/招式播报/伤害数字/结局，挂在一个 HUD 实例上。
+// ----------------------------------------------------------------------------
+// 【模块定位】与 hud.js 是"宿主—扩展"关系：HUD 在构造函数里 `this.boss = new BossHud(this)`，
+//   每帧在自己 update() 末尾调 `this.boss.update(dt)`。本文件不独立成屏，而是把 Boss 专用件
+//   插入 HUD 已有的 DOM 里（_build 用 `hud.el.insertBefore(..., hud.top)` 插到顶栏前，
+//   并把"大场面"层挂到不可隐藏的 `hud.overLayer`，这样 hud.setVisible(false) 也压不住它们）。
+// 【核心机制】
+//   ① 事件驱动：订阅 boss:spawn/intro/hp/move/hit/stun/phase/defeat（见 _unsubs），
+//      与对局逻辑解耦；少量字段（pos/yaw/hp/stunned）直接读活的 Boss 作兜底/投影。
+//   ② 自有时钟 this.T：HUD 的 fx 时钟只在有特效时跑，Boss 的 HP 缓动/播报计时需要连续推进，
+//      故本层自带 _t()。每个状态字段用 _fresh() 复位。
+//   ③ 白条 chip 机制：掉血时先留一段"残影"延迟 0.6 s 再追平，受连续攻击时残影也会持续下漏
+//      （见 _hp 的 chipHold 逻辑）——比一次性补间更符合"被打空"的观感。
+//   ④ 每帧路径只写 transform/opacity（_writeBar 用 translateX 百分比、_placeCall 用 translate3d），
+//      其余靠类名切换触发 CSS 动画。
+// 【关键约定】单位：世界坐标用米（_anchor 的 up 偏移、5.2/3.2 的模型高度）；屏幕坐标用 px。
+//   UI 缩放基准 _u() = min(vw/100, vh*1.7778/100)——16:9 归一化，保证不同分辨率下比例一致。
+// 【配套阅读】docs/BOSS.zh-CN.md、docs/BOSS.md「UI」节；宿主 src/ui/hud.js；美术 src/ui/boss-art.js。
+// ============================================================================
 // INKWAVE — boss-mode HUD layer (docs/BOSS.md "UI"). The HUD owns one: `hud.boss = new BossHud(hud)`.
 //   Boss bar (top centre, under the timer): emblem, name tape, phase pips, HP with 66 / 33 % notches, white chip-away
 //   trail, damage + weak-point flashes, OPEN! stun state with a draining stun meter, phase-change shield, phase-3 enrage.
@@ -14,15 +34,22 @@ import { on, emit, G } from '../core/ctx.js';
 import { BOSS_NAME, BOSS_EPITHET, MOVE_ICONS, MOVE_LABELS, bossEmblem } from './boss-art.js';
 import { t } from '../i18n/strings.js';
 
+// 【常量】
+// 【血量刻痕】HP 条上的两个 66%/33% 分界；越过时打 is-past/is-break 类做"断痕"演出。
 const NOTCHES = [2 / 3, 1 / 3];
+// 【会播报的招式】只有这些招式在 boss:move 的 tele/act 阶段弹屏上提示；open 单独走 _stun。
 const CALL_MOVES = new Set(['slam', 'barrage', 'sweep', 'charge', 'crablets', 'frenzy']);
+// 【阶段横幅文案】2/3 阶段切换时的大字+副标（t() 在用时本地化）。
 const PHASE_TXT = {
   2: { big: 'PHASE 2!', sub: 'Crablets incoming — pop them fast!' },
   3: { big: 'SHELL CRACKED!', sub: 'Final phase · hit the glowing belly!' },
 };
+// 【轻量三维向量】避免 import three：只要 {x,y,z} 结构，投影由 hud._project 完成。
 const V3 = () => ({ x: 0, y: 0, z: 0 });
 
+// 【BossHud 类】一个 HUD 实例持有一个；构造即搭 DOM、订阅总线；setMode 控制开/关。
 export class BossHud {
+  // 【构造函数】保存宿主 hud，初始化状态（_fresh）、临时向量与复用的 _tmp 向量（带 set/copy 自增方法，避免每帧 new）。
   constructor(hud) {
     this.hud = hud;
     this.on = false;
@@ -43,6 +70,7 @@ export class BossHud {
     ];
   }
 
+  // 【状态复位】一局 Boss 的全部可变状态集中此处；setMode 与多次 intro 都会调用，防止上局残留。
   _fresh() {
     return { hp: 1, max: 1, shown: 1, chip: 1, chipHold: 0, gotHp: false, phase: 1, stunT: 0, stunDur: 0, sawStun: false, shieldT: 0,
       dead: false, introT: null, tickT: 0, hitT: -9, weakT: -9, critT: -9, move: null, moveT: 0, movePh: null, openT: 0,
@@ -50,6 +78,8 @@ export class BossHud {
   }
 
   // ================================================================ build
+  // 【DOM 搭建】一次性建好血条（徽章/名牌/阶段点/HP 轨道/晕眩条/百分比/OPEN 牌）、招式播报药丸、
+  //   伤害数字层与结局层；元素引用存字段。血条插入 HUD 顶栏之前，结局层挂 overLayer。
   _build() {
     const hud = this.hud;
     // ---- boss bar
@@ -94,10 +124,13 @@ export class BossHud {
     hud.overLayer.appendChild(this.over);
   }
 
+  // 【销毁】退订总线、移除两处根节点。
   dispose() { this._unsubs.forEach((u) => u()); this.layer.remove(); this.over.remove(); }
 
   // ================================================================ mode + accessors
   /** Called by the HUD at every match intro (and by boss:spawn). */
+  // 【开关/重置】HUD 每次 match intro 与 boss:spawn 都会调。切换 is-boss 类、复位状态、清空各层，
+  //   若 boss 已给出 maxHp 则按当前血量初始化条形。
   setMode(onoff, boss = null) {
     onoff = !!onoff;
     this.on = onoff;
@@ -116,11 +149,16 @@ export class BossHud {
     if (b && b.maxHp) { this.S.max = b.maxHp; this.S.hp = this.S.shown = this.S.chip = clamp(b.hp / b.maxHp); }
     this._writeBar(true);
   }
+  // 【取 Boss】优先本层持有的，其次对局对象上的 G.match.boss。
   _b() { return this.boss || (G.match && G.match.boss) || null; }
+  // 【是否本地玩家造成】用于只给自己做的事加反馈（伤害数字/准星刻度）。
   _mine(a) { const hd = this.hud; return !!a && (a === hd._local() || !!a.isLocal); }
   _t() { return this.T; }   // own clock (the HUD's fx clock only runs while it has effects)
+  // 【UI 缩放基准】min(vw/100, vh*1.7778/100)：以 16:9 归一，1 单位≈屏宽的 1/100；所有像素偏移乘它。
   _u() { return Math.min(innerWidth / 100, (innerHeight * 1.7778) / 100); }
   /** World-space anchor: a model socket if the model exposes one, else the boss root + a height. */
+  // 【世界锚点】优先取模型 socket（借 boss.pos 的构造器造 Vector3，免 import three）；
+  //   失败则退回 boss 根 + 经验高度（shellTop≈5.2、其余 3.2）+ up 偏移。写入 out 复用对象。
   _anchor(name, up, out) {
     const b = this._b();
     if (!b) return null;
@@ -135,6 +173,7 @@ export class BossHud {
     out.x = p.x; out.y = p.y + (name === 'shellTop' ? 5.2 : 3.2) + up; out.z = p.z;
     return out;
   }
+  // 【世界→屏幕】用宿主 hud._project 投影，转成 CSS 像素坐标；out.behind 标记是否在相机后方。
   _screen(w, out) {
     const cam = G.camera;
     if (!cam || !w) return null;
@@ -145,11 +184,13 @@ export class BossHud {
   }
 
   // ================================================================ events
+  // 【事件处理】七个 boss:* 事件的入口；a few 直接读活 Boss 兜底。各处理见下方方法。
   _spawn(boss) {
     if (!boss) return;
     if (!this.on || this.boss !== boss) this.setMode(true, boss);
   }
 
+  // 【入场】清零点条、播 is-intro 动画、弹标题卡（_titleCard）；introT 开启入场填充序列。
   _intro(e) {
     if (!this.on) this.setMode(true, e.boss || null);
     const S = this.S;
@@ -160,6 +201,8 @@ export class BossHud {
     this._titleCard();
   }
 
+  // 【掉血】归一化到 0..1；下降时启动白条残影与 is-hit 抖动，越过刻痕则打断痕，归零播 is-zero。
+  //   残影延迟见上方导读【核心机制】③（chipHold=0.6 s）。
   _hp({ hp, max }) {
     if (!this.on) return;
     const S = this.S;
@@ -181,6 +224,7 @@ export class BossHud {
     if (t <= 0 && !S.dead) restartAnim(this.bar, 'is-zero');
   }
 
+  // 【招式阶段】tele(预警)→弹播报；act(生效)→重放动作动画；rec(后摇)→收起（OPEN 期间不收）。
   _move({ id, phase }) {
     if (!this.on || this.S.dead) return;
     const S = this.S;
@@ -194,6 +238,7 @@ export class BossHud {
       if (this.call.dataset.move === id) restartAnim(this.call, 'is-act');
     } else if (phase === 'rec' && S.openT <= 0) this.call.classList.remove('is-on', 'is-act');
   }
+  // 【显示播报】设置药丸图标/文案，charge 加方向箭头类、open 加开壳类，重放 is-on 入场。
   _showCall(id) {
     this.call.dataset.move = id;
     this.callIcon.innerHTML = MOVE_ICONS[id] || MOVE_ICONS.open;
@@ -205,6 +250,8 @@ export class BossHud {
     restartAnim(this.call, 'is-on');
   }
 
+  // 【命中反馈】crab=小蟹：只给准星刻度；blocked=无敌期：给自己弹灰色 IMMUNE；weak=弱点：抖血条/徽章、
+  //   加 CRIT!、准星重刻度；普通命中也给准星刻度并按世界点弹伤害数字。
   _hit({ damage = 0, weak = false, attacker = null, pos = null, crab = false, blocked = false }) {
     if (!this.on || this.S.dead) return;
     const S = this.S, now = this._t();
@@ -230,6 +277,7 @@ export class BossHud {
     if (weak && now - S.critT > 0.22) { S.critT = now; this._crit(w); }
   }
 
+  // 【晕眩/OPEN】进入开壳窗口：设倒计时、加 is-open、弹 OPEN 播报与音效。dur 最小 0.5 s。
   _stun({ dur = 3 }) {
     if (!this.on || this.S.dead) return;
     const S = this.S;
@@ -241,6 +289,7 @@ export class BossHud {
     this.hud._snd('special_ready', { volume: 0.45, pitch: 1.25 });
   }
 
+  // 【阶段切换】相位只增不减；设 1.8 s 护盾、更新阶段点；三阶段换裂壳徽章 + is-enraged；弹阶段横幅。
   _phase({ phase }) {
     if (!this.on) return;
     const S = this.S;
@@ -255,6 +304,7 @@ export class BossHud {
     if (T) this._banner(t(T.big), t(T.sub), phase);
   }
 
+  // 【击败】置 dead、清 OPEN、血条 is-dead，1.3 s 后 is-gone 收条，并播胜利结局（_ending(true)）。
   _defeat() {
     if (!this.on || this.S.dead) return;
     const S = this.S;
@@ -267,6 +317,7 @@ export class BossHud {
   }
 
   /** hud.banner('timesup') in boss mode lands here. Returns true when handled. */
+  // 【时间到】boss 模式下 HUD.banner('timesup') 转到这里；已死/已结束时返回 true 吞掉（不再弹 TIME'S UP）。
   timesUp() {
     if (!this.on) return false;
     if (this.S.dead || this.S.ended) return true;
@@ -277,6 +328,8 @@ export class BossHud {
 
   /** Contextual prompt: the turf tutorial line becomes a boss one; OPEN! gets its own nudge.
    *  The tutorial is recognised by its message `kind` (a stable tag), never by matching the English wording. */
+  // 【情境提示】OPEN 期间提示"全力输出"；识别 turf 教学提示时（按稳定 tag `kind==='turfTip'`，不匹配英文）
+  //   替换成 Boss 版文案（三阶段引导打弱点）。
   prompt(p) {
     if (this.S.openT > 0.4 && !this.S.dead) return { id: 'It\u2019s OPEN \u2014 unload on it!' };
     if (p && p.kind === 'turfTip') return { id: this.S.phase >= 3 ? 'Shell cracked \u2014 hit the glowing belly!' : 'Shoot HULLBREAKER \u2014 its glowing eyes take extra damage!' };
@@ -284,6 +337,7 @@ export class BossHud {
   }
 
   /** The 4v4 roster slots re-used for the squad: up to 8 kids, 4 either side of the timer, all in squad ink. */
+  // 【顶栏队伍重映射】把 4v4 的八个槽位拿来显示 8 人小队：全部同色（队 0 色），左 4 右 4。
   squadTeams(teams) {
     const all = [];
     for (const t of teams || []) for (const p of (t && t.players) || []) all.push(p);
@@ -291,6 +345,8 @@ export class BossHud {
   }
 
   // ================================================================ per frame
+  // 【每帧】推进自有时钟；缺事件时读活 Boss 兜底；推进 HP 入场填充/缓动、白条下漏、晕眩倒计时、
+  //   护盾开关、招式播报跟随投影、伤害数字上升。只写 transform/opacity 与少量类名切换。
   update(dt) {
     if (!this.on) return;
     this.T += dt;
@@ -335,6 +391,8 @@ export class BossHud {
     this._updNums(dt);
   }
 
+  // 【写血条】把 shown/chip 转成 translateX 百分比（-100% 即空）、更新百分比数字与 is-low；
+  //   用 S.L 缓存上次写入的整数值做脏检查，避免每帧无谓的 DOM 写入。
   _writeBar(force) {
     const S = this.S, L = S.L;
     const f = (v) => `translateX(${((v - 1) * 100).toFixed(3)}%)`;
@@ -347,11 +405,14 @@ export class BossHud {
     if (low !== L.low) { L.low = low; this.bar.classList.toggle('is-low', low); }
   }
 
+  // 【阶段点】点亮 1..phase 的点，当前点加 is-cur；相位存到 bar.dataset.phase 供 CSS 用。
   _pips(phase) {
     this.pips.forEach((p, i) => { p.classList.toggle('is-on', i < phase); p.classList.toggle('is-cur', i === phase - 1); });
     this.bar.dataset.phase = String(phase);
   }
 
+  // 【播报定位】把药丸钉在 Boss 头顶（_anchor('shellTop')+1.9）投影出的屏幕点；出屏则贴边+箭头，
+  //   屏内则推离准星椭圆；用 k=min(1,dt*12) 做平滑跟随。CHARGE! 时另算方向箭头。
   _placeCall(dt) {
     const S = this.S, u = this._u(), W = innerWidth, H = innerHeight;
     const w = this._anchor('shellTop', 1.9, this._tmp);
@@ -401,6 +462,8 @@ export class BossHud {
   }
 
   // ---------------------------------------------------------------- damage numbers
+  // 【加数字】把连续命中归并进一个 combo（0.45 s 内续接），累加和值、按对数放大字号、重放 is-bump；
+  //   超过 6 组则挤掉最老的。伤害数字的锚点用世界坐标随时间向新点缓动。
   _addNum(w, dmg, weak, now) {
     const S = this.S;
     let c = S.combo;
@@ -418,6 +481,7 @@ export class BossHud {
     c.el.style.setProperty('--s', clamp(0.85 + Math.log10(Math.max(1, c.sum)) * 0.16 + (c.weak ? 0.2 : 0), 0.85, 1.6).toFixed(3));
     restartAnim(c.el, 'is-bump');
   }
+  // 【弹字】在世界点投影处弹一个 CRIT!/IMMUNE 大字，animationend 或 900 ms 兜底移除。
   _crit(w, txt = 'CRIT!') {
     const p = this._screen(w, { x: 0, y: 0 });
     if (!p || p.behind) return;
@@ -427,6 +491,8 @@ export class BossHud {
     setTimeout(() => el.remove(), 900);
     this.numLayer.appendChild(el);
   }
+  // 【数字更新】每帧重投影各组数字锚点，超 1.05 s 移除、超 0.45 s 加 is-out 淡出并继续上升；
+  //   出屏/在相机后则透明度置 0。
   _updNums() {
     const S = this.S, now = this._t(), u = this._u();
     for (let i = S.nums.length - 1; i >= 0; i--) {
@@ -443,6 +509,8 @@ export class BossHud {
   }
 
   // ---------------------------------------------------------------- big moments
+  // 【标题卡】boss:intro 时在 overLayer 弹 2.5 s 标题卡（墨迹带+逐字砸落的 BOSS_NAME+别称），
+  //   80 ms 后补一声 splat_big；animationend 或 3.2 s 兜底移除。
   _titleCard() {
     this.over.querySelectorAll('.iw-btc').forEach((e) => e.remove());
     const letters = [...BOSS_NAME].map((c, i) => h('span', { style: { '--i': i } }, c));
@@ -462,6 +530,7 @@ export class BossHud {
     setTimeout(() => { if (el.isConnected) this.hud._snd('splat_big', { volume: 0.7, pitch: 0.7 }); }, 80);
   }
 
+  // 【阶段横幅】阶段切换时弹 big+sub 大字横幅（三阶段带 is-rage）；animationend 或 3.4 s 兜底移除。
   _banner(big, sub, phase) {
     this.over.querySelectorAll('.iw-bph').forEach((e) => e.remove());
     const el = h('div', { class: 'iw-bph' + (phase >= 3 ? ' is-rage' : '') },
@@ -473,6 +542,8 @@ export class BossHud {
     this.over.appendChild(el);
   }
 
+  // 【结局】胜利播 Sunk!/失败播 TIME'S UP!：清掉标题卡/横幅与 HUD 名牌，弹爆裂墨滴+大字结局，
+  //   胜利时移除 is-live；animationend 或 5.2 s 兜底移除。S.ended 保证只播一次。
   _ending(win) {
     const S = this.S;
     if (S.ended) return;
@@ -496,6 +567,8 @@ export class BossHud {
   }
 
   // ================================================================ console preview
+  // 【控制台预览】在镜头前 16 m 造一个假 Boss，用 setTimeout 按 steps 脚本依次触发 spawn/intro/move/
+  //   hit/stun/phase/defeat——无需真实对局即可审 UI。返回 { boss, stop, duration }，stop() 清定时器。
   /** Runs every boss HUD state on a fake boss 14 m in front of the camera. For UI work / audits only. */
   demo(opts = {}) {
     const cam = G.camera;

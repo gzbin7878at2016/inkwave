@@ -1,3 +1,21 @@
+// ============================================================================
+// 【中文导读】squidkid 的身体 + 服装几何 —— 解剖肢体、有厚度的分层衣物、英雄级球鞋、墨罐与接触 AO
+// ----------------------------------------------------------------------------
+// 【模块定位】character-geo.js 的几何来源之一(它 import 本文件的 addBodyLimbs / addOutfit /
+//   bakeBodyAO / bodyLevel / tankGlass 等);character.js 经 character-geo.js 的共享缓存
+//   getKidShared(lod) 间接使用。构建期一次性生成,运行期不每帧执行。
+// 【核心机制】全部在 kid 空间按静置姿态建模(脚在 y=0、面朝 +Z、角色右 = −X),再按 character-geo.js
+//   的 rig 蒙皮。衣物不是"贴"上去的,而是用 SDF 现场"长"出来:T 恤 = 超椭圆躯干与两肩叶(smin)的并集,
+//   褶皱是沿环法线的位移场 D(p)(下摆垂坠、腰部堆叠、腋下拖褶、背带压痕、微皱);短裤 = 骨盆壳与两腿叶
+//   的并集,裆点分叉成 A 字形腿管。球鞋按真实构造分层:大底 / 中底 / 鞋面放样 / 带厚度贴片 / 鞋舌 / 鞋带 / 鞋眼。
+// 【关键约定】bodyLevel(lod, quality) → 0 far · 1 game@low/med · 2 game@high/ultra(及 hero@low)·
+//   3 hero@med/high · 4 hero@ultra;RES / SHOE_RES 给每级分辨率,且"建模细节"(褶痕、鞋眼、底纹)随级增减,
+//   而着色细节由 cloth 材质(character-mats.js)按像素足迹自行淡出。
+//   导入环注意:character-geo.js 与本文件互相 import,顶层不得触碰任何 K.* 绑定(只能在函数内用),
+//   否则任一 import 顺序都会求值出错。
+// 【配套阅读】docs/ASSETS-CHARACTER.zh-CN.md §1.2(T 恤 SDF)、docs/RIG.zh-CN.md(hemF/hemB、
+//   toeL/R、tank 等骨)、src/game/character-mats.js(cloth 材质负责纹样 / 缝线 / 磨损)。
+// ============================================================================
 // INKWAVE — squidkid BODY + OUTFIT: anatomical limbs, layered garments with real thickness, hero sneakers, the ink
 // tank + harness and a contact-AO bake. Everything is authored in kid space at the rest pose (feet at y=0, facing +Z,
 // character's right = -X) and skinned against the rig in character-geo.js.
@@ -38,12 +56,15 @@ const tab = (pairs) => { const k = pairs.map((p) => p[0]), v = pairs.map((p) => 
 /** Cheap deterministic value noise on a line (fold phase jitter), period-free. */
 function n1(x, seed = 0) { const i = Math.floor(x), f = x - i; const h = (k) => { const s = Math.sin((k + seed * 17.13) * 127.1) * 43758.5453; return s - Math.floor(s); }; const u = f * f * (3 - 2 * f); return lerp(h(i), h(i + 1), u) * 2 - 1; }
 
+// 【细节阶梯】bodyLevel 把 (LOD 档 × 画质) 折成 0…4 级;RES / SHOE_RES 给每级分辨率。
 // ------------------------------------------------------------------------------------------------
 // Detail ladder
 // ------------------------------------------------------------------------------------------------
 export const BODY_LEVEL_NAMES = ['far', 'low', 'game', 'hero', 'ultra'];
 const QI = { low: 0, medium: 1, high: 2, ultra: 3 };
 /** Body/outfit detail level for a LOD tier ('far' | 'game' | 'hero') at a quality preset ('low' … 'ultra'). */
+// 【LOD×画质 → 细节级 0…4】far=0;game 在高画质以上=2,否则 1;hero 在 ultra=4、≥medium=3、否则 2。
+// 传数字则直接 clamp 到 [0,4](角色 harness 的腿/衣档标志。
 export function bodyLevel(lod = 'hero', quality = G.settings?.quality || 'high') {
   if (typeof lod === 'number') return clamp(Math.round(lod), 0, 4);
   const q = QI[quality] ?? 2;
@@ -51,6 +72,8 @@ export function bodyLevel(lod = 'hero', quality = G.settings?.quality || 'high')
   if (lod === 'game') return q >= 2 ? 2 : 1;
   return q >= 3 ? 4 : q >= 1 ? 3 : 2; // hero
 }
+// 【每级分辨率】[around, along](行按密度向关节 / 边缘加密);fold=褶皱场强度,micro=微皱级别,
+// shoe/tank=是否启用该件、以及子分辨率档。数值随级单调增。
 // per-level resolution: [around, along] (rows are density-distributed toward joints / edges)
 const RES = [
   { arm: [7, 10], leg: [7, 10], tee: [20, 10], sleeve: [8, 4], collar: [16, 3], shorts: [20, 7], sLeg: [10, 4], sock: [8, 4], web: [10, 1], shoe: 0, tank: 0, fold: 0.4, micro: 0 },
@@ -59,6 +82,7 @@ const RES = [
   { arm: [20, 34], leg: [20, 34], tee: [68, 38], sleeve: [28, 15], collar: [56, 7], shorts: [64, 20], sLeg: [40, 13], sock: [24, 13], web: [56, 2], shoe: 2, tank: 2, fold: 1, micro: 1 },
   { arm: [24, 42], leg: [24, 42], tee: [80, 46], sleeve: [32, 18], collar: [72, 8], shorts: [72, 22], sLeg: [44, 15], sock: [28, 15], web: [64, 2], shoe: 2, tank: 2, fold: 1, micro: 2 },
 ];
+// 【鞋分辨率】nP=绕圈、nT=鞋面行、nH=中底行、collar/tongue 各段数、pk=贴片尺度系数。
 // per-level shoe resolution: around, upper rows, midsole rows, collar [around, psi], tongue [u, v], patch scale
 const SHOE_RES = [
   { nP: 14, nT: 3, nH: 2, collar: [10, 3], tongue: [2, 3], pk: 0.35 },
@@ -69,9 +93,13 @@ const SHOE_RES = [
 ];
 export const bodyRes = (level) => RES[clamp(level | 0, 0, 4)];
 
+// 【肢体骨架】把控制点变成按弧长参数化的中心线,并给每处一个稳定的 (lateral, forward) 截面坐标系。
+// 这样四肢网格、袜子、护腕等都能用同一个"沿肢体 s"的参数来描述(截面对齐不会随曲线扭转而翻转)。
 // ------------------------------------------------------------------------------------------------
 // Limb frames: arc-length parametrised centreline with a stable (lateral, forward) section frame
 // ------------------------------------------------------------------------------------------------
+// 【建肢体路径】向心 Catmull-Rom 采样 N+1 点,累出弧长表 S;返回 at(s) 取该弧长处的位置 C 与
+// 沿线 d、横向 l(由 latHint 去切向分量得到)、前向 f(=Z 去掉 d 与 l 分量)。at 复用 out 对象零分配。
 function limbPath(pts, latHint) {
   const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
   const N = 600; const P = [], S = [0];
@@ -96,6 +124,8 @@ function limbPath(pts, latHint) {
   return { at, len };
 }
 
+// 【肢体放样】在弧长 ss 上铺行、每行绕圈 nTh 点(θ 0=横向、π/2=前向),截面半径由 sec(theta,s) 给。
+// 返回几何,uv 存 (i/nTh, ss[j]) 即(环角, 弧长),故蒙皮与 AO 能用肢体坐标取权重。
 /**
  * Loft a limb: rows at arc lengths `ss`, nTh points around (theta 0 = lateral, pi/2 = forward), section radius
  * sec(theta, s) → [rLat, rFwd] (signed cos/sin already applied by the caller's shape). Returns { geo, S, TH } with the
@@ -123,14 +153,20 @@ function loftLimb(path, ss, nTh, sec, opt = {}) {
   return geo;
 }
 
+// 【手臂】纤细风格化童臂:三角肌(在袖下)、肱二/三头肌、真实肘部(鹰嘴尖、上髁、肘窝凹)、
+// 肱桡肌隆起、渐细的扁前臂、带尺骨头的腕。θ:0 横向 · π/2 前向(静置拇指侧)· π 内侧 · 3π/2 后(肘尖)。
+// 网格分辨率沿 s 向肘/腕加密(addArms 用 densitySamples)。
 // ------------------------------------------------------------------------------------------------
 // ARMS — slim stylised kid arm: deltoid (under the sleeve), biceps / triceps, a real elbow (olecranon point,
 // epicondyles, crease hollow), brachioradialis swell, tapering flattened forearm, wrist with the ulnar head.
 // theta: 0 lateral · pi/2 forward (thumb side at rest) · pi medial (toward the torso) · 3pi/2 back (elbow point)
 // ------------------------------------------------------------------------------------------------
+// ARM_R 沿臂弧长的基准半径(肘在 ~0.212)、ARM_LAT 横向比、ARM_FWD 前后比;都是 Catmull-Rom 关键表。
 const ARM_R = tab([[0.0, 0.0372], [0.04, 0.0368], [0.08, 0.0352], [0.12, 0.0334], [0.16, 0.0314], [0.19, 0.0296], [0.212, 0.0284], [0.235, 0.0294], [0.265, 0.0302], [0.3, 0.0288], [0.34, 0.0262], [0.375, 0.0240], [0.4, 0.0229], [0.43, 0.0228]]);
 const ARM_LAT = tab([[0.0, 1.0], [0.18, 0.98], [0.212, 1.05], [0.25, 0.98], [0.3, 0.9], [0.36, 0.8], [0.4, 0.74], [0.43, 0.73]]);
 const ARM_FWD = tab([[0.0, 1.0], [0.12, 1.04], [0.19, 1.0], [0.212, 0.95], [0.26, 1.04], [0.34, 1.03], [0.4, 1.04], [0.43, 1.04]]);
+// 【手臂规格】由 REST 静置位置建臂路径,返回 { sx, sh, el, wr, path, sE(肘弧长), sW(腕弧长), sec }。
+// sec(θ, s) 以 ARM_R 为基,叠加各项肌肉/骨骼的高斯凸起(三角肌、肱二/三头、鹰嘴、上髁、肘窝、肱桡肌、尺骨头…)。
 export function armSpec(s) {
   const R = K.REST;
   const sx = s === 'L' ? 1 : -1;
@@ -159,6 +195,7 @@ export function armSpec(s) {
   return { sx, sh, el, wr, path, sE, sW, sec };
 }
 
+// 【加手臂】左右各放样一条臂;权重按弧长分 uArm/fArm/hand,肘处"内侧窄、外侧宽"以保鹰嘴尖锐。
 function addArms(B, lv) {
   const [nTh, nS] = RES[lv].arm;
   for (const s of ['L', 'R']) {
@@ -184,12 +221,16 @@ function addArms(B, lv) {
 }
 const _white = new THREE.Color(1, 1, 1);
 
+// 【腿】大腿(股四头肌、股内侧肌泪滴)、膝(髌骨、腱凹、腘窝褶、腘绳肌腱)、小腿(两腓肠肌头,内侧更低)、
+// 胫(扁胫骨)、踝腰。θ:0 横向 · π/2 前向 · π 内侧 · 3π/2 后。分辨率沿 s 向膝加密。
 // ------------------------------------------------------------------------------------------------
 // LEGS — thigh (quads, vastus medialis teardrop), knee (patella, tendon hollows, popliteal crease, hamstring
 // tendons), calf (two gastrocnemius heads, medial lower), shin (flat tibia), ankle waist.
 // theta: 0 lateral · pi/2 forward · pi medial · 3pi/2 back
 // ------------------------------------------------------------------------------------------------
+// LEG_R 沿腿弧长的基准半径(膝在 ~0.278,小腿肚在 ~0.33)。
 const LEG_R = tab([[0.0, 0.05], [0.05, 0.0515], [0.11, 0.0495], [0.16, 0.0468], [0.2, 0.0438], [0.235, 0.0408], [0.26, 0.0386], [0.278, 0.0372], [0.3, 0.0374], [0.33, 0.0386], [0.36, 0.0372], [0.4, 0.0334], [0.44, 0.0302], [0.48, 0.0284], [0.52, 0.0272], [0.57, 0.027]]);
+// 【腿规格】与 armSpec 同理:返回 { sx, hp(髋), kn(膝), an(踝), path, sK, sA, sec };sec 叠加股四头/髌骨/腓肠肌等凸起。
 export function legSpec2(s) {
   const R = K.REST;
   const sx = s === 'L' ? 1 : -1;
@@ -220,8 +261,10 @@ export function legSpec2(s) {
   return { sx, hp, kn, an, path, sK, sA, sec };
 }
 /** Hip → thigh weight shared by the leg skin and the shorts legs (so the loose shorts never lag the thigh). */
+// 【髋→大腿权重】腿皮肤与短裤腿共用的同一权重曲线,使松垮的裤腿不会滞后于大腿。
 export const thighW = (s2) => sstep(-0.005, 0.075, s2);
 
+// 【加腿】左右各放样一条腿;权重沿弧长分 hips/thigh/shin/foot,膝处"前(髌骨)宽、后(腘窝)窄"。
 function addLegs(B, lv) {
   const [nTh, nS] = RES[lv].leg;
   for (const s of ['L', 'R']) {
@@ -246,12 +289,16 @@ function addLegs(B, lv) {
 }
 
 /** Arms + legs of the skin mesh (the hands stay in character-geo.js handParts: grip contract). */
+// 【皮肤网格的四肢】手仍在 character-geo.js 的 handParts 生成(遵循"静置=握持"契约)。level 为 bodyLevel 值。
 export function addBodyLimbs(B, level = 3) {
   const lv = clamp(level | 0, 0, 4);
   addArms(B, lv);
   addLegs(B, lv);
 }
 
+// 【T 恤】方正的童款 T 恤。躯干壳是一叠水平环:超椭圆躯干与两个肩叶(绕上臂轴的圆)平滑并集(smin),
+// 使肩线从领口→圆肩→袖口连续、没有旧的"气球肩"。袖子是单独管体,位于 drop-shoulder 接缝之上、隐在肩叶内,
+// 接缝之下才露出。褶皱 = 沿环法线的位移场 D(p):下摆垂坠、腰部堆叠、腋下拖褶、背带/背板压痕、微皱。
 // ------------------------------------------------------------------------------------------------
 // TEE — boxy kid tee. The torso shell is a stack of horizontal rings: a superellipse torso smoothly unioned with the
 // two shoulder lobes (circles around the upper-arm axis), so the shoulder line runs collar → rounded shoulder → sleeve
@@ -259,6 +306,8 @@ export function addBodyLimbs(B, level = 3) {
 // and emerge below it. Folds are sculpted as a displacement field D(p) along the ring normal: hem drape, waist bunching,
 // armpit drag folds, strap / plate compression, micro wrinkles.
 // ------------------------------------------------------------------------------------------------
+// 【T 恤上下界】下摆 y=TEE_HEM、顶(领口)y=TEE_TOP;TT 是躯干超椭圆沿高度的 [a,b,n,zc] 关键表
+// (a/b=半轴、n=超椭圆指数、zc=z 中心偏移),由 ttA/ttB/ttN/ttZ 插值取用。
 export const TEE_HEM = 0.694, TEE_TOP = 1.001;
 const TT = {
   y: [0.694, 0.72, 0.76, 0.80, 0.84, 0.87, 0.9, 0.93, 0.952, 0.968, 0.98, 0.99, 0.997, 1.001],
@@ -270,6 +319,7 @@ const TT = {
 const ttA = (y) => table(TT.y, TT.a, y), ttB = (y) => table(TT.y, TT.b, y), ttN = (y) => table(TT.y, TT.n, y), ttZ = (y) => table(TT.y, TT.zc, y);
 const LOBE_R = tab([[0.868, 0], [0.88, 0.023], [0.893, 0.0412], [0.91, 0.0487], [0.932, 0.0494], [0.95, 0.0458], [0.963, 0.0378], [0.974, 0.0266], [0.983, 0.0132], [0.989, 0]]);
 /** Upper-arm axis at height y (rest pose), bent inward above the joint so the lobe caps round toward the neck. */
+// 【肩叶中心】y 处上臂轴心;肩关节以上向内弯(inK),使肩叶顶端朝颈部收圆;LOBE_R(y) 给肩叶半径轮廓。
 function lobeCenter(y, sx, out) {
   const d = 0.946 - y;
   // the lobe grows out of the torso side (never a separate blob), then follows the arm axis
@@ -280,6 +330,7 @@ const SMIN_K = 0.028;
 function smin(a, b, k) { const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1); return lerp(b, a, h) - k * h * (1 - h); }
 const _lc = new V3();
 /** Section parameters at height y (torso superellipse + the two lobe circles). */
+// 【截面参数】组装某高度的躯干超椭圆 + 两肩叶圆(有肩叶时记下其中心 lx/lz)。
 function secParams(y) {
   const S = { a: ttA(y), b: ttB(y), n: ttN(y), zc: ttZ(y), lr: LOBE_R(y), lx: 0, lz: 0 };
   if (S.lr > 1e-4) { lobeCenter(y, 1, _lc); S.lx = _lc.x; S.lz = _lc.z; }
@@ -298,8 +349,12 @@ function sdSec(x, z, S) {
   return d;
 }
 /** Signed distance (approx.) of (x, z) to the tee body section at height y (torso ∪ lobes). */
+// 【躯干 2D SDF】对某高度的 (x,z) 求近似有向距离(超椭圆沿半径的精确距离,再与两肩叶圆 smin)。
+// T 恤的一切褶皱/背带投影都建立在这个场之上。
 function teeSD(x, z, y) { return sdSec(x, z, secParams(y)); }
 /** Outermost boundary crossing along the ray (dx, dz) from the section centre (hidden concavities are bridged). */
+// 【射线求外边界】自截面中心沿 (dx,dz) 求最外侧交点(先用粗步找负区外,再 14 步二分)。
+// 用于 teeRing 生成轮廓;会把凹陷"桥接"过去,保证环是凸向外的单值轮廓。
 function rayHitS(dx, dz, S) {
   let hi = 0.235, lo = hi;
   while (lo > 0.02 && sdSec(dx * lo, S.zc + dz * lo, S) > 0) { hi = lo; lo -= 0.007; }
@@ -308,6 +363,8 @@ function rayHitS(dx, dz, S) {
 }
 function rayHit(dx, dz, zc, y) { return rayHitS(dx, dz, secParams(y)); }
 /** Section ring at height y: m points uniformly spaced by arc length per quarter (front centre, +X side, back, -X). */
+// 【截面环】在 y 处给 m 个点,按四分之一(前中 / +X 侧 / 后中 / −X 侧)各自按弧长等分,使网格密度均匀、
+// 并保证前后中心与左右极值点稳定落在固定拓扑位上(便于镜像与对称)。
 function teeRing(y, m, N = 168) {
   const S = secParams(y), zc = S.zc, P = [];
   for (let i = 0; i < N; i++) {
@@ -335,6 +392,7 @@ function teeRing(y, m, N = 168) {
   return out;
 }
 /** Tee surface normal (3D: the shoulder top faces up) from the section SDF gradient. */
+// 【T 恤法线】带 y 分量的 3D 法线(肩顶朝上):对 teeSD 做中心差分取梯度。
 function teeNormal(x, z, y, out) {
   const h = 2e-4;
   const gx = teeSD(x + h, z, y) - teeSD(x - h, z, y), gz = teeSD(x, z + h, y) - teeSD(x, z - h, y);
@@ -342,6 +400,7 @@ function teeNormal(x, z, y, out) {
   const l = Math.hypot(gx, gy, gz) || 1; return out.set(gx / l, gy / l, gz / l);
 }
 /** Point on the (undisplaced) tee at ray angle al (0 = front, +pi/2 = +X) and height y. */
+// 【T 恤基面点】未加褶皱的 T 恤面上,射线角 al、高度 y 处的点。
 function teeBase(al, y, out) {
   const zc = ttZ(y), dx = Math.sin(al), dz = Math.cos(al);
   const r = rayHit(dx, dz, zc, y); return out.set(dx * r, y, zc + dz * r);
@@ -349,6 +408,8 @@ function teeBase(al, y, out) {
 const NECK_DIP = 0.015;
 const neckDip = (y, frontK) => NECK_DIP * frontK * sstep(TEE_TOP - 0.034, TEE_TOP, y);
 
+// 【背带路径】T 恤上的背带走线(被 T 恤压缩场与背带几何共享)。STRAP_AY 是 (射线角, y) 航点:
+// 背板顶 → 过肩 → 前胸下行 → 腋下腰部 → 回背板。strapPaths 懒建一次并缓存。
 // ---- harness strap paths on the tee (shared by the tee's compression field and the harness itself) -----------------
 // (ray angle, y) waypoints: back plate top → over the shoulder → down the front → under the arm at the waist → plate
 const STRAP_AY = [[1.05, 0.988], [0.66, 0.975], [0.5, 0.935], [0.52, 0.87], [0.58, 0.8], [0.9, 0.75], [1.55, 0.744], [2.1, 0.748]];
@@ -374,6 +435,7 @@ function strapPaths() {
   return (_strapCache = out);
 }
 /** Re-sample a curve and snap the samples that lie near the tee onto its surface (chords never cut inside). */
+// 【贴面投影】把点用 3 步 Newton 投到 T 恤 SDF 的零面上(沿梯度下降),使贴片/背带不切进衣服里。
 function projectOnTee(p, out = p) {
   const q = out.copy(p), n = new V3();
   for (let it = 0; it < 3; it++) {
@@ -384,6 +446,8 @@ function projectOnTee(p, out = p) {
   }
   return q;
 }
+// 【投影曲线】重采样曲线,对靠近 T 恤(sd≤0.012)的采样点贴到表面;在空气中则保留原样,
+// 使过肩/入背板那段悬空走线不被压平。
 function projectedCurve(curve, n) {
   const pts = curve.getSpacedPoints(n).map((p) => {
     const sd = teeSD(p.x, p.z, p.y);
@@ -393,6 +457,7 @@ function projectedCurve(curve, n) {
   });
   return new THREE.CatmullRomCurve3(pts, false, 'centripetal');
 }
+// 【点到折线距离】逐段求点到线段的最近距离,取最小。用于背带压痕场。
 function distToPoly(p, poly) {
   let best = 1e9;
   for (let i = 0; i < poly.length - 1; i++) {
@@ -404,6 +469,7 @@ function distToPoly(p, poly) {
   }
   return Math.sqrt(best);
 }
+// 【背板足迹遮罩】T 恤上背罐背板覆盖的区域(罐局部矩形 ±0.074 × ±0.1,随罐体倾斜):返回 [0,1] 权重。
 // the tank back plate footprint on the tee (tank-local rect ±0.074 × ±0.1, tilted like the tank)
 function plateMask(p) {
   const c = K.TANK.center, t = K.TANK.tilt;
@@ -415,6 +481,7 @@ function plateMask(p) {
 }
 
 /** A soft fold ridge from A to B in a 2D (x, y) chart: tapered ends, shallow valleys either side. */
+// 【褶皱脊】在 2D (x,y) 图上从 A 到 B 造一条软脊:两端渐隐、两侧有浅谷(脊减两侧谷 = 布被折起的效果)。
 function ridge(x, y, x0, y0, x1, y1, w, amp) {
   const bx = x1 - x0, by = y1 - y0, L2 = bx * bx + by * by;
   const t = ((x - x0) * bx + (y - y0) * by) / L2;
@@ -425,6 +492,7 @@ function ridge(x, y, x0, y0, x1, y1, w, amp) {
   const taper = Math.pow(Math.sin(Math.PI * clamp(t, 0, 1)), 0.6) * sstep(-0.15, 0.05, t) * sstep(1.15, 0.95, t);
   return amp * taper * (Math.exp(-((d / w) ** 2)) - 0.42 * Math.exp(-((d / (2.3 * w)) ** 2)));
 }
+// 【褶皱图】左半侧(x,y)图上的脊线表,右侧镜像(但相位不同以免完全对称):[x0, y0, x1, y1, 宽, 幅]。
 // fold charts (left side; mirrored): [x0, y0, x1, y1, width, amplitude]
 const FOLDS_FRONT = [
   [0.112, 0.888, 0.05, 0.798, 0.0105, 0.0036], [0.115, 0.872, 0.072, 0.766, 0.0098, 0.0032], [0.103, 0.908, 0.05, 0.852, 0.009, 0.0022],
@@ -434,6 +502,9 @@ const FOLDS_BACK = [
   [0.112, 0.886, 0.088, 0.786, 0.0105, 0.0032], [0.114, 0.868, 0.101, 0.766, 0.0098, 0.0028],
   [0.048, 0.742, 0.058, 0.698, 0.012, 0.0026], [0.092, 0.752, 0.105, 0.698, 0.012, 0.0028], [0.0, 0.745, 0.004, 0.7, 0.012, 0.0018],
 ];
+// 【褶皱/压缩位移场】T 恤表面点 p(基面位置)沿法线的位移(米,+ 向外),总强度再乘 lvF。
+// 组成:下摆垂坠波(相位含噪声避免像正弦)、腰部堆叠、前后垂坠、前后拖褶(镜像图)、肩部聚拢、微皱,
+// 再叠加背板压平、背带压槽(webbing 压出沟、两侧布料鼓起)。
 /** Fold / compression displacement (metres, + = outward) at a tee surface point p (base position). */
 function teeFold(p, lvF, micro) {
   const y = p.y, ax = Math.abs(p.x), zc = ttZ(y);
@@ -473,6 +544,8 @@ function teeFold(p, lvF, micro) {
   return D;
 }
 
+// 【建 T 恤】行按整环运动的均值分布(免得肩叶底面独吞行),下摆与肩部加密;含卷边下摆(内唇→折→外)、
+// 主壳、卷领、双袖。uv 的 v 存"下摆前的 y"。
 function addTee(B, lv) {
   const R = RES[lv];
   const [nTh, nRows] = R.tee;
@@ -521,6 +594,8 @@ function addTee(B, lv) {
 }
 
 /** Weight field of the tee body (also used by the sleeve tops so they stay hidden inside the lobes). */
+// 【T 恤权重场】按高度分 hips/spine/chest,再叠加肩叶→上臂(uArm)、肩坡→锁骨(clav)、
+// 下摆→hemF/hemB。袖子顶部也用它,使其藏在肩叶内。
 function teeWeights(p) {
   const y = p.y, ax = Math.abs(p.x), sd = p.x > 0 ? 'L' : 'R';
   const a = sstep(0.715, 0.8, y), b = sstep(0.8, 0.9, y);
@@ -533,6 +608,7 @@ function teeWeights(p) {
   return w;
 }
 
+// 【罗纹圆领】立在领口上、朝颈内倾的双层带:内面朝上→卷顶缘→外面朝下塞进领口缝。权重 chest 0.86 / neck 0.14。
 // ---- rib crew collar: a double-layer band standing on the neckline, leaning in toward the neck ---------------------
 function addTeeCollar(B, lv, ringAt) {
   const [nC, nPsi0] = RES[lv].collar; const nPsi = nPsi0 + 4;
@@ -570,6 +646,8 @@ function addTeeCollar(B, lv, ringAt) {
   B.add(cg, { ex: CS.trim, uv: true, v3: cl(PART.collar, MC.rib), weights: (p) => [['chest', 0.86], ['neck', 0.14]] });
 }
 
+// 【袖子】单独管体,沿臂轴从 s0 到 L;接缝以上藏在肩叶里(用 lobeCenter/LOBE_R 把管面压到肩叶面之下),
+// 以下露出;含腋下堆叠、斜向拖褶、下摆波纹、卷边内唇,hero 档再加一条"set-in 缝线"环。权重同上臂。
 // ---- sleeves ------------------------------------------------------------------------------------------------------
 const SLEEVE = { s0: -0.03, L: 0.098 };
 function addSleeve(B, lv, s) {
@@ -664,17 +742,22 @@ function addSleeve(B, lv, s) {
   });
 }
 
+// 【背带】织带坐在 T 恤的压缩槽里,含梯扣调节器(带松散尾)、胸扣(侧开扣)。带随 T 恤权重走(脊柱弯不滞后),
+// 肩后交接给 tank 骨。
 // ------------------------------------------------------------------------------------------------
 // HARNESS — webbing straps that sit IN the tee's compression grooves, ladder-lock adjusters with loose tails, sternum
 // strap with a side-release buckle. Straps follow the tee's weights (no lag when the spine bends) and hand over to the
 // tank bone behind the shoulders.
 // ------------------------------------------------------------------------------------------------
 /** Surface frame on the tee at base point P: { n (outward normal), D (fold displacement at P) }. */
+// 【T 恤面架】给基面点 P 取 { n 外法线, D 该点褶皱位移 },供织带贴面。
 function teeFrameAt(P, lvF, micro) {
   const n = teeNormal(P.x, P.z, P.y, new V3());
   return { n, D: teeFold(P, lvF, micro) };
 }
 /** Flat webbing band along a curve: width 2w, thickness t, sitting on the tee (offset along its normal). */
+// 【织带】沿曲线的扁带:宽 2w、厚 t,坐在 T 恤上(沿法线偏 D+t/2);剖面为圆角矩形。
+// 在 T 恤上则坐进沟槽,悬空段(opt.frame 提供)则沿路径走;结尾按"法线背离带中线"统一朝向。
 function webbing(curve, w, t, nSeg, nAcross, lvF, micro, opt = {}) {
   const len = curve.getLength();
   const prof = []; // rounded-rectangle section (a = across -1..1, b = through -1..1)
@@ -710,8 +793,10 @@ function webbing(curve, w, t, nSeg, nAcross, lvF, micro, opt = {}) {
   return { geo: g, len };
 }
 /** Tee weights for hardware riding on the tee (no hem flap). */
+// 【硬件权重】T 恤上的硬件(锁扣、背带)用的权重:去掉 hemF/hemB(不随下摆摆动)。
 function onTeeWeights(p) { return teeWeights(p).filter((e) => e[0] !== 'hemF' && e[0] !== 'hemB'); }
 
+// 【建背带】左右主带(织带 + 梯扣 + 尾带)、前胸胸带 + 侧开扣(女壳/男舌/徽标/扣齿/拇指纹,hero 档更细)。
 function addHarness(B, lv) {
   const R = RES[lv];
   const lvF = R.fold, micro = R.micro;
@@ -770,6 +855,9 @@ function addHarness(B, lv) {
   }
 }
 
+// 【短裤】按真实一条短裤来建:单个骨盆壳,其水平截面是骨盆与两腿叶的平滑并集(前片自然流入腿、无台阶),
+// 裆点收拢后分叉成两条 A 字形腿管。门襟、斜插袋口、贴袋后袋、育克、侧缝都雕刻出来;裆部褶、臀部拖褶、
+// 下摆波纹;翻边队色袖口(有厚度);T 恤下露出束腰松紧带;带绳头的抽绳。
 // ------------------------------------------------------------------------------------------------
 // SHORTS — twill shorts built like a real pair: one pelvis shell whose horizontal sections are the pelvis smoothly
 // unioned with two leg lobes (so the front panel flows into the legs, no ledge), closing into a crotch point where it
@@ -777,12 +865,15 @@ function addHarness(B, lv) {
 // sculpted; crotch whiskers + seat drag folds + hem ripple; a turned-up team cuff with real thickness; gathered
 // elastic waistband under the tee; drawcords with aglets.
 // ------------------------------------------------------------------------------------------------
+// 【短裤尺寸】yc=裆点高度、hipY=髋线、yHem=下摆、top=腰、k=smin 融合半径;SH_A/SH_B/SH_Z 是骨盆
+// 超椭圆沿高度的 [半轴]、shB 在裆以下走 sqrt 收口。
 const SHX = { yc: 0.573, hipY: 0.622, yHem: 0.466, top: 0.782, k: 0.02 };
 const SH_A = tab([[0.573, 0.03], [0.582, 0.074], [0.595, 0.104], [0.613, 0.1185], [0.635, 0.1245], [0.66, 0.1235], [0.685, 0.118], [0.705, 0.1125], [0.725, 0.1075], [0.75, 0.1035], [0.782, 0.1005]]);
 const SH_B = tab([[0.58, 0.044], [0.595, 0.068], [0.613, 0.0795], [0.635, 0.0848], [0.66, 0.0845], [0.685, 0.0818], [0.705, 0.0785], [0.725, 0.0765], [0.75, 0.0745], [0.782, 0.0725]]);
 const SH_Z = tab([[0.573, -0.004], [0.595, -0.005], [0.613, -0.006], [0.635, -0.007], [0.66, -0.008], [0.685, -0.01], [0.705, -0.011], [0.782, -0.011]]);
 const shB = (y) => (y < 0.58 ? 0.044 * Math.sqrt(clamp((y - SHX.yc) / (0.58 - SHX.yc), 0, 1)) : SH_B(y));
 /** Leg lobe / leg tube: centre on the (rest) thigh axis, flaring outward toward the hem; radius grows (A-line). */
+// 【腿叶/腿管】中心在(静置)大腿轴上,朝下摆外扩;半径向下增大 = A 字形。shLegR 在髋以上收成 0(并入骨盆)。
 function shLegC(y, sx, out) { const t = (SHX.hipY - y) / 0.275; return out.set(sx * (0.078 + 0.003 * t + 0.0085 * sstep(0.6, SHX.yHem, y)), y, 0.012 * t - 0.004); }
 const shLegR = (y) => (y > 0.6 ? lerp(0.0605, 0.0, sstep(0.605, 0.69, y)) : lerp(0.0605, 0.0728, sstep(0.6, SHX.yHem, y)));
 function shSec(y) {

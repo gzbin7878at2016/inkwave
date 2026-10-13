@@ -1,3 +1,43 @@
+// ============================================================================
+// 【中文导读】联机大厅后巷场景的【装配/总控】:class LobbySet
+// ----------------------------------------------------------------------------
+// 【模块定位】联机 hub(大厅)与 lobby(房间)两套界面共用的舞台 —— 蓝调时刻、雨后的一条后巷。
+//   由 showcase.js 动态 import 后 new 出来(见 src/game/showcase.js 的 _lobLoad),
+//   scene.add(set.root) 挂进自己的场景全屏绘制;main.js 在它全屏时既不画也不模拟世界
+//   (走 showcase 的 fullFrame)。生命周期:preloadLobby() 主菜单空闲时提前建好 →
+//   await set.ready(fonts + env 烘焙完)→ 展示 → dispose()。
+//
+// 【四件套分工与调用顺序】LobbySet 是总装,另外三件各司其职:
+//   lobbySet.js   【装配/总控】本文件:拥有场景图 root、布局常量 ALLEY、镜头/站位/入场路径、
+//                 灯光、湿地面平面反射、update() 循环、stats()。
+//   lobbySet-mats.js【材质】makeUniforms() 与各材质(surface/ground/lit/neon/…)、SLOT 槽位表;
+//                 全部共用同一个 uniform 块 U ⇒ 换队色/时钟/雾都只写一次。
+//   lobbySet-tex.js 【贴图】Canvas 图集与霓虹字形(DECAL/LIT/GROUND_RECT/loadSetFonts);
+//                 队色一律【通道编码】(R=队A G=队B B=白 A=覆盖),换队色只写 uniform 不重绘。
+//   lobbySet-geo.js 【几何】SetBuilder 分桶合并 + 原语 + 程序化道具工厂 + mat4/PAINT。
+//   构造顺序(不可乱):makeUniforms()(材质)→ createDecalAtlas/createLitAtlas/createSkyline/
+//   createGroundMask(贴图)→ _bakeEnv() → _build()(用 SetBuilder 攒几何 + 用 mats 建 Mesh)
+//   → _lights() → _reflection() → setTeamColors/setQuality。
+//
+// 【核心机制】
+//   - 【队色解耦】材质不写死队色:队色走 uniform,贴图通道编码,故 setTeamColors() 只重烘焙
+//     一次环境贴图(_rebakeEnv)并刷新一次,不重建任何几何/贴图。
+//   - 【湿地面平面反射】_reflection() 在 ground 的 onBeforeRender 里,把整个场景(含小孩)以
+//     y=0 为镜面镜像渲染进半分辨率 HDR target(仿 three 的 Reflector,但固定水平面),
+//     地面着色器再按湿度拉伸+模糊;high/medium 开,low 退回 envMap。
+//   - 【站位/路径按相机方位排】FRONT/BACK 站位用"相机方位角(度)+ 深度 z"反算 world-x,
+//     让后排 rivals 正好落进前排头部之间的屏幕缝隙(lanes());lanes/exitPath 给入场/离场游动路径。
+//   - 【自带灯光与天空】后巷自带全部灯光,并在远平面自绘天空/天际线;任意相机 far 都可用,
+//     其余物体都在 hero 相机 ~80 m 内。渲染时须每帧 scene.environment = set.environment。
+//
+// 【关键约定】单位米、Y 向上;后巷沿 -Z 延伸(相机在 +Z,街口在 -Z)。
+//   换队色后 environment 纹理对象会变,旧纹理保留多一帧再 dispose(见 _rebakeEnv 注释),持有引用者安全。
+//
+// 【建议阅读顺序】ALLEY/CAM → constructor → _buildLanes → _build(骨架)→ _bakeEnv →
+//   _neon/_overhead/_glows → _lights → _reflection → update → setTeamColors/setQuality → stats/dispose。
+//
+// 【配套阅读】lobbySet-mats.js、lobbySet-tex.js、lobbySet-geo.js、src/game/showcase.js、docs/ARCHITECTURE.zh-CN.md
+// ============================================================================
 // INKWAVE online lobby set: the back alley behind an ink-and-skate shop, blue hour, just after rain.
 //
 //   const set = new LobbySet(renderer, { quality: 'high' | 'medium' | 'low', texlib });  scene.add(set.root);
@@ -28,35 +68,60 @@ import { SetBuilder, mat4, PAINT, fireEscape, drainPipe, windowUnit, acUnit, shu
 import { makeUniforms, surfaceMaterial, groundMaterial, litMaterial, neonMaterial, haloMaterial, glowMaterial, emitMaterial, skyMaterial, skylineMaterial, steamMaterial, hazeMaterial, SLOT } from './lobbySet-mats.js';
 import { createDecalAtlas, createLitAtlas, createGroundMask, createSkyline, neonText, neonSquid, neonHalo, DECAL, LIT, GROUND_RECT, loadSetFonts } from './lobbySet-tex.js';
 
+// 【向量速记】V(x,y,z):布局与路径里大量用到;虽然每次都 new,但只在构造期调用,无妨。
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 // update() temporaries (it never allocates)
+// 【update 临时量】热循环(update/走位)复用,保证每帧零分配 —— 见顶部英文注释 "it never allocates"。
 const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+// 【车灯色】headlight sweep 的暖白,update() 里乘亮度系数复用。
 const HEADLIGHT = new THREE.Color('#fff1d8');
+// 【surface 配方速记】S(slot,grime,rough,metal) → aSurf 四元组,与 lobbySet-geo.js 同名同义。
 const S = (slot, grime = 0.3, rough = 1, metal = 0) => [slot, grime, rough, metal];
 
 // ------------------------------------------------------------------------------------------------ layout (metres)
+// 【后巷布局常量】全场几何与站位都从这里取数,单位米、Y 向上。字段:
+//   xL/xR  左右墙 x;zNear 相机端 z;zMouth 街口 z(后巷沿 -Z 延伸)。
+//   hL/hR  左右墙高(左 13.2、右 15.6,错落)。
+//   dock   rivals 站的装卸台:x0..x1 × z0..z1 矩形,高 h = 1.0 m。
+//   stair  上台台阶:x0..x1、起点 z0、台阶数 n。
+//   street 街口外的横街:z0..z1(更远),curb 路缘高。
+// 消费方:_build/_dock/_buildLanes/_farStreet/_reflection 及全部路径计算。
 export const ALLEY = {
   xL: -4, xR: 4, zNear: 14, zMouth: -34, hL: 13.2, hR: 15.6,
   dock: { x0: -1.35, x1: 4, z0: -10.5, z1: -1.9, h: 1.0 },
   stair: { x0: 0.2, x1: 2.7, z0: -11.6, n: 3 },
   street: { z0: -34, z1: -46, curb: 0.14 },
 };
+// 【主镜头】hub/lobby 的默认机位:fov 32 的长焦压扁纵深(失焦背景),near/far 覆盖后巷+街口。
+// 站位(bear)与路径都按这台相机推导,改它等于重排整场。
 const CAM = { pos: V(-2.45, 2.25, 10.4), target: V(-0.95, 1.2, -1.7), fov: 32, near: 0.1, far: 140 };
+// 【站位推导】用相机方位角(deg,从 -Z 向右为正)+ 深度 z 反算 world-x,让 rivals 落进前排头部之间的
+// 屏幕缝隙(从线阵左侧看,world-x 的间隙不等于屏幕间隙)。front = 你的队(0 = 你,正前中心);back = 台上 rivals。
 // Marks are placed by camera BEARING (degrees right of -Z from the hero camera) + depth z, so the rivals land in the
 // on-screen gaps between the front row's heads (world-x gaps are not screen gaps from a camera left of the line-up).
 // front = your team (0 = you, front and centre), back = rivals on the dock.
+// 【bear】把 [方位角, z] 化成 [world-x, z]:x = camX + (camZ - z) * tan(deg)。方括号里是各队 4 个站位。
 const bear = ([deg, z]) => [CAM.pos.x + (CAM.pos.z - z) * Math.tan((deg * Math.PI) / 180), z];
 const FRONT = [[16.4, 0.35], [10.6, 0.05], [22.2, 0.05], [4.8, -0.35]].map(bear);
 const BACK = [[13.3, -2.6], [7.6, -2.75], [18.9, -2.6], [24.2, -2.4]].map(bear);
+// 【面向相机】由站位反算朝向角,k<1 时略偏(不是正对,更自然);rivals 用 k=0.6 侧身些。
 const faceCam = (x, z, k = 0.72) => Math.atan2(CAM.pos.x - x, CAM.pos.z - z) * k;
 
+// 【画质档】quality 名 → 该档开关:refl 反射分辨率比例(0 = 关)、shadow 阴影贴图边长、
+// steam 是否画蒸汽、extraLights 是否保留 vend/sweep 等次要灯。setQuality() 消费本表。
 const QUALITY = {
   high: { refl: 0.5, shadow: 2048, steam: true, extraLights: true },
   medium: { refl: 0.34, shadow: 1536, steam: true, extraLights: true },
   low: { refl: 0, shadow: 1024, steam: false, extraLights: false },
 };
 
+// 【后巷场景类】usage 与对外契约见文件顶部英文注释;这里只概述成员:
+//   root 场景图、spots 站位、camera/hubCamera 两套机位、_lanes 入场路径、tex 纹理、mats 材质、
+//   lights 灯光、ground/surface/… 各 Mesh、glows/bulbs/steam/drips 等动态件。
+//   update(dt,t) 每帧驱动;setTeamColors/setQuality 运行期可调;stats() 报数;dispose() 释放。
 export class LobbySet {
+  // 【构造】按固定顺序装配(顺序有依赖,详见顶部导读):材质 uniforms → 布局/站位/相机 →
+  // 路径 → 纹理 → 环境烘焙 → 几何 → 灯光 → 反射 → 队色/画质。renderer 可空(_bakeEnv 会跳过)。
   constructor(renderer, { quality = 'high', texlib = null } = {}) {
     this.renderer = renderer; this.texlib = texlib;
     this.quality = QUALITY[quality] ? quality : 'high';
@@ -64,15 +129,18 @@ export class LobbySet {
     this.U = makeUniforms();
     this.root = new THREE.Group(); this.root.name = 'lobbySet';
     const D = ALLEY.dock;
+    // spots 0..3 你的队站在湿地面上(0 = 你,正前中心),4..7 rivals 站在台上(dock.h 高度)。
     this.spots = [...FRONT.map(([x, z]) => ({ pos: V(x, 0, z), yaw: faceCam(x, z) })), ...BACK.map(([x, z]) => ({ pos: V(x, D.h, z), yaw: faceCam(x, z, 0.6) }))];
     this.hubSpot = { pos: V(1.7, 0, 0.9), yaw: -0.45 };
     this.camera = { pos: CAM.pos.clone(), target: CAM.target.clone(), fov: CAM.fov, near: CAM.near, far: CAM.far };
     this.hubCamera = { pos: V(-1.2, 1.1, 5.6), target: V(0.39, 1.0, 0.86), fov: 30, near: 0.1, far: 140 };
     this._lanes = this._buildLanes();
+    // 动态态:时钟 _t;6 条水滴(drips,供屋檐滴水);_ripI 涟漪环形缓冲写指针;_nextDrip/_nextSweep 计时器。
     this._t = 0; this._drips = Array.from({ length: 6 }, () => ({ p: new THREE.Vector3(), v: 0, on: false })); this._ripI = 0; this._nextDrip = 1.2; this._nextSweep = 3; this._sweep = null;
     this.environmentIntensity = 0.6;
 
     // textures (drawn now with fallback fonts, redrawn when the set fonts load)
+    // 【纹理】先用回退字体画一版立刻可用;等 set 字体加载后再重绘(纹理的 userData.ready 是那个 Promise)。
     this.tex = {
       decal: createDecalAtlas(), lit: createLitAtlas(), sky: createSkyline(),
       mask: createGroundMask(PUDDLES, SPLATS),
@@ -83,16 +151,24 @@ export class LobbySet {
     this._reflection();
     this.setTeamColors(this.U.uTeamA.value, this.U.uTeamB.value);
     this.setQuality(this.quality);
+    // ready = 两张图集就绪 + 字体加载完成;showcase 会 await 它再显示,保证首帧不缺字形。
     this.ready = Promise.all([this.tex.decal.userData.ready, this.tex.lit.userData.ready, loadSetFonts()]).then(() => this);
   }
 
   // ---------------------------------------------------------------------------------------------- paths
+  // 【入场路径构造】每站位一条路径(_lanes[i] 是 Vector3 数组):
+  //   前排:走码头左侧的空旷车道,嵌套的 L 形 —— 越靠右的站位走越靠近码头的车道、转身越靠后,
+  //         故任意两条路径不相交;最左的站位直接走直线进。
+  //   rivals:走右半场,在远端上台台阶,再到台上按 x 顺序扇形散开(同样不相交)。
+  //   拐角用 round() 倒圆(每个转角补几个点),保证游动者不会瞬间折向。
   // Front row: down the open lane left of the dock in nested L's — the mark furthest right takes the lane nearest the
   // dock and turns furthest back, so no two paths cross; the leftmost mark walks straight in. Rivals: down the right
   // half, up the dock stairs at its far end, then fanned out across the dock to their marks in x order (again no
   // crossings). Corners are rounded (a few points per turn) so a walker never snaps direction.
   _buildLanes() {
     const D = ALLEY.dock, ST = ALLEY.stair, out = [];
+    // 【倒圆】对折线内部每个拐点 a-b-c:在入边/出边上各退 rr,再用二次贝塞尔补 4 个点。
+    // rr 受相邻边长限制(min(r, 0.45*边长)),避免短边被圆角吃掉导致回头。
     const round = (pts, r = 0.45) => {
       const o = [pts[0]];
       for (let i = 1; i < pts.length - 1; i++) {
@@ -104,6 +180,7 @@ export class LobbySet {
       o.push(pts[pts.length - 1]);
       return o;
     };
+    // 【前排排序】按 world-x 升序给站位编号 —— 越左的站位越先走直线,越右的用越靠码头的车道、转身越靠后。
     const fr = FRONT.map((f, i) => i).sort((a, b) => FRONT[a][0] - FRONT[b][0]);
     const laneX = [-3.5, -3.0, -2.5, -2.0], turnZ = [null, -1.0, -1.3, -1.6];
     fr.forEach((id, k) => {
@@ -120,20 +197,27 @@ export class LobbySet {
       const [mx, mz] = BACK[id], sx = stepX[k];
       const p = [V(sx, 0, ALLEY.zMouth - 3), V(sx, 0, ST.z0 - 0.45)];
       for (let s = 1; s <= ST.n; s++) p.push(V(sx, (D.h * s) / ST.n, ST.z0 + (s - 0.5) * run));
+      // 【台阶段保尖】台阶点带 y 抬升,不能倒圆(否则会在空中划弧);只有上台之后的台面段才 round。
       // keep the stair points sharp (y steps), round only the dock-top part
       out[4 + id] = [...p, ...round([V(sx, D.h, D.z0 + 0.1), V(sx, D.h, D.z0 + 0.6), V(mx, D.h, mz - 1.5), V(mx, D.h, mz)], 0.8).slice(1)];
     });
     return out;
   }
+  // 【取路径】lanes(i):站位 i 的入场路径(克隆,防调用方改动内部数组);exitPath(i):反向即离场路径。
   lanes(i) { return this._lanes[i].map((v) => v.clone()); }
   exitPath(i) { return this.lanes(i).reverse(); }
 
   // ---------------------------------------------------------------------------------------------- environment
+  // 【环境贴图烘焙】用一组"代理盒/卡片"拼出一条假后巷(暗墙、头顶蓝天缝、发光街口、店门、
+  // 队色霓虹片),烘成 PMREM;它照亮本场景的高光面,并经 set.environment 照亮小孩(rivals/你)。
+  // 换队色时 _rebakeEnv() 只改两张霓虹卡的颜色再重烘,不重建代理场景。
   // A PMREM of a proxy alley: dark walls, the blue sky slot overhead, the glowing mouth, the door, neon patches in the
   // team colours (re-baked on a team change). Lights the set's glossy surfaces and, via set.environment, the kids.
   _bakeEnv() {
     if (!this.renderer) return null;
     const sc = new THREE.Scene();
+    // 【代理件】box:内向盒(墙面);card:双面卡片(天空缝/街口/门/霓虹/吊灯),都按颜色乘 k 亮度。
+    // 这是 headless(无 renderer)时直接返回 null 的原因:没有 WebGL 就没法 PMREM。
     const box = (w, h, d, x, y, z, c, k = 1) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), side: THREE.BackSide })); m.position.set(x, y, z); sc.add(m); return m; };
     const card = (w, h, x, y, z, ry, c, k) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), side: THREE.DoubleSide })); m.position.set(x, y, z); m.rotation.y = ry; sc.add(m); return m; };
     box(8, 30, 90, 0, 14, -10, '#0b0d14', 1);
@@ -150,6 +234,8 @@ export class LobbySet {
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
     return this._rebakeEnv();
   }
+  // 【重烘环境】把两张队色霓虹卡染成本队色(归一化到峰值 4,保证够亮),重烘 PMREM。
+  // 旧的 _envRT 推迟到【下一次】重烘才 dispose —— 这样外部持有 environment 引用多看一两帧也安全。
   _rebakeEnv() {
     if (!this._pmrem) return null;
     const nA = this.U.uTeamA.value.clone(), nB = this.U.uTeamB.value.clone();
@@ -165,9 +251,13 @@ export class LobbySet {
   }
 
   // ---------------------------------------------------------------------------------------------- build
+  // 【场景装配总入口】一次跑完:建材质(mats)→ 用 SetBuilder 攒全部静态几何 → 合并建 Mesh →
+  // 地面/路缘/天空/天际线 → 引线/灯柱体积/光晕/飞蛾/蒸汽/水滴等动态件。
+  // 此后运行期只更新实例矩阵与 uniform,不再新增 GPU 对象。
   _build() {
     const U = this.U, T = this.tex, B = new SetBuilder(), A = ALLEY, D = A.dock;
     const env = this.environment;
+    // 【材质面】全部共用 uniform 块 U 与图集;env 是刚烘好的环境贴图。mats 的键名与 geo 的桶名对应。
     this.mats = {
       surface: surfaceMaterial(U, this.texlib, T.decal, env),
       ground: groundMaterial(U, this.texlib, T.mask, GROUND_RECT, env),
@@ -179,8 +269,10 @@ export class LobbySet {
       steam: steamMaterial(U),
     };
     this._envMats = [this.mats.surface, this.mats.ground, this.mats.lit];
+    // 【确定性随机】固定种子 4242:窗户亮灭、空调位置、涂鸦刊登等每次都一致(各客户端同款后巷)。
     const rnd = mulberry(4242);
 
+    // 【建筑体】左墙 = 老砖楼;右墙 = 店铺(底层刷浆、上层砖)。用 faces 过滤只保留可见的面。
     // ---- buildings: left = old brick walk-up; right = the shop (painted render ground floor, brick above)
     const brickL = { color: '#7a4a3a', surf: S(SLOT.brick, 0.9, 1, 0) };
     const brickR = { color: '#8d6a55', surf: S(SLOT.brick, 0.85, 1, 0) };
@@ -199,6 +291,7 @@ export class LobbySet {
     B.box('surface', A.xR + 0.5, 0, A.zMouth - 0.5, A.xR + 14, A.hR, A.zMouth, { ...renderR, faces: 'z' });
     this._farStreet(B, rnd);
 
+    // 【立面细节】上楼层的窗(随机亮灭)、空调外机、落水管、防火梯。
     // ---- windows (upper floors), AC units, pipes, fire escapes
     const litPick = (r) => (r < 0.3 ? [1.4, 1.25, 1.1] : r < 0.4 ? [0.6, 0.8, 1.2] : r < 0.5 ? [0.35, 0.3, 0.28] : [0.03, 0.03, 0.035]);
     const wins = ['win0', 'win1', 'win2', 'win3'];
@@ -229,14 +322,18 @@ export class LobbySet {
     B.tube('surface', [[A.xL + 0.08, 0.3, -2.8], [A.xL + 0.08, 0.3, -1.1], [A.xL + 0.08, 1.0, -1.1]], 0.03, { sharp: true, seg: 3, radial: 6, color: '#b8a13a', surf: S(SLOT.plain, 0.5, 0.5, 0.3) });
     this._door(B, A.xL, 1, -9.8, { color: '#3b4148' });
 
+    // 【装卸台】rivals 登高的平台(见 _dock)。
     // ---- the loading dock (rivals' riser)
     this._dock(B, rnd);
 
+    // 【店铺侧】右墙近相机:涂鸦卷帘门、后门 + 门灯、INK & SKATE 霓虹。
     // ---- the shop side (right, near the camera): graffiti shutter, back door with its lamp, INK & SKATE neon
     shutter(B, A.xR, -1, -0.55, 2.05, 0, 2.6);
     decalQuad(B, mat4(A.xR - 0.075, 1.28, 0.5, -Math.PI / 2), 4.2, 2.36, DECAL.graffiti, false, SLOT.plain);
     this._shopDoor(B);
 
+    // 【陈设】按现实逻辑摆放:店门旁垃圾桶、遮阳灯下贩卖机、洗衣房排风的蒸汽、
+    // 台上门口堆的木箱、守着排水篦子的交通锥。
     // ---- props, with real-world logic: the bins by the shop door, the vending machine under the awning light,
     // the steam from the laundry vent, crates stacked on the dock by its door, a cone guarding the gutter grate
     dumpster(B, -3.35, 4.4, Math.PI / 2 + 0.06);
@@ -251,12 +348,14 @@ export class LobbySet {
     for (let i = 0; i < 3; i++) woodCrate(B, 3.4 - i * 0.05, i * 0.45, -16.2, 0.05 * i);
     // pallets leaning on the left wall far down
     for (let i = 0; i < 2; i++) B.at(mat4(A.xL + 0.1 + i * 0.07, 0, -15.2, Math.PI / 2, 0, 0), () => { B.at(mat4(0, 0, 0, 0, -0.1), () => { for (let k = 0; k < 7; k++) B.box('surface', -0.6 + k * 0.19, 0, -0.07, -0.6 + k * 0.19 + 0.1, 1.2, 0.0, { color: '#8a6b48', surf: S(SLOT.planks, 0.7, 1, 0) }); B.box('surface', -0.62, 0.1, 0, 0.62, 0.2, 0.1, { color: '#7a5d3e', surf: S(SLOT.planks, 0.7, 1, 0) }); B.box('surface', -0.62, 1.0, 0, 0.62, 1.1, 0.1, { color: '#7a5d3e', surf: S(SLOT.planks, 0.7, 1, 0) }); }); });
+    // 【地面附属】蒸汽排风格栅(洗衣房排风)、排水篦子、一个井盖。
     // ground furniture: steam vent grate (laundry exhaust), gutter grates, a manhole
     B.box('surface', -3.2, -0.02, -6.4, -2.4, 0.025, -5.6, { color: '#2b2c2e', surf: S(SLOT.grate, 0.2, 0.9, 0.5) });
     B.box('surface', -3.25, -0.2, -6.45, -2.35, -0.02, -5.55, { color: '#050506', surf: S(SLOT.plain, 0, 1, 0) });
     for (const z of [-2.8, -17]) B.box('surface', -2.6, -0.01, z - 0.4, -2.1, 0.012, z + 0.4, { color: '#1f2022', surf: S(SLOT.grate, 0.2, 0.8, 0.6) });
     B.cyl('surface', 0.38, 0.38, 0.02, 28, { m: mat4(1.4, 0.0, -18.5), color: '#2a2a2b', surf: S(SLOT.treads, 0.2, 0.7, 0.6) });
 
+    // 【墙面贴花】门边海报、涂鸦签名、台上模板喷印,以及两队队色的墨点。
     // ---- wall decals: posters by the door, tags, a stencil on the dock, splats in both team colours
     decalQuad(B, mat4(A.xL + 0.012, 1.55, -0.2, Math.PI / 2), 0.42, 0.63, DECAL.poster0); decalQuad(B, mat4(A.xL + 0.012, 1.5, 0.35, Math.PI / 2, 0, 0.04), 0.42, 0.63, DECAL.poster1);
     decalQuad(B, mat4(A.xL + 0.012, 1.62, 0.9, Math.PI / 2, 0, -0.03), 0.42, 0.63, DECAL.poster2);
@@ -268,25 +367,33 @@ export class LobbySet {
     decalQuad(B, mat4(-0.3, D.h + 0.003, -8.4, 0, -Math.PI / 2), 2.2, 0.55, DECAL.stencil);
     decalQuad(B, mat4(0.3, D.h + 0.004, -5.4, 0.4, -Math.PI / 2), 1.1, 1.1, DECAL.splat2, true);
 
+    // 【霓虹】INK & SKATE(队 A,店墙上)、乌贼刀牌(队 B,台上方)。
     // ---- neon: INK & SKATE (team A, on the shop wall), the squid blade sign (team B, over the dock)
     this._neon(B);
 
     // ---- string lights + overhead cables
+    // 【灯串 + 架空线缆】见 _overhead(灯串摆点)与 _wires(可摇摆的线)。
     this._overhead(B, rnd);
 
     // ---- merge
+    // 【合并出桶】B.build() 返回 { 桶: 合并几何 };这里只用它统计三角形数,tris 供调优参考。
     const G = B.build();
     this.tris = Math.round(B.tris);
+    // 【建 Mesh 助手】统一设名、阴影开关、关闭 matrixAutoUpdate(静态件不动,省每帧矩阵更新)。
     const mesh = (geo, mat, name, cast = false, recv = true) => { const m = new THREE.Mesh(geo, mat); m.name = 'lobbySet:' + name; m.castShadow = cast; m.receiveShadow = recv; m.matrixAutoUpdate = false; this.root.add(m); return m; };
+    // 【四个大网格】surface 是唯一投影者(cast 阴影);lit/neon/emit 不投影不接收,走各自发光通道。
     this.surface = mesh(G.surface, this.mats.surface, 'surface', true, true);
     if (G.lit) this.litMesh = mesh(G.lit, this.mats.lit, 'lit', false, false);
     if (G.neon) this.neonMesh = mesh(G.neon, this.mats.neon, 'neon');
     if (G.emit) this.emitMesh = mesh(G.emit, this.mats.emit, 'emit');
+    // 【emit 桶】用顶点 color(HDR)驱动,四个 Mesh 共享同一材质,故需开启 vertexColors。
     this.mats.emit.vertexColors = true;
 
     // ground: one plane (y = 0) under the alley and the cross street
+    // 【地面】一整块 y = 0 的大平面盖住后巷与横街;湿滑/反射全在地面着色器里完成,见 _reflection。
     const gg = new THREE.PlaneGeometry(90, 70).rotateX(-Math.PI / 2).translate(0, 0, -21);
     this.ground = mesh(gg, this.mats.ground, 'ground', false, true);
+    // 【路缘/人行道】横街两侧抬高的人行道;后巷的"路边缺口"(curb cut)故意留空,方便游入。
     // sidewalks + curbs of the cross street (raised; the alley's curb cut is a gap)
     const curbB = new SetBuilder();
     for (const [z0, z1] of [[A.street.z0 - 2.6, A.street.z0], [A.street.z1, A.street.z1 + 2.6]]) {
@@ -296,11 +403,13 @@ export class LobbySet {
     this.curbs = mesh(curbB.build().surface, this.mats.surface, 'curbs');
 
     // sky + skyline
+    // 【天空球】半径 60 的球(renderOrder -10 最先画、永不裁剪);后巷自带天空,故任意相机 far 都行。
     this.sky = new THREE.Mesh(new THREE.SphereGeometry(60, 32, 16), this.mats.sky); this.sky.renderOrder = -10; this.sky.frustumCulled = false; this.sky.name = 'lobbySet:sky';
     this.sky.position.set(0, 0, -10); this.root.add(this.sky);
     this._skyline();
 
     // glows (instanced billboards): bulbs, lamps, the vending machine, headlights (last two slots)
+    // 【动态件收尾】线缆、灯柱光柱、光晕广告牌、飞蛾、蒸汽与水滴。
     this._wires();
     this._volumes();
     this._glows();
@@ -309,6 +418,7 @@ export class LobbySet {
     this._fx();
   }
 
+  // 【钢制后门】贴墙的平门:踢脚板 + 闭门臂;wx/dir 定墙与朝向,zc 门中心,y0 底部高度(台上门要抬高)。
   // Steel back door (flush, with a kick plate + closer arm) on a wall.
   _door(B, wx, dir, zc, o = {}) {
     const y = o.y0 || 0, x0 = Math.min(wx, wx + dir * 0.06), x1 = Math.max(wx, wx + dir * 0.06);
@@ -318,6 +428,8 @@ export class LobbySet {
     B.box('surface', Math.min(wx, wx + dir * 0.15), y + 1.95, zc - 0.1, Math.max(wx, wx + dir * 0.15), y + 2.05, zc + 0.35, PAINT.steelBlack);
   }
 
+  // 【装卸台】混凝土板 + 包边(沿两条开敞边缘的钢角,带黄黑警示条)、橡胶防撞条、
+  // 远端的台阶 + 扶手、墙上的台上门与带笼壁灯。是 rivals 的登高位,故台面刻意压暗(紧贴前排身体之后)。
   // Concrete dock: slab + nosing (steel angle with hazard stripes along both open edges), rubber bumpers, stairs with
   // a handrail at the far end, a dock door + caged lamp on the wall behind.
   _dock(B) {
@@ -349,6 +461,7 @@ export class LobbySet {
     B.tube('surface', [[A.xR, D.h + 3.3, -4.6], [A.xR - 0.25, D.h + 3.3, -4.6]], 0.015, { sharp: true, seg: 1, radial: 5, ...PAINT.steelBlack });
   }
 
+  // 【店铺后门】敞开的门(门后暖色内景 card 走 lit 桶)、门上带笼的壁灯、一级踏步、外开的门扇。
   // The shop's back door (open, warm room behind), a caged bulkhead lamp over it, a step.
   _shopDoor(B) {
     const A = ALLEY, zc = 3.05, w = 1.05, h = 2.2, x = A.xR;
@@ -369,6 +482,10 @@ export class LobbySet {
     // dark recess panel instead (reads as depth through the doorway)
   }
 
+  // 【霓虹招牌】两块:队 A 的 "INK & SKATE" 贴店墙(正文从后巷内看沿 -z→+z),队 B 的乌贼刀牌
+  // 从右墙挑出悬在台上方。字形由 lobbySet-tex.js 的 neonText/neonSquid 提供(strokes = 折线点),
+  // 每段用 neon 桶的 tube 扫成管;每个字母选一根做"接触不良"的闪烁(见 update 的 buzz)。
+  // 记录 _neonA/_neonB 位置供 _lights 的队色点光引用。
   _neon(B) {
     const A = ALLEY;
     this.halos = [];
@@ -398,6 +515,8 @@ export class LobbySet {
     this._neonA = { pos: V(A.xR - 0.6, sA.y0 + 0.25, sA.z0 + txt.width / 2) };
     this._neonB = { pos: V(2.1, 3.4, -4.4) };
   }
+  // 【光晕面片】在招牌自己的 2-D 坐标系里铺一块四边形(uv 直接映射到米),再用招牌的点函数 P 摆到 3D;
+  // haloMaterial 按队别着色,配合 _neon 的位置。这是霓虹"散射辉光"的载体。
   // halo plane in a sign's own 2-D frame (map uv ↔ metres), placed by the sign's point function
   _halo(h, P, team, k) {
     const [x0, y0, x1, y1] = h.rect;
@@ -412,6 +531,8 @@ export class LobbySet {
     return m;
   }
 
+  // 【灯串与线缆】灯串在舞台上方左右墙间之字形来回(登记到 _strings,每段 n=8 只灯泡,下垂 sag);
+  // 上方几根更重的架空线用 catenary 采样后 tube 扫成。只建"锚点/灯串数据",灯泡留给 _glows 做实例化。
   // String lights zig-zagging wall to wall over the stage + cable runs; bulbs are an instanced emitter that sways.
   _overhead(B, rnd) {
     const A = ALLEY;
@@ -428,6 +549,8 @@ export class LobbySet {
       B.tube('surface', catenary(V(A.xL + 0.05, y0, z0), V(A.xR - 0.05, y1, z1), s, 20), 0.014, { radial: 5, step: 0.3, color: '#0c0c0d', surf: S(SLOT.plain, 0, 0.4, 0) });
     }
   }
+  // 【灯串线】随灯泡一起摆动的线(顶点着色器里的摆公式与 _bulbPos 一致):单独一个小网格。
+  // 每顶点写上 aSway = (横向权重 sin(π·u), 相位 = a.z*0.7),着色器按 uTime 摆动 —— 与 CPU 端 _bulbPos 同式。
   // the bulb wires sway with the bulbs (same formula in the vertex shader as _bulbPos): their own small mesh
   _wires() {
     const geos = this._strings.map((s) => {
@@ -450,6 +573,8 @@ export class LobbySet {
     this.root.add(m); this._envMats.push(mat);
     return m;
   }
+  // 【灯泡位置】算第 s 段灯串第 k 个灯泡在时刻 t 的 world 位置(写入 out),含:segment 插值 + 抛物线下垂
+  // + 随时间的横向摆动。CPU 版,与 _wires 的 GLSL 版口径一致(两者必须同步改)。
   _bulbPos(s, k, t, out) {
     const f = (k + 0.5) / s.n;
     out.lerpVectors(s.a, s.b, f); out.y -= s.sag * 4 * f * (1 - f);
@@ -458,6 +583,8 @@ export class LobbySet {
     return out;
   }
 
+  // 【天际线】两张竖直面片(带 skylineMaterial,采样 sky 图集)摆在街口之外作城市剪影;
+  // 刻意压在相机 ~80 m 内,这样连 showcase 那种 far=90 的相机也不会裁掉它们。
   _skyline() {
     const tex = this.tex.sky;
     this.skyline = [];
@@ -471,6 +598,8 @@ export class LobbySet {
     }
   }
 
+  // 【横街对面】一排店面(亮窗、雨棚、绿色霓虹药房十字)、路灯、一辆停着的车 —— 在 45 m 外主要是光点与剪影。
+  // 药房十字与路灯登记为发光点,供 _glows/_lights 使用。
   // The far side of the cross street: a row of shopfronts (lit windows, awnings, a pharmacy cross in neon green),
   // street lamps, a parked van — mostly light and silhouette at 45 m.
   _farStreet(B, rnd) {
@@ -513,6 +642,9 @@ export class LobbySet {
     for (const x of [-9.3, -5.7]) B.cyl('surface', 0.36, 0.36, 0.25, 16, { m: mat4(x, 0.36, z + 3.15, 0, Math.PI / 2), ...PAINT.rubber });
   }
 
+  // 【光晕广告牌】一个 InstancedMesh(N=64)挂在 glowMaterial 上,承载场景里所有"发光点"的柔光;
+  // 每只灯泡、门顶壁灯、台上灯、贩卖机、路灯、药房十字、以及最后两个 slots(车头灯)都在 _glowList 里,
+  // 每帧由 _placeGlows 重写实例矩阵/颜色。_headlightGlow 记下头灯在列表中的起始下标。
   _glows() {
     const N = 64;
     const quad = new THREE.PlaneGeometry(2, 2);
@@ -542,6 +674,8 @@ export class LobbySet {
     g.count = this._glowList.length;
     this._placeGlows(0);
   }
+  // 【每帧刷新光晕】遍历 _glowList:灯泡类(tag)用 _bulbPos 求位置并写进 bulbs 实例矩阵;
+  // 所有条目都写进 glows 的实例矩阵(按 gl.r 缩放)与实例色。只改实例缓冲,不重建。
   _placeGlows(t) {
     let bi = 0;
     _q.identity();
@@ -554,6 +688,9 @@ export class LobbySet {
     this.bulbs.instanceMatrix.needsUpdate = true;
   }
 
+  // 【灯柱光柱】街口路灯下方的淡淡锥形光体(雨后潮湿空气把钠灯"显出"体积感)。
+  // 自定义 ShaderMaterial:顶点属性 aF = 0(灯处)→1(地面);片元按视线-法线夹角(Fresnel 式)
+  // 与高度衰减求和,加色混合(one/one)叠到已画内容上,不写深度。
   // Faint light volumes under the street lamps at the mouth (the humid air after rain catches the sodium light).
   _volumes() {
     const geos = this._lampHeads.map((p) => {
@@ -573,6 +710,7 @@ export class LobbySet {
     const m = new THREE.Mesh(mergeGeometries(geos), mat); m.name = 'lobbySet:volumes'; m.renderOrder = 2; m.matrixAutoUpdate = false;
     this.root.add(m); this.volumes = m;
   }
+  // 【飞蛾】绕着台上壁灯打转:两片三角翅膀,靠 x 缩放模拟扇动,沿抖动的 Lissajous 轨道飞行(见 update)。
   // A moth worrying the dock lamp: two wing triangles, flapping by scale, on a jittery Lissajous orbit.
   _moth() {
     const g = new THREE.BufferGeometry();
@@ -583,6 +721,8 @@ export class LobbySet {
     this._mothC = V(ALLEY.xR - 0.45, ALLEY.dock.h + 3.1, -4.6);
     this.root.add(this.moth);
   }
+  // 【蒸汽 + 水滴】蒸汽:排风格栅上方三张交叉卡片(自定义 aSeed 供着色器扰动),steamMaterial 渲染;
+  // 水滴:6 个实例化细圆柱的池子,由 update 触发从空调托盘滴落到水洼。
   _fx() {
     // steam: three crossed cards over the vent grate
     const cards = new THREE.BufferGeometry(), pos = [], uv = [], seed = [], idx = [];
@@ -603,6 +743,9 @@ export class LobbySet {
   }
 
   // ---------------------------------------------------------------------------------------------- lights
+  // 【灯光】后巷自带全部灯光(不依赖关卡灯)。key 是唯一投影者;spill 用"门形 cookie"塑形不投影;
+  // rim 用限距 spot 而非方向光(方向光的掠射高光会把近景所有高光面洗白);neonA/B 用队色点光;
+  // 另有灯泡顶光、贩卖机冷补光、蓝调半球光、横街钠灯、车头灯 sweep(update 驱动)。
   _lights() {
     const L = (this.lights = {}), r = this.root, A = ALLEY;
     // key: warm, from over the shop door (off-frame right), the one shadow caster, framed tightly on the stage
@@ -637,10 +780,15 @@ export class LobbySet {
   }
 
   // ---------------------------------------------------------------------------------------------- planar reflection
+  // 【平面反射】地面在自己的 onBeforeRender 里把场景(含小孩)镜像进半分辨率 HDR target,手法比照 three 的
+  // Reflector(在 y = 0 上做斜近裁剪面),但固定水平面;地面着色器再按湿度对反射做拉伸和模糊。
+  // 它在 showcase 自己的 render 里嵌套渲染,退出时完整还原渲染目标/autoClear/阴影状态。low 档关掉。
   // The floor mirrors the scene (kids included) into a half-res HDR target from its own onBeforeRender, exactly like
   // three's Reflector (oblique near plane on y = 0) but for a fixed horizontal plane; the ground shader streaks and
   // blurs it by wetness. Works inside the showcase's own render (nested render, state restored).
   _reflection() {
+    // 【反射句柄】mat = 地面材质;R = mat.userData.refl(着色器里 tex/mat/res/on 的 uniform 引用)。
+    // 下面的相机/RT/平面/裁剪等向量都在闭包里复用,避免每帧分配。
     const mat = this.mats.ground, R = mat.userData.refl;
     const cam = (this._rCam = new THREE.PerspectiveCamera());
     const rt = (this._rRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true }));
@@ -649,6 +797,7 @@ export class LobbySet {
     const cw = new THREE.Vector3(), look = new THREE.Vector3(), tgt = new THREE.Vector3(), rot = new THREE.Matrix4();
     const bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
     this.ground.onBeforeRender = (renderer, scene, camera) => {
+      // 【防递归/低画质/水下】_inRefl 守卫防自反射;Q.refl=0 直接跳过;相机在 y≤0.02(贴地/水下)不反射。
       if (this._inRefl || !this.Q.refl) return;
       cw.setFromMatrixPosition(camera.matrixWorld);
       if (cw.y <= 0.02) return;
@@ -662,6 +811,8 @@ export class LobbySet {
       cam.far = camera.far; cam.updateMatrixWorld();
       cam.projectionMatrix.copy(camera.projectionMatrix);
       R.mat.value.copy(bias).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+      // 【镜像相机】把相机位置/朝向/up 的 y 取反,得到水下的等价机位;投影沿用主相机的。
+      // 【斜裁剪】把近裁剪面[斜插]成 y=0 平面,裁掉镜面下方的几何(Lengyel 算法)。
       // oblique clip plane y = 0 (Lengyel)
       plane.set(new THREE.Vector3(0, 1, 0), 0).applyMatrix4(cam.matrixWorldInverse);
       clip.set(plane.normal.x, plane.normal.y, plane.normal.z, plane.constant);
@@ -677,6 +828,7 @@ export class LobbySet {
       if (rt.width !== w || rt.height !== h) rt.setSize(w, h);
       R.res.value.set(w, h);
       // render (skip what can't be seen in a floor reflection / would self-reflect)
+      // 【隐藏自反射件】ground 自身、蒸汽、路缘在反射里看不见或会自反射,渲染前临时隐藏,渲完还原。
       this._inRefl = true;
       const hide = [this.ground, this.steam, this.curbs];
       const vis = hide.map((o) => o && o.visible); hide.forEach((o) => o && (o.visible = false));
@@ -695,6 +847,8 @@ export class LobbySet {
   }
 
   // ---------------------------------------------------------------------------------------------- runtime
+  // 【每帧更新】驱动所有"活"的东西:霓虹闪烁/蜂鸣、灯泡摆动、屋檐滴水与涟漪、飞蛾绕灯、车灯扫街。
+  // 全程零分配;只写 uniform、实例矩阵与灯参数。t 是绝对时间(秒),dt 是帧间隔。
   update(dt, t) {
     this._t = t; this.U.uTime.value = t;
     const L = this.lights;
@@ -746,6 +900,8 @@ export class LobbySet {
     }
   }
 
+  // 【换队色】a/b 任一可空(只换一队)。只写 uniform + 重烘一次环境贴图,再立即 update(0,t) 让灯光/霓虹跟上。
+  // 不重建任何几何或贴图 —— 队色是通道编码的,这是四件套解耦的关键收益。
   setTeamColors(a, b) {
     if (a != null) this.U.uTeamA.value.set(a);
     if (b != null) this.U.uTeamB.value.set(b);
@@ -753,6 +909,8 @@ export class LobbySet {
     this.update(0, this._t);
   }
 
+  // 【换画质】切 Q 档:改阴影贴图尺寸(必要时释放旧 map)、关反射、开关蒸汽、开关次要灯(vend/sweep)。
+  // 未知档名直接忽略,保留当前档。
   setQuality(q) {
     if (!QUALITY[q]) return;
     this.quality = q; this.Q = QUALITY[q];
@@ -763,12 +921,16 @@ export class LobbySet {
     L.vend.visible = L.sweep.visible = this.Q.extraLights;
   }
 
+  // 【统计】遍历 root 数可见 Mesh/InstancedMesh 的 draw call 与三角形(实例按 count 计入),
+  // 并报当前反射分辨率。供 HUD/调试用。注意:这是本场景自身,不含外部小孩/FX。
   stats() {
     let meshes = 0, tris = 0;
     this.root.traverse((o) => { if ((o.isMesh || o.isInstancedMesh) && o.visible) { meshes++; const g = o.geometry; const n = g.index ? g.index.count : g.attributes.position.count; tris += (n / 3) * (o.isInstancedMesh ? o.count : 1); } });
     return { setDraws: meshes, setTriangles: Math.round(tris), reflection: this.Q.refl ? `${this._rRT.width}x${this._rRT.height}` : 'off' };
   }
 
+  // 【释放】遍历 root dispose 全部几何/材质,再 dispose 纹理、halo 纹理、RT/PMREM、门 cookie、代理环境场景,
+  // 最后把自己从父节点摘掉。showcase 在场景被替换或失败回滚时调用。
   dispose() {
     this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) [].concat(o.material).forEach((m) => m.dispose()); });
     for (const t of Object.values(this.tex)) t.dispose();
@@ -781,6 +943,9 @@ export class LobbySet {
 }
 
 // ------------------------------------------------------------------------------------------------ data
+// 【水洼表】地面 mask 贴图的输入(createGroundMask 消费),决定哪里反光/更湿。
+//   字段:x/z 中心;rx/rz 半轴;n(可选)多边形扰动边数,越大越不规则;d(可选)深度权重。
+//   摆位意图:线阵前方(接住小孩与霓虹的反射)、台面沿线、车道、滴水点下方。
 // Puddles (ground mask): in front of the line-up (catches the kids + neon), along the dock face, the lane, by the drips.
 const PUDDLES = [
   { x: 0.9, z: 2.2, rx: 1.5, rz: 0.8, n: 9 }, { x: -1.4, z: 3.6, rx: 1.0, rz: 0.7 }, { x: 2.4, z: 1.2, rx: 0.8, rz: 0.5 },
@@ -788,6 +953,8 @@ const PUDDLES = [
   { x: -2.3, z: -9, rx: 1.0, rz: 2.0 }, { x: 1.8, z: -12.5, rx: 1.2, rz: 0.9 }, { x: 3.4, z: 1.7, rx: 0.5, rz: 0.6 },
   { x: -3.2, z: -5.8, rx: 0.7, rz: 0.7, d: 0.7 }, { x: 0.2, z: 5.2, rx: 1.4, rz: 0.9 }, { x: -3.1, z: -9.2, rx: 0.6, rz: 0.8 },
 ];
+// 【地面墨点表】画进 decal 图集/地面 mask 的墨渍:你的队在他们站位处、rivals 在台边、车道里几个旧点。
+//   字段:x/z 中心;r 半径;team 0/1(用哪队队色通道);seed 形状种子;arms(可选)墨点触须数。
 // ink on the floor: your team's where they'll stand, the rivals' by the dock, a few older drops down the lane
 const SPLATS = [
   { x: 0.4, z: 1.2, r: 0.42, team: 0, seed: 3 }, { x: -1.6, z: 0.9, r: 0.3, team: 0, seed: 5, arms: 7 }, { x: 2.8, z: 0.6, r: 0.28, team: 0, seed: 8 },
@@ -795,8 +962,12 @@ const SPLATS = [
   { x: -1.8, z: -11, r: 0.3, team: 0, seed: 19 },
 ];
 
+// 【一维哈希】把任意实数 n 散成 [0,1):经典 sin-hash。update 里用它做"按时间取随机"(滴水/车灯节律)。
 function hash1(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+// 【确定性 PRNG】mulberry32:同种子同序列;构造期给窗户亮灭等布局做"每客户端一致"的随机。
 function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+// 【门灯 cookie】给 spill 灯做的光照蒙版:一块软边矩形(门洞),因灯"坐"在室内,门框把光锥裁成
+// 投在沥青上的一道光梯形 —— 用蒙版比几何遮挡更省。
 // Light cookie for the door spill: the doorway's soft-edged rectangle (the spot sits inside the room, so the frame
 // clips its cone into a tall trapezoid of light on the asphalt).
 function doorCookie() {
