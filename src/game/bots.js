@@ -1,3 +1,19 @@
+// ============================================================ 中文导读 ============================================================
+// 【职责】bots.js 是 Bot 的 AI 大脑(BotBrain):每帧为 Bot 填写 intent(移动/开火/副武器/大招/跳跃/乌贼形态),
+// 让 Bot 会涂地、会打架、会躲敌方装置与大招,并带有"拟人"误差(反应时间、瞄准游走误差、开火纪律),而不是全知全能。
+// 【驱动对象】离线陪练与联网填位;玩家掉线时由 match 层用 BotBrain 接管其角色——Bot 与真人共用同一套
+// intent 接口,对物理/武器模拟层完全透明,玩家回来后可无缝交还操控。
+// 【协作关系】
+//   · 导航:寻路委托 nav.js 的导航图(nav.nearest / nav.path / nav.edgeType / climb 边),本文件只做"选点打分"
+//     和沿路转向(_steer)、卡死恢复;墨量统计用 G.paint.regionStats;武器/副武器/大招参数来自 config.js。
+//   · 武器专属战术:通用大脑只按武器 kind 给出默认逻辑;每个武器 kit 可通过 MAIN_KITS / SUB_KITS 的 bot hook
+//     (bot.fight / bot.tactics / bot.paint / bot.stayIn / bot.paintPitch 等,如 blade.js 的贴身刀战战术)覆盖或补充。
+// 【难度与状态】setDifficulty() 只换 DIFFICULTY 表(反应、瞄准误差、开火纪律);reset() 清空全部决策状态,
+// 供接管/重生/换武器时复用。
+// 【主要分区】ZoneControl 团队计划(ZonePlan)→ BotBrain 主循环(update:感知→模式→目标点→寻路→动作)
+//   → _tail(瞄准弹簧/移动平滑/落水规避/卡死看门狗)→ 爬墙 → 撤退/补墨 → 大招与副武器决策
+//   → 敌方装置应对(threats:Waddle 炸弹/Torpedo/伞面)→ Zone Control 角色执行 → Boss 战(_bossTick)。
+// ============================================================ 以下为原英文注释 ============================================================
 // Bot brain: picks turf to claim, paths there (swimming through its own ink), paints on the move, spots and
 // fights enemies with human-ish reaction time and aim error, refills ink, throws bombs and uses specials.
 // Motion (stream 4): aim is a critically-damped spring with a turn-rate cap and a smoothly wandering error (plus an
@@ -10,6 +26,9 @@ import { PLAYER, DIFFICULTY, SUB, SPECIALS, weaponRange } from '../config.js';
 import { Hit } from './physics.js';
 import { MAIN_KITS, SUB_KITS } from './kits/registry.js';
 
+// 【武器族表】大脑按"族"统一处理的武器归类:近战推进族(MELEE:滚筒/画笔)、蓄力族(CHARGES:狙击/回旋/加特林,
+// 开火时机是"蓄满再放")、长枪族(LONG,占瞭望位)、投掷副武器族(THROWN,可抛过掩体)、涂地族(PAINTERS,边涂边走)。
+// 导出是为了让 kits 里的新武器把自己的 kind 登记进这些表。
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const _walkHit = new Hit();
 const _stats = { own: 0, enemy: 0, empty: 0, n: 0 };
@@ -19,6 +38,10 @@ export const MELEE = { roller: true, brush: true };
 export const CHARGES = { charger: true, spinner: true, splatling: true };
 
 // ============================================================================================ Zone Control team plan
+// 【Zone Control 团队计划(区域模式专属)】整个 ZoneControl 对局共享一份(WeakMap 按 Z 缓存):
+// 开局一次性把每个区域的可涂格映射到"站上去涂它"的导航节点;此后约每秒 3 次把实时墨量重扫成
+// 每个节点的"需求值"(还不是我队颜色的格子,敌墨加权 1.5);并按队分配角色,在每次轮换/易手时重洗(且每 2 s 兜底):
+// 原英文注释见下。
 // Shared by every bot in a zones match (one per ZoneControl): each zone's paint cells mapped to the nav nodes you'd
 // stand on to ink them, built once; the live zones' ink re-scanned ~3×/s into per-node "need" (cells not yet ours,
 // enemy ink weighted up); and per-team roles, re-dealt on every rotation / change of hands (and every 2 s):
@@ -36,6 +59,9 @@ export const LONG = { charger: true, spinner: true, splatling: true };
 export const THROWN = { bomb: true, sticky: true, burst: true, mist: true, seeker: true };
 // aim pitch that lobs a thrown sub (weapons.js throwVelocity: pitch + 0.28, +1.5 up, from 1.35 m, gravity 24) d metres out
 // to a spot dy above our feet; null when out of reach
+// 【抛物俯仰角解算】给出手雷类副武器要扔到 (d, dy) 处所需的瞄准俯仰角:枚举俯仰角、按投掷初速
+// (weapons.js throwVelocity:俯仰 +0.28、上抛 +1.5、出手高度 1.35 m、重力 24)算落点误差,取最优;
+// 够不着(误差 >1.2 m)返回 null。Zone Control 往敌墨上抛雷时用。
 function lobPitch(d, dy, speed) {
   let best = null, be = Infinity;
   for (let p = -0.5; p <= 0.75; p += 0.025) {
@@ -56,6 +82,8 @@ const _thrAim = { yaw: 0, pitch: 0, dist: 6 };
 const _evP = new THREE.Vector3();
 const _wander = (x) => Math.sin(x) * 0.6 + Math.sin(x * 2.27 + 1.3) * 0.4;
 const _plans = new WeakMap();
+// 【zonePlan():计划的入口与缓存】非区域模式(attract/practice/缺导航或墨量)直接返回 null,
+// 主循环据此退化为 Turf War 的"涂地/打架"两模式逻辑。tick() 内部自带 ~0.33 s 节流。
 export function zonePlan() {
   const m = G.match, Z = m && m.zones;
   if (!Z || m.attract || m.practice || !G.nav || !G.paint) return null;
@@ -65,6 +93,8 @@ export function zonePlan() {
   return P;
 }
 
+// 【ZonePlan 类】见上方分区注释。waves 记录每队的"夺回波次"状态机(free 自由 / stage 集结 / push 强攻),
+// spNext 控制强攻时大招"一个接一个"的链式释放节奏。
 class ZonePlan {
   constructor(Z) {
     this.Z = Z;
@@ -80,6 +110,10 @@ class ZonePlan {
   // the team's wave state, and (staging / pushing) the zone it's going for
   waveOf(t) { return this.waves[t]; }
 
+  // 【静态建图:一次性的区域→节点映射】对每个区域:把可涂格二分定位到所在面片、求格心坐标,
+  // 就近找导航节点作为"涂此格的站位"(距离/高差过大视为没地方站);再预计算节点邻域(≤2.3 m 同层,
+  // 让选点评的是一片而非一平米)、环(ring,区域上/边缘:守卫与瞭望位)与远处带(far,3~18 m:推进位)、
+  // 每队侧的集结点(stage,朝向己方出生点、3~9 m 外的一小块高地);最后按节点数分配 need/ink 统计数组。
   _build(z, faces, starts) {
     const nav = G.nav, cells = z.cells, n = cells.length, idx = new Map(), nodes = [], cellNode = new Int32Array(n).fill(-1);
     const [cx, cy, cz] = z.center;
@@ -170,6 +204,8 @@ class ZonePlan {
     return bi >= 0 ? G.nav.nodes[I.nodes[bi]] : null;
   }
 
+  // 【每 ~0.33 s 的例行刷新】重扫各激活区域的墨量→每节点 need/needSum(敌我两份);
+  // 推进两队的夺回波次;当签名(激活组/归属/波次状态)变化或超过 2 s 时重洗角色分配。
   tick() {
     const now = G.time;
     if (this.t >= 0 && now - this.t < 0.33 && now >= this.t) return;
@@ -195,6 +231,9 @@ class ZonePlan {
   }
 
   // retake waves for team t (only while the other team holds the objective)
+  // 【夺回波次状态机】仅当对方持有目标时运行:free→stage 选定目标区域(双区域中心选对方握得不牢的那个,
+  // 中和任意一个即可破防),数"活着的、已抵达集结点/区域边"的人数;集齐 3 人、或有 2 人且有人大招就绪、
+  // 或等太久(7~15 s)→ 转 push 全队一波流;push 中被团灭(存活 ≤1 超过 4 s)退回 stage 重新集结。
   _wave(t, now) {
     const Z = this.Z, W = this.waves[t];
     if (Z.owner !== 1 - t) { W.state = 'free'; W.zone = -1; return; }
@@ -221,6 +260,9 @@ class ZonePlan {
     } else if (W.state === 'push' && alive <= 1 && now - W.t0 > 4) { W.state = 'stage'; W.t0 = now; }   // wiped out: regroup
   }
 
+  // 【角色分配】先按武器归类(kind:0 中程 / 1 涂地族 / 2 长枪瞭望);全队持有目标时选 1~2 个推进位(涂满 90% 后两个,
+  // 中程优先,且延续上一轮的推进者以减抖动);双区域中心按"谁该去哪个区"加权分流(都丢时 3 人压更近拿下的那个,
+  // 带 0.1 迟滞防来回横跳);最后叠加波次:非 free 时全员扑向同一区域,stage 期不在区域上的都去集结点待命。
   _assign(t) {
     const Z = this.Z, act = Z.active.zones, prev = this.roles[t], out = new Map();
     const bots = G.actors.filter((a) => a.team === t && a.bot);
@@ -267,13 +309,18 @@ class ZonePlan {
   }
 }
 
+// 【BotBrain:单个 Bot 的大脑】挂在 actor.bot 上,每帧 update(dt) 读 actor 状态、写 actor.intent。
+// difficulty 取自 DIFFICULTY 表;构造时 reset() 初始化全部决策状态。
 export class BotBrain {
   constructor(actor, difficulty = 'normal') {
     this.a = actor;
     this.setDifficulty(difficulty);
     this.reset();
   }
+  // 【difficulty / 难度档】DIFFICULTY 表键名,决定反应时间、瞄准误差、开火纪律与瞄准刚度。
   setDifficulty(d) { this.diff = DIFFICULTY[d] || DIFFICULTY.normal; }
+  // 【决策状态总清】接管掉线玩家、重生、换武器时都走这里:路径/目标/瞄准弹簧/走位/冷却等全部归零,
+  // 各字段含义就近见使用处。分三段:通用移动与战斗、Zone Control 角色状态、敌方装置威胁状态。
   reset() {
     this.path = null; this.pi = 0; this.goal = -1; this.repath = 0; this.goalTimer = 0;
     this.target = null; this.seeTimer = 0; this.react = 0; this.lostTimer = 0;
@@ -311,6 +358,10 @@ export class BotBrain {
     this.navBack = null; this.navBackT = 0;   // off-graph recovery (_backOnNav)
   }
 
+  // 【主决策循环 update(dt)】分四个阶段,与各阶段中文头注一一对应:
+  //   ① 感知(_perceive,0.15~0.25 s 节流一次)→ ② 模式选择(paint/fight/refill/retreat,区域模式另加 zone 角色)
+  //   → ③ 导航目标与寻路(_pick*Goal / _pathTo)→ ④ 动作(开火/副武器/大招/乌贼化/跳跃),最后统一进 _tail 收尾。
+  // 特例:死亡/超级跳/未开局时清 intent 直接返回;Boss 战整段走 _bossTick。
   update(dt) {
     const a = this.a;
     const it = a.intent;
@@ -345,6 +396,7 @@ export class BotBrain {
     if (G.boss) { this._bossTick(dt); return; }   // Boss Battle: a different job (below)
 
     // ---------------- perception
+    // 【① 感知】节流 tick(约每秒 6 次)内做敌人搜索、模式决策赖以成立的"看见/没看见"判定,见 _perceive。
     if (this.think <= 0) {
       this.think = 0.15 + Math.random() * 0.1;
       this._perceive();
@@ -357,6 +409,9 @@ export class BotBrain {
     if (zp) this._zoneSync(zp);
 
     // ---------------- mode selection (retreat = break line of sight and heal in own ink when losing a duel)
+    // 【② 模式选择】优先级:retreat(残血且近期挨打→退回己方墨里回血,可被 kit 的 stayIn 否决,如弯刀要贴身打完)
+    // > refill(墨量 <12% 且不在交火中)> 区域模式的"目标优先"裁决(只接射程内/区域边的架,push 角色照旧)
+    // > 默认 fight/paint 二选。所有转换都伴随清路径,让下一步重新选点。
     const inkFrac = a.ink / PLAYER.inkMax;
     const hpFrac = a.hp / PLAYER.hp;
     const w = a.weapon;
@@ -381,6 +436,9 @@ export class BotBrain {
     } else if (this.mode !== 'refill' && this.mode !== 'retreat') this.mode = this.target ? 'fight' : 'paint';
 
     // ---------------- navigation goal
+    // 【③ 导航目标】按模式选目标点:fight 追目标(区域模式的守卫/瞭望用 _zoneHoldGround 克制不追远);
+    // refill/retreat 各自挑墨点;否则每 4~7 s 重挑涂地点(区域模式走 _pickZoneGoal 的角色位,
+    // 到点后会原地驻留 zHoldDur 再继续)。另带"目标区已 85% 是我墨就换目标"的提前退出检查。
     this.goalTimer -= dt; this.repath -= dt;
     if (this.mode === 'fight' && this.target) {
       if (zp && this._zoneHoldGround(zp)) { this.path = null; this.repath = 0.3; }   // watchers / guards: don't chase off the zone
@@ -406,12 +464,16 @@ export class BotBrain {
     }
 
     // ---------------- steering along the path
+    // 【③ 续:沿路转向】_steer 产出期望移动向量;_unstick 处理卡死;完全脱离导航图时 _backOnNav 先走回图上。
     const move = this._steer(dt);
     this._unstick(dt, move);
     if (!this.path && this.wiggleT <= 0) this._backOnNav(dt, move);
     const wantMove = move.lengthSq() > 0.01;
 
     // ---------------- actions
+    // 【④ 动作】按模式产出期望朝向/俯仰与开火等意图:fight 见下方战斗块;paint 边扫射边涂;
+    // retreat 乌贼化遁走;refill 游向墨点。之后的装置应对(_threatCtl/_canopyCtl)、爬墙(_climb)可覆盖瞄准,
+    // 最终统一交给 _tail(瞄准弹簧、移动平滑、落水规避、卡死看门狗)。
     it.fire = false; it.sub = false; it.special = false; it.squid = false; it.jump = false;
     let wantYaw = wantMove ? Math.atan2(move.x, move.z) : a.yaw;
     let wantPitch = -0.1;
@@ -419,6 +481,10 @@ export class BotBrain {
     let fightDist = 0, idealYaw = 0, idealPitch = 0, aimDist = 6;
 
     if ((this.mode === 'fight' || this.mode === 'retreat') && this.target) {
+      // 【战斗块:fight / retreat 与目标接敌】分四件事:理想瞄准点(按弹速/抬手前摇提前量 lead,
+      // 乌贼形态瞄低)→ 拟人瞄准误差(慢游走 + 随反应时间收敛的捕捉过冲)→ 交火走位(保偏好距离 +
+      // 缓变横移,近战前压,Mega Stamp 侧移绕背)→ 开火裁决(只在真实瞄线上开火;kit 可接管,否则按武器
+      // kind 默认;射程外且脚下是己方墨则乌贼化近身;被打瞬间概率侧跳翻滚)。
       const t = this.target;
       const dx = t.pos.x - a.pos.x, dz = t.pos.z - a.pos.z;
       const dist = Math.hypot(dx, dz);
@@ -536,7 +602,10 @@ export class BotBrain {
         if (RK?.tactics) RK.tactics(this, { a, w, dist, range, dt, it, move, target: t, visible: enemyVisible, aimed: false, canFire: false, retreat: true });
       }
     } else if (this.mode === 'paint') {
-      // paint the most valuable ground in reach (unclaimed, and enemy ink even more), with a sweeping aim around it
+      // 【涂地块】每 0.35 s 扫一遍前向 5 个扇区,选"空地 + 1.4×敌墨"价值最高、且大致顺路的偏移角;
+      // 朝向 = 行进向 + 该偏移 + 慢速扫摆,俯仰按武器族给默认值(kit 可覆盖 paintPitch)。
+      // 开火默认规则:需要涂且墨够;长枪族按"蓄到 60~70% 放一条线,歇一口气"的节奏。
+      // 不涂且路还长时乌贼化赶路;区域模式下另优先瞄准区域内的需求补丁(_zoneAim)并抛雷破敌墨(_zoneBombAim)。
       this.sweep += dt * (w.kind === 'charger' ? 0.8 : 2.1);
       this.paintScanT -= dt;
       if (this.paintScanT <= 0 && !MELEE[w.kind]) {
@@ -609,6 +678,7 @@ export class BotBrain {
       }
       if (a.specialReady() && (zp ? this._zoneSpecial(zp) : this._wantSpecial('paint', 0, false))) it.special = true;
     } else if (this.mode === 'refill') {
+      // 【补墨块】朝己方墨游(乌贼化);脚下无墨时先打一小滩墨出来再游进去回。
       it.squid = a.groundTeam === 1 || this._pathRemaining() > 2;
       if (a.groundTeam !== 1 && this._pathRemaining() < 1.5 && inkFrac > 0.03) {
         // no ink here: paint a puddle to swim in
@@ -632,6 +702,9 @@ export class BotBrain {
 
   // shared by turf and boss play: bomb release, the aim spring, the smoothed move command, edge guard, stuck recovery.
   // thrAim: a device / canopy the turf code is drawing a bead on; enemyVisible: in a duel (both unset in boss play)
+  // 【收尾段 _tail】涂地/Boss 共用:副武器按压→释放的跨帧时序、瞄准弹簧(临界阻尼+转速上限,
+  // 战斗/打装置时更"硬")、移动指令平滑(航向缓变,换路点/横移换向不抽搐)、落水与平台边缘防护、
+  // 双重卡死看门狗(沿路无进展 → 位移看门狗)。
   _tail(dt, move, wantYaw, wantPitch, aimDist, wantMove, thrAim = null, enemyVisible = false) {
     const a = this.a, it = a.intent, w = a.weapon;
     // throws and placements only happen in humanoid form: stay upright for the press and the release
@@ -639,6 +712,9 @@ export class BotBrain {
     else if (this._releaseBomb) { it.sub = false; it.squid = false; this._releaseBomb = false; }
 
     // ---------------- aim: critically-damped spring with a turn-rate cap (flicks accelerate and settle; no twitch)
+    // 【瞄准弹簧】aimYaw/aimPitch 各是一个临界阻尼弹簧(角加速度 = ω²·角差 − 2ω·角速度),ω 与转速上限
+    // 在交战/打装置时取难度值、平时取温和值;出弹点 aimPoint 由"真实瞄准射线 × 目标距离"推出——
+    // 所以 Bot 晃枪时会真实打偏,而不是子弹拐弯。
     const fighting = this.mode === 'fight';
     const snappy = fighting || !!thrAim;   // duelling, or drawing a bead on a device / canopy
     const om = snappy ? (this.diff.aimOmega ?? 13) : 8;
@@ -714,6 +790,9 @@ export class BotBrain {
     return e && e.type === 'climb' ? e : null;
   }
   // Drives a climb edge once we're at its wall. Returns the aim to hold ({ yaw, pitch, dist }) or null.
+  // 【爬墙(climb 导航边)】到墙下后:整面墨柱是自己的就直接贴墙游上去;否则退到 1~1.6 m 处,
+  // 从下往上逐段补墨(_wallInkGap 找最低未墨带),墨柱贯通后乌贼形态上墙。7 s 爬不上去就放弃,
+  // 12 s 内寻路绕开 climb 边。
   _climb(dt, move, it) {
     const a = this.a, e = this._climbEdge();
     if (!e) { this.climbT = 0; return null; }
@@ -754,6 +833,10 @@ export class BotBrain {
   }
 
   // Remove any heading that would put us over open water: try the nearest safe heading, else stand still.
+  // 【落水规避家族】"湿"= (x,z) 下方 y+0.6 内没有任何地面——与 actor.js 判淹死、nav 的 node.wet 同一条规则
+  // (注意:干船坞沟底 y=-2.0 低于海面但安全可走,不能算作湿,否则机器人在沟里会被边缘防护冻住)。
+  // _avoidWater 剔除会下水的朝向;_edgeGuard 在最终指令上再探一遍"刹车距离内有无水";
+  // _squidWouldDrop 考虑乌贼会穿过格栅掉落。后续的水面探测(防翻滚下海等)都走这套。
   _avoidWater(move) {
     const l = Math.hypot(move.x, move.z);
     if (l < 0.05) return;
@@ -809,6 +892,8 @@ export class BotBrain {
   }
 
   // Low on health mid-duel: head for own ink away from the threat (swim = heal + hard to spot), then come back.
+  // 【撤退选点】决斗中残血:在 16 个随机候选里挑一个"己方墨多、远离威胁、能断对方视线"的点
+  // (己方墨权重 6、断视线 +4),然后游过去回血。
   _pickRetreat() {
     const a = this.a, t = this.target;
     let bestP = null, bs = -Infinity;
@@ -827,6 +912,8 @@ export class BotBrain {
 
   // Mid-duel sub use (enemy in view at `dist`). Sets the cooldown and returns true to throw this frame.
   // when to fire off the special (fight: distance to the target; paint: only the turf-claiming ones)
+  // 【大招释放决策】fight 模式按大招 kind 给距离/可见度条件(如 Kraken 贴身、Jetpack 中距离);
+  // paint 模式只有"涂地系"大招(storm/strike/booyah 等)且周围我墨占比 <55% 时才交。概率都很低,靠帧率累积。
   _wantSpecial(mode, dist, vis) {
     const a = this.a, id = SPECIALS[a.specialId]?.kind || a.specialId, r = Math.random();
     if (mode === 'fight') {
@@ -856,6 +943,8 @@ export class BotBrain {
   }
 
   // driving a running special: most reuse the normal fight aim; these set the trigger / sub / movement they need
+  // 【大招驾驶 _specialCtl】大招已激活后的逐帧操控:多数复用正常瞄准,这里只补各自需要的触发/副武器/移动
+  // (Barrage 连续抛雷、Stamp 的转身-冲撞-翻盖节奏、Blower 点射脉冲、Crab 血少后撤等)。
   _specialCtl(dt, it, move, dist, vis) {
     const a = this.a, s = a.specialActive;
     // cheer on a teammate's charging Cheer Orb
@@ -947,6 +1036,8 @@ export class BotBrain {
     }
   }
 
+  // 【交火中副武器】按副武器 kind 给距离/条件(burst 雷便宜常扔、curtain 受击时拉烟幕、mine 埋脚下陷阱),
+  // kit 副武器可完全接管(SK.fight);命中后置冷却。
   _fightSub(dist) {
     const a = this.a, sub = a.sub || SUB.bomb, k = sub.kind;
     if (a.ink < sub.inkCost + 8 || k === 'beacon') return false;
@@ -966,6 +1057,8 @@ export class BotBrain {
     return go;
   }
   // Sub use while painting: sprinklers onto open turf ahead, mines around the contested middle, beacons up front.
+  // 【涂地时副武器】按战局位置(progress:0 己方底→1 敌方底)部署:洒墨器洒在面前空地、
+  // 地雷埋在中间争夺带、跳点信标插在靠前且不与现有信标重叠处;kit 副武器可接管(SK.paint)。
   _paintSub() {
     const a = this.a, sub = a.sub || SUB.bomb, k = sub.kind;
     { const SK = SUB_KITS[k]?.bot; if (SK?.paint) return a.ink >= sub.inkCost + 4 && SK.paint(this); }
@@ -984,6 +1077,8 @@ export class BotBrain {
 
   // ================================================================ Zone Control (only ever called in a zones match)
   // after respawning: super jump to the teammate (or jump beacon) closest to our zone when it's a long way off
+  // 【区域模式:重生跳】复活后若离分配区域太远,超级跳到"离区域最近且与本队区域同伴/信标"(锁定期落在集结点,
+  // 绝不单人空降敌区);push 角色不跳(本来就要压前)。
   _zoneJump(P, minD = 24, chance = 0.8) {
     const a = this.a, r = P.roleOf(a), c = P.Z.zones[r.zone].center, R = P.info[r.zone].R;
     const dSelf = Math.hypot(a.pos.x - c[0], a.pos.z - c[2]);
@@ -1016,6 +1111,8 @@ export class BotBrain {
   }
 
   // per frame: a rotation or a changed role / zone re-targets straight away
+  // 【区域同步 _zoneSync】轮换/角色/区域变化时立即重选目标;轮换后给自己 0.4~2.4 s 的延迟,
+  // 远处非交火的涂地 Bot 可能超级跳到已在新区域上的队友处。
   _zoneSync(P) {
     const r = P.roleOf(this.a);
     if (P.Z.active !== this._zAct || r.role !== this.zRole || r.zone !== this.zZone) {
@@ -1033,6 +1130,8 @@ export class BotBrain {
   }
 
   // take the fight? In range, or the foe is on / by our zone; otherwise keep inking the objective
+  // 【接不接架】push 角色照打;其余仅在目标进入射程(瞭望位 1.05×、其余 1.25×)或目标在区域边上才接,
+  // 否则继续涂目标。瞭望/集结角色完全不接(集结等人齐)。
   _zoneEngage(P) {
     const a = this.a, t = this.target;
     if (!t) return false;
@@ -1044,6 +1143,8 @@ export class BotBrain {
     return Math.hypot(t.pos.x - c[0], t.pos.z - c[2]) < P.info[this.zZone].R + 5;
   }
   // in a fight: watchers keep their perch while the foe is in range; guards don't chase more than ~10 m off the zone
+  // 【守住位置】交火中也不追出界:瞭望位保持在射程内的栖点,守卫不追出区域 ~10 m,
+  // 集结角色站桩 4 m 外不追;只有 push 和贴脸(<4 m)才动。
   _zoneHoldGround(P) {
     const a = this.a, t = this.target, range = this._range();
     const d = Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z);
@@ -1057,6 +1158,9 @@ export class BotBrain {
   }
 
   // next spot to go to for our role
+  // 【按角色选下一个站位】stage→集结点(等 push);push→压前位;watch→瞭望栖点;guard→区域朝敌沿;
+  // 都不成就退化去涂最需要的补丁(_zonePaintNode),再不行守区域/压前,最终回 Turf 涂地逻辑。
+  // 寻路失败 3 次抖动脱困。每个点带 hold 驻留时长。
   _pickZoneGoal(P) {
     const a = this.a, nav = G.nav, t = a.team, r = P.roleOf(a), zi = r.zone, I = P.info[zi], zone = P.Z.zones[zi];
     this.zRole = r.role; this.zZone = zi; this.zHoldDur = 0;
@@ -1095,6 +1199,7 @@ export class BotBrain {
   }
 
   // the neediest reachable patch of the zone (its not-ours ink round a node), nearby first, away from teammates' goals
+  // 【涂补优先级】在区域节点里找"需求值高(邻域合计 ≥4)、离自己近、且不和队友目标撞车"的补丁;大区域隔点采样省 CPU。
   _zonePaintNode(P, I, zone) {
     const a = this.a, nav = G.nav, need = I.need[a.team], N = I.nodes.length;
     if (!N) return -1;
@@ -1114,6 +1219,7 @@ export class BotBrain {
     return best;
   }
   // a spot on / at the edge of the zone, on its enemy-facing side, apart from the other guards
+  // 【守卫位】区域朝敌一侧的环点(与敌方方向的夹角加权),与队友守卫错开。
   _zoneGuardNode(P, I, zone) {
     const a = this.a, nav = G.nav, c = zone.center, e = P.enemyDir(zone, a.team);
     const mates = G.actors.filter((o) => o !== a && o.team === a.team && o.bot && o.alive && o.bot.goal >= 0);
@@ -1131,6 +1237,7 @@ export class BotBrain {
     return best;
   }
   // long range: a perch on our side of the zone, a little above it if possible, that can see it
+  // 【瞭望位】长枪栖点:在我方侧、略高于区域、射程 0.55× 处,从高分候选里取前 6 个逐一测视线,第一个能看到区域的入选。
   _zoneWatchNode(P, I, zone) {
     const a = this.a, nav = G.nav, c = zone.center, e = P.enemyDir(zone, a.team), range = this._range();
     const mates = G.actors.filter((o) => o !== a && o.team === a.team && o.bot && o.alive && o.bot.goal >= 0);
@@ -1154,6 +1261,7 @@ export class BotBrain {
     return -1;
   }
   // pressure forward: unclaimed / enemy turf 3–18 m past the zone toward the enemy's side (never camping their spawn)
+  // 【压前位】区域向敌侧 3~18 m 内"空地+1.4×敌墨"价值最高的远点,不蹲敌出生点(≥22 m 排除)。
   _zonePushNode(P, I, zone) {
     const a = this.a, nav = G.nav, c = zone.center, e = P.enemyDir(zone, a.team), ep = G.level.spawnPads[1 - a.team];
     let best = -1, bs = -Infinity;
@@ -1174,6 +1282,7 @@ export class BotBrain {
   }
 
   // a needy patch of our zone in reach of where we stand (re-picked ~1×/s); null = the normal paint scan decides
+  // 【区域瞄准】每秒重挑一次"够得着且需求 ≥3"的区域补丁直接涂(长枪从栖点直涂,近枪只在站立或顺路时侧头)。
   _zoneAim(P, dt, moving, move) {
     this.zAimT -= dt;
     if (this.zAimT <= 0) {
@@ -1206,6 +1315,8 @@ export class BotBrain {
 
   // specials: break a hold on the zone (standing on / facing it), or defend it when foes turn up
   // (gauges fill fast in this mode — 4.5 p/s while the other team holds — so they're spent readily)
+  // 【区域大招】破防/守区时交:锁定期(stage)留给 push;push 期按 spNext 链式一人一个;
+  // 目标型大招(storm/barrage 等)只在面向区域或站上区域时放(zFace 先转身);安安静静持有目标时不浪费。
   _zoneSpecial(P, fighting = false) {
     const a = this.a, t = a.team, zi = this.zZone, W = P.waves[t];
     if (zi < 0 || !P.isActive(zi)) return false;
@@ -1230,6 +1341,8 @@ export class BotBrain {
 
   // a thrown sub onto the biggest patch of their ink on our zone in lobbing range (re-looked-for twice a second);
   // returns the aim to hold ({ yaw, pitch, release }) while it's thrown
+  // 【区域抛雷】往"对方墨水最多的一补丁"抛投掷类副武器(lobPitch 解俯仰角),只有对方正持有/强攻
+  // 该区域时才抛;选中后先转身对准,真实瞄线到位再释放(release)。
   _zoneBombAim(P, dt) {
     if (this.zBomb) { this.zBomb.t -= dt; if (this.zBomb.t <= 0) this.zBomb = null; return this.zBomb; }
     this.zBombScan -= dt;
@@ -1269,6 +1382,9 @@ export class BotBrain {
   // about to arrive (the bot edges away from it meanwhile); far-off devices, or ones after someone else, are left alone.
   // Launched canopies across our way: steer round the nearer edge, or shoot apart one that boxes us in. A shield between
   // us and our target: flank round it, hold the shots unless it's nearly broken, lob a sub over it.
+  // 【装置扫描(节流 ~5×/s)】从各 kit 收集"正在猎杀玩家的敌方装置"(Waddle 炸弹/潮汐鱼雷)与
+  // "敌方伞面"(shields),取威胁评分最高者作为候选;新装置记入 _thrMem,过反应时间后才可处置(听音辨位,
+  // 不需要视线)。THREAT_STATS 记录行为统计供 A/B 实验。
   _threatScan() {
     const a = this.a, L = _thrList, S = this._shl;
     L.length = 0; S.length = 0;
@@ -1289,6 +1405,9 @@ export class BotBrain {
     this.thrCand = best;
   }
   // how much a device matters to us right now: 0 = not at all; ~1.5+ outranks a duel in weapon range, 2.4+ one up close
+  // 【威胁评分】0 = 无视;0.15~1.5 边缘关注(边做正事边远离);~1.5 以上压过一场武器射程内的决斗;
+  // 2.4+ 压过贴脸决斗。分三类:飞行中(落点会砸到我的 Waddle / 朝我飞的 Torpedo)、悬停/冲刺的 Torpedo
+  // (锁定我评分随时限骤增)、行走中的 Waddle(ETA 越短分越高,快放弃的目标打折)。
   _threatScore(d) {
     const a = this.a, dx = d.pos.x - a.pos.x, dz = d.pos.z - a.pos.z, dh = Math.hypot(dx, dz);
     const dy = d.pos.y + d.aimY - (a.pos.y + 0.8);
@@ -1326,6 +1445,10 @@ export class BotBrain {
   }
   // per frame, after the mode's own actions: deal with the device we've noticed (aim + trigger + move). Returns the aim
   // to hold (_thrAim, shared) or null to leave the frame as it is.
+  // 【装置应对 _threatCtl:每帧,动作块之后】决策树:记过的候选且反应时间到→接管为当前威胁;
+  // 乘坐/变身类大招期间只走脚步不管扳机;然后三选:打得到就射击(站定/后引/风筝按距离),
+  // 打不到但马上到就闪避(Torpedo 侧移+跳),不急就继续正事并慢慢远离。决斗中由 _threatScore 与
+  // 决斗优先级比较决定谁让路。返回要锁定的瞄准或 null。
   _threatCtl(dt, it, move) {
     if (!THREAT_AI.enabled) return null;
     const a = this.a;
@@ -1425,6 +1548,8 @@ export class BotBrain {
   }
   // can't pop it: run (a kid outruns a Waddle; out of a hovering Torpedo's sight), swim through our own ink, or — a
   // Torpedo about to arrive — sidestep its line and hop
+  // 【闪避决策】Torpedo 冲刺临身(<0.55 s)侧移+跳;其余每隔 0.45~0.75 s 重选逃跑航向
+  // (_pickEvade:远离它、避开墙和水、偏向我方墨、顺路),能游则游(快且难打中)。
   _thrEvade(d, dt, move, it, ttl) {
     const a = this.a;
     if (!d.ground && d.state === 'launch' && ttl < 0.55) { this._thrSidestep(d, move, it, ttl < 0.35); return; }
@@ -1437,6 +1562,7 @@ export class BotBrain {
     // running from a walker we can see: back off facing it, ready to shoot the moment it's in reach
     if (!swim && d.ground && this.thrLos) a.fireFacing = Math.max(a.fireFacing, 0.25);
   }
+  // 【侧移】跨开它的速度线,选我们已在的那一侧(先验干/视线,不行换边),贴脸时加一跳。
   _thrSidestep(d, move, it, hop) {
     const a = this.a, v = d.vel, vl = Math.hypot(v.x, v.z), rx = a.pos.x - d.pos.x, rz = a.pos.z - d.pos.z;
     let px, pz;
@@ -1474,6 +1600,8 @@ export class BotBrain {
   }
   // melee kits vs a device: the distance window their attack pops it in (a roller's flick arcs over anything close;
   // a brush's swipe globs fly low and short; the Cutlass's cut throws droplets; a punch flies straight)
+  // 【近战武器的装置窗口】各近战招式的"能在多远打掉装置"区间(滚筒横挥弧落地 5~6.6 m、
+  // 画笔挥击低且短、弯刀剑气 5.5 m 内),供"打还是跑"判断。
   _meleeWindow(w, d) {
     switch (w.kind) {
       // (ground, aimed low: the flick comes down 5–6.6 m out ~0.6 s after the press — a walker is ~2.3 m closer by then)
@@ -1484,6 +1612,8 @@ export class BotBrain {
     }
   }
   // the trigger for a shot at a device dist m away (aimed: on it now; roughly: swinging onto it)
+  // 【装置扳机】近战:等身体正对窗口再点按(横挥按身体朝向走);蓄力族:短蓄即可(狙击点射 40+ 伤害、
+  // 弓一环 ~30),蓄力中"瞄上了且达到短蓄门槛"才放;其余:真实瞄线在窗口内才打。
   _devTrigger(dist, aimed, roughly, lo, hi) {
     const a = this.a, w = a.weapon, wr = a.weaponRunner, k = w.kind, KB = MAIN_KITS[k]?.bot, inWin = dist >= lo && dist <= hi;
     if (MELEE[k] || KB?.melee) {
@@ -1504,6 +1634,9 @@ export class BotBrain {
   // In a fight: an enemy shield (their held canopy, or a launched one) between us and the target soaks every shot —
   // flank round to the side it doesn't cover (sticky side, flipped off walls / water), save the shots unless it's nearly
   // broken or we can't get round, and lob a sub over it.
+  // 【对盾作战 _shieldFight】敌伞面挡在我与目标之间:沿"我已偏的一侧"绕行(撞墙/水自动换边),
+  // 盾约 1.3 秒内打不穿就省子弹(THREAT_STATS.holdFire 计压火时长),蓄力武器留住蓄力,
+  // 有投掷副武器时抛过盾顶。blockT 记录被挡时长。
   _shieldFight(t, dist, move, it, dt) {
     if (!THREAT_AI.enabled || !this._shl.length) { this.blockT = 0; return; }
     const a = this.a, ex = a.pos.x, ey = a.pos.y + 1.1, ez = a.pos.z;
@@ -1551,6 +1684,9 @@ export class BotBrain {
   // Enemy launched canopies (sliding walls that hold enemy players back) across our way: steer round the nearer edge
   // (then across behind it); boxed in (walls / water on both sides) or still not round after 4 s → shoot it apart.
   // Returns the aim to hold while breaking one (only when `free`: no device being dealt with), else null.
+  // 【滑动伞面规避 _canopyCtl】敌方发射的伞面是挡人的滑动墙:判定它会横在我行进线上(或正朝我滑来)
+  // 就绕最近的边(两备选边都验干/视线);4 s 绕不过去或两边被堵(canSide=2)且没在管别的装置 → 直接打碎它。
+  // 返回打碎时要锁定的瞄准,否则 null。
   _canopyCtl(dt, it, move, free) {
     if (!THREAT_AI.enabled) return null;
     const a = this.a, S = this._shl;
@@ -1614,11 +1750,15 @@ export class BotBrain {
     return null;
   }
 
+  // 【有效射程】武器标称射程;蓄力族打 0.9 折(蓄力不满弹道达不到标称)。
   _range() {
     const w = this.a.weapon;
     return weaponRange(w) * (CHARGES[w.kind] ? 0.9 : 1);
   }
 
+  // 【感知 _perceive:节流 tick 内调用】在 awareness 半径内找敌人:敌方、活着、有视线;
+  // 乌贼形态游动慢且小,3 m 外基本看不见(高速冲刺除外)。打分 = 距离(当前目标 -4 粘滞,kit 可加 targetBias),
+  // 最低者中标。换目标时重置反应时间与"捕捉过冲";看不见时 2.5 s 或超 awareness+6 m 才放弃目标。
   _perceive() {
     const a = this.a;
     const eye = _v.copy(a.pos); eye.y += 1.3;
@@ -1655,6 +1795,8 @@ export class BotBrain {
     this.react -= 0.2;
   }
 
+  // 【寻路入口 _pathTo】起点吸附到导航图(站在台阶脚下时防"从头顶ledge起跳"取更近点),
+  // 终点按 maxUp 容差吸附;nav.path 给出路径(noClimbUntil 内禁爬墙边),失败置 path=null。
   _pathTo(pos, maxUp = 0.8) {
     const nav = G.nav;
     let s = nav.nearest(this.a.pos, 1.2, true);
@@ -1669,6 +1811,10 @@ export class BotBrain {
     return true;
   }
 
+  // 【涂地选点 _pickPaintGoal:Turf War 核心偏好】随机 28 个候选节点,按综合分挑下一个涂地目标:
+  // 价值 = 近处(3 m)与宽域(6.5 m)的"空地+1.4×敌墨"加权和(翻敌墨一箭双雕)×16 − 距离×0.14
+  // + 压前奖励(progress,最多 +2.5)+ 长枪高位加成 − 与队友目标扎堆惩罚;
+  // "基本全是我墨"的候选大幅减分。每 4~7 s 或到点重挑。
   _pickPaintGoal() {
     const a = this.a, nav = G.nav;
     let best = -1, bs = -Infinity;
@@ -1703,6 +1849,7 @@ export class BotBrain {
   }
 
 
+  // 【补墨选点】先 1~7 m 内、再 8~22 m 内找己方墨占比 >60% 的点;实在没有就回己方出生点(必定是我色)。
   _pickRefill() {
     const a = this.a;
     // search nearby for own ink
@@ -1726,11 +1873,15 @@ export class BotBrain {
 
   // Escape move: steer a fixed random heading for a moment (hopping if on the ground), then re-plan from wherever
   // that leaves us. Used when perched on an edge in mid-air or when repeated re-plans make no progress.
+  // 【卡死恢复之一:_wiggle 抖动】沿随机固定航向冲一段(落地时先跳),再从落点重新规划;
+  // 用于悬在平台边、连续重规划无进展等"路点逻辑看不见"的死局。
   _wiggle(t) {
     this.wiggleT = t; this.wiggleYaw = Math.random() * Math.PI * 2;
     this.path = null; this.goalTimer = 0; this.repath = 0;
     if (this.a.grounded) this._needJump = true;
   }
+  // 【卡死恢复之二:_unstick】悬浮贴角(不着地不坠落也不动)0.4 s 即触发 _wiggle;wiggle 期间
+  // 强制移动向量并清进度计时,防止"逃跑"被误判卡死。strikes 在 _tail 中累计。
   _unstick(dt, move) {
     const a = this.a;
     this.strikeT -= dt;
@@ -1748,6 +1899,8 @@ export class BotBrain {
 
   // No route, and no nav graph under us (dodged, shoved or dropped somewhere the graph doesn't reach — every re-plan
   // fails from there, so nothing else would ever move us): walk to the nearest graph node in sight, then plan again
+  // 【脱图自救 _backOnNav】被击退/挤下/掉到了导航图覆盖不到的地方(每次重规划都失败,没人能动它):
+  // 每 0.6 s 在 10 m 内找"视线可达且一路干燥"的最近图节点走回去,找不到就退而求其次硬走最近点。
   _backOnNav(dt, move) {
     const a = this.a, N = G.nav;
     if (!N || !a.grounded || a.climbing || a.superJumpState) { this.navBack = null; return; }
@@ -1778,6 +1931,8 @@ export class BotBrain {
   }
 
   // body-width line of sight at knee height (centre + both shoulders) so bots never cut corners they can't fit past
+  // 【身体宽度视线】膝高(中心+双肩 0.34 m)三条平行线的射线检测:腿穿不过格栅和栏杆,
+  // 所以比 shots 用的 physics.los 更严格,机器人因此不会切自己过不去的角。
   _fatLos(ax, ay, az, bx, by, bz) {
     let dx = bx - ax, dz = bz - az;
     const l = Math.hypot(dx, dz) || 1;
@@ -1793,6 +1948,9 @@ export class BotBrain {
     return true;
   }
 
+  // 【沿路转向 _steer】产出期望移动向量:推进已到路点(垂直向宽容);上方够不着或悬空台阶立即重规划
+  // (4 次撞同一 ledge 改 _wiggle);前视 7 路点内取"同层、walk 边、宽度视线通过、一路干燥"的最远点直走;
+  // jump 边提前设 _needJump;队友 1.4 m 内侧向分离(只加侧向分量,不停前进);bestD/noProg 供卡死看门狗。
   _steer(dt) {
     const a = this.a, nav = G.nav, out = this._mv || (this._mv = new THREE.Vector3());
     out.set(0, 0, 0);
@@ -1868,9 +2026,9 @@ export class BotBrain {
 
 
   // ============================================================================================ Boss Battle
-  // One squad vs HULLBREAKER (docs/BOSS.md): spread round its flanks at weapon range, shoot what it exposes (eyes; the
-  // belly while it's stunned — everyone piles in), step out of every telegraph, hop the shockwave rings, duck under the
-  // sweep in own ink, pop the crablets that come for the squad, and clean boss ink off the routes (rollers most of all).
+  // 【Boss 战(_bossTick)】HULLBREAKER 单 Boss 战(见 docs/BOSS.md):小队散开保持射程环绕侧翼,
+  // 打暴露的弱点(眼睛;晕眩时全员扑腹部)、走出每个前摇区、跳过冲击波环、横扫时潜入己墨,
+  // 清理路上的 Boss 墨。与 turf 共用感知误差、瞄准弹簧、移动平滑(_tail)和卡死恢复。
   _bossTick(dt) {
     const a = this.a, it = a.intent, w = a.weapon, boss = G.boss;
     const inkFrac = a.ink / PLAYER.inkMax;
@@ -1979,6 +2137,9 @@ export class BotBrain {
   }
 
   // what to shoot: a crablet that's closing in, else the part of the boss worth hitting that it can see
+  // 【Boss 感知 _bossPerceive】优先打逼近的小螃蟹(crablet,9 m 内);否则在激活的命中形体里挑:
+  // 先腹部(weak,boss 打开时),其次眼睛(狙击或按纪律概率),视线内取最近;选定的部位保持 1.2~2.7 s
+  // 再换(防抖)。换目标同样重置反应时间与捕捉过冲。
   _bossPerceive(boss) {
     const a = this.a, eye = _v3.copy(a.pos); eye.y += 1.2;
     let T = null;
@@ -2023,6 +2184,8 @@ export class BotBrain {
 
   // a spot to fight from: weapon range off its flank (not in front of it — slams, sweeps and charges go that way), clear
   // of the other bots, seeing it. When it's stunned everyone rushes the belly.
+  // 【Boss 站位 _bossGoal】武器射程外的侧翼/背面(不站正面——砸击/横扫/冲撞都朝前),避开队友与
+  // 前摇危险区,要求看得见 Boss;晕眩时全员扑前打腹部。滚筒在 Boss 未开腹时专职清路上的 Boss 墨。
   _bossGoal(boss) {
     const a = this.a, w = a.weapon, nav = G.nav;
     this.goalTimer = 2.4 + Math.random() * 2;
@@ -2067,6 +2230,7 @@ export class BotBrain {
   }
 
   // out of a telegraph: the reachable spot nearby with the least danger, biased along the escape direction
+  // 【Boss 闪避 _bossEvade】前摇触发后沿逃离方向随机找 12 个候选点,取"危险度最低(权重 8)+ 不远 + 顺逃离向"处。
   _bossEvade(boss, th) {
     const a = this.a, nav = G.nav;
     let best = -1, bs = -Infinity;

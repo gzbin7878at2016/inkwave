@@ -12,6 +12,17 @@
 // colonnade (covered walk below, terrace walk on top) along one side, the open promenade with its shelters, kiosks
 // and sea railings along the other, bandstands, a floral clock, the lifeboat station and the two piers out at sea.
 // Palette: cream / pastel stucco, sea-green painted cast iron, coral + navy accents, gilt details, slate roofs.
+
+// ============================================================ 中文导读 ============================================================
+// 【文件定位】Tidewater 广场关卡的专属道具包(维多利亚海滨小镇市政广场):向 PropKit 类型表 D 注册所有
+//   tidewater_ 前缀的道具建造器,并提供本关的 PLACEMENTS 摆放清单。
+// 【与主 props.js 的分工】主 props.js(src/world/props.js)是跨关卡通用的道具库(长椅、栏杆、垃圾箱等);
+//   本文件只放 Tidewater 特有的道具(钟楼、市政厅、铸铁柱廊、码头、喷泉、乐队亭等),机制与 marina
+//   道具包相同(见 docs/ASSETS-WEAPONS.zh-CN.md 5.2 节):register(D, H) 由关卡装配方调用,H 里带
+//   THREE 与套件辅助函数。
+// 【摆放约定】PLACEMENTS 是半份清单——除标注 mirror:false 的条目外,每条都自动关于原点镜像到另一半
+//   (x,z)→(-x,-z)、rotY 加 π。实体道具同时向关卡交出碰撞盒。坐标单位米,Y 向上,pos 是基点,
+//   rotY 转动局部 +Z(即"正面");沿街成排的构件(栏杆等)从 pos 沿局部 +X 展开。
 import { SQ, PROM, TERR, COLO, STAIR, chainSections } from './layout.js';
 
 const P = Math.PI;
@@ -21,6 +32,7 @@ export function register(D, H) {
   const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ local palette
+  // 【本地调色板】本关所有道具共用的颜色表(奶油灰泥、海绿铸铁、珊瑚红 + 藏青点缀、鎏金、石板瓦等)。
   const K = {
     stucco: '#efe6d3', stuccoDk: '#d9cfbb', trim: '#f7f3ea', stone: '#e6dfcf', stoneDk: '#c9c1ae', granite: '#a9a49b',
     graniteDk: '#85817a', iron: '#4d8b7e', ironDk: '#2f5d55', ironLt: '#6fa99b', navy: '#2f3d5c', coral: '#d9826c',
@@ -33,6 +45,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ geometry helpers
+  // 【几何辅助件】本关自建的一套小型几何构建器(GB / 模板缓存 / 沿 X 的截面挤出 / 道具局部碰撞),供下文所有道具复用。
   // tiny builder (same contract as props.js GB: triangles auto-orient to the supplied outward normals)
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
@@ -59,6 +72,7 @@ export function register(D, H) {
     }
   }
   const TPL = new Map();
+  // 【模板缓存】同参数的部件几何只构建一次(键含全部参数),整个关卡共享。tpl = 缓存读写,ext = 沿 X 挤出的缓存。
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
   const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
@@ -69,12 +83,17 @@ export function register(D, H) {
   const ext = (key, prof, L, b = 0.004) => tpl('tx|' + key + '|' + kf(L), () => extrudeGeo(prof, L, b));
   // Colliders are prop-local (B.col ignores B.push), so builders that nest frames track them here: fpush/fpop wrap
   // B.push/B.pop for yaw-only frames, COL maps a box from the current frame into prop-local space (AABB).
+  // 【道具局部碰撞栈】碰撞盒只认道具局部坐标(B.col 忽略 B.push 的视觉变换),所以嵌套框架的建造器
+  //   用 FR 栈单独跟踪:fpush/fpop 与 B.push/B.pop 同步(仅偏航),COL 把当前框架内的盒子换算回
+  //   道具局部空间并取 AABB。
   const FR = [];
   const frame = () => FR[FR.length - 1] || [0, 0, 0, 0];
   function fpush(B, x, y, z, ry = 0) { const t = frame(), c = Math.cos(t[3]), sn = Math.sin(t[3]); FR.push([t[0] + x * c + z * sn, t[1] + y, t[2] - x * sn + z * c, t[3] + ry]); B.push(x, y, z, ry); }
   function fpop(B) { FR.pop(); B.pop(); }
   // o.roof: an off-limits top (never inkable, nobody can stand on it); o.rail: a railing / balustrade / grille — kids
   // can't pass, shots, ink and squids can (and nobody stands on it) — see props.js B.col
+  // 【碰撞标志】o.roof = 禁入顶面(不可涂墨、不可站立);o.rail = 栏杆类(小玩家过不去,但射击、
+  //   墨水和乌贼可以穿过,也不能站上去)——语义同主 props.js 的 B.col。
   function COL(B, x0, y0, z0, x1, y1, z1, o) {
     const t = frame(), c = Math.cos(t[3]), sn = Math.sin(t[3]);
     let ax = Infinity, az = Infinity, bx = -Infinity, bz = -Infinity;
@@ -85,8 +104,10 @@ export function register(D, H) {
   }
   const colBox = (B, x, y, z, w, h, d, o) => COL(B, x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
   // every build starts with an empty frame stack (a throw mid-build must not leak frames into the next prop)
+  // 【防护】每个 build 开头清空帧栈——建造中途抛异常也不能把残留帧泄漏给下一个道具。
   const def = (o) => { const b = o.build; o.build = (B, opts) => { FR.length = 0; b(B, opts); }; return o; };
   // flat disc facing +Z (for dials, glass heads), optional half (top) disc
+  // 【朝向 +Z 的平圆盘】给钟面表盘、玻璃罩等用;可选只要上半盘。
   const discGeo = (r, seg, half = false) => tpl(['disc', r, seg, half ? 1 : 0].map(kf).join('|'), () => {
     const g = new GB(), c0 = g.v(0, 0, 0, 0, 0, 1), ids = [];
     const n = half ? seg : seg;
@@ -95,6 +116,7 @@ export function register(D, H) {
     return g.geo();
   });
   // round-headed panel (rectangle w × h with a semicircular head on top, total height h + w/2), facing +Z
+  // 【圆头拱板】宽 w 高 h 的矩形上加半圆头(总高 h + w/2),朝向 +Z——门窗洞口、壁龛的底板。
   const archPanelGeo = (w, h, seg = 10) => tpl(['archp', w, h, seg].map(kf).join('|'), () => {
     const g = new GB(), r = w / 2;
     const q = [g.v(-r, 0, 0, 0, 0, 1), g.v(r, 0, 0, 0, 0, 1), g.v(r, h, 0, 0, 0, 1), g.v(-r, h, 0, 0, 0, 1)];
@@ -105,10 +127,13 @@ export function register(D, H) {
     return g.geo();
   });
   // triangle (gable / pediment face) facing +Z: base w, height h
+  // 【三角形面片】山墙 / 三角楣的正面,底宽 w 高 h,朝向 +Z。
   const triGeo = (w, h) => tpl(['tri', w, h].map(kf).join('|'), () => {
     const g = new GB(); g.tri(g.v(-w / 2, 0, 0, 0, 0, 1), g.v(w / 2, 0, 0, 0, 0, 1), g.v(0, h, 0, 0, 0, 1)); return g.geo();
   });
   // mouldings (closed z/y profiles, z = projection from the wall)
+  // 【线脚截面库】封闭的 (z, y) 轮廓(z = 自墙面挑出距离):檐口、腰线、墙基、窗台、压顶;mould 沿给定
+  //   长度 L 沿 X 挤出后贴到墙上。
   const PROF = {
     cornice: [[0, 0], [0.06, 0], [0.06, 0.05], [0.1, 0.08], [0.13, 0.14], [0.26, 0.17], [0.3, 0.24], [0.33, 0.3], [0.34, 0.36], [0, 0.36]],
     string: [[0, 0], [0.05, 0], [0.07, 0.03], [0.07, 0.09], [0.05, 0.12], [0, 0.12]],
@@ -119,6 +144,8 @@ export function register(D, H) {
   const mould = (B, mat, c, kind, L, x, y, z, o = {}) => B.add(mat, ext(kind, PROF[kind], L), c, x, y, z, o);
 
   // ------------------------------------------------------------------------------------------ stroke font
+  // 【描边字体】纯程序化矢量字库:每个字符是一组中心线笔画,转成圆头圆角的扁带几何——用于招牌、铭牌、
+  //   船名等一切本关文字,无需任何贴图。EA 画椭圆弧,LOOP 画封闭椭圆。
   // (adapted from the marina dock pack) Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
@@ -170,6 +197,9 @@ export function register(D, H) {
 
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
+  // 【笔画扁带】把一串中心线点转成带宽度 2*hw 的实体笔画:正面在 z = d(两侧以宽度 b 倒角收下来),
+  //   侧墙落到 z0;b = 0 无倒角,d = z0 时只有正面(纯平面喷漆字)。内凹尖角用缩放系数 k 撑开,保证
+  //   外轮廓不会被削掉。
   function ribbon(g, pts, closed, hw, b, d, z0) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
     const N = pts.map((p, i) => {
@@ -198,6 +228,7 @@ export function register(D, H) {
     }
   }
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
+  // 【圆头 / 圆盘】笔画端点与转折处的圆帽:整盘(0..TAU)或朝向开口端的半盘。
   function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
     const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
@@ -217,6 +248,8 @@ export function register(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
+  // 【单字几何】按字帽高度为 1 的单位生成一个字符(基线 y=0,背面 z=0,正面 z=dep),返回 {几何, 字距};
+  //   dep = 0 时是纯平面喷漆字。粗笔画在转折处拆段并补圆盘,笔画越多越靠后错开一点点(叠压层次)。
   function glyph(ch, wt, dep, bev, ds = 10) {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -259,6 +292,8 @@ export function register(D, H) {
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
+  // 【排一行字】在当前框架内把一串字符沿 +Z 面朝外排开:立体字(凸字带倒角)或 flat: true 的平面漆字,
+  //   支持居中 / 左 / 右对齐、发光字(lit: 正面再叠一层亚克力灯面)。返回整行宽度(米)。
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
@@ -283,9 +318,13 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ building kit
+  // 【建筑构件库】维多利亚立面的一套通用部件,全部挂在局部 z = 0 的墙面上朝 +Z(除非窗台、雨罩、檐口,
+  //   凸出均不超过 0.12 m)。
   // Everything mounts on a wall at local z = 0 facing +Z (≤ 0.12 m proud unless it is a sill, hood or cornice).
   // Victorian sash window: stucco architrave, recessed dark glass, two sashes with glazing bars, bracketed sill,
   // optional hood (cornice / triangular / segmental pediment), keystone, lit blind (glows at dusk).
+  // 【竖铰链窗】灰泥窗框 + 内凹深色玻璃 + 双扇推拉窗(带格条)+ 托架窗台;可选雨罩(平檐 / 三角楣 /
+  //   弧形楣)、拱心石、黄昏发光的百叶帘;可加装铸铁小阳台。
   function sash(B, x, y, w, h, o = {}) {
     const fc = o.frame ?? K.trim, sc = o.sash ?? K.white, t = 0.12, dz = 0.05, Pm = o.ns ? NS('paint') : 'paint';
     pbox(B, NS('gloss'), o.glass ?? K.glass, w, h, 0.02, x, y + h / 2, 0.01);
@@ -328,6 +367,8 @@ export function register(D, H) {
     }
   }
   // round-headed window / door opening with archivolt + keystone (opening w wide, springing at y + h)
+  // 【圆拱门窗洞】宽 w 的圆头开口(拱脚在 y + h):拱缘线脚 + 拱心石 + 拱腹;可做双开大门(door 色 +
+  //   亮灯)或带扇形气窗 / 中梃 / 横梁的窗。
   function archOpening(B, x, y, w, h, o = {}) {
     const fc = o.frame ?? K.trim, r = w / 2;
     B.add(NS('gloss'), archPanelGeo(w, h, 12), o.glass ?? K.glass, x, y, 0.012, {});
@@ -359,6 +400,7 @@ export function register(D, H) {
     }
   }
   // flat pilaster with base + capital (wall z = 0), from y0 to y1
+  // 【扁壁柱】贴墙的扁柱:柱身 + 柱础 + 柱头,从 y0 到 y1。
   function pilaster(B, x, y0, y1, w = 0.4, c = K.trim, dz = 0.07) {
     pbox(B, 'paint', c, w, y1 - y0 - 0.3, dz, x, (y0 + y1) / 2, dz / 2);
     pbox(B, 'paint', c, w + 0.1, 0.18, dz + 0.04, x, y0 + 0.09, (dz + 0.04) / 2);
@@ -366,6 +408,7 @@ export function register(D, H) {
     pbox(B, 'paint', c, w + 0.16, 0.1, dz + 0.08, x, y1 - 0.06, (dz + 0.08) / 2);
   }
   // corner quoins down a vertical corner (along the wall at x, facing +Z), alternating long/short blocks
+  // 【转角隅石】竖向转角处交替长短的石块带,沿墙面 x 向下排。
   function quoins(B, x, y0, y1, side = 1, c = K.stoneDk) {
     let k = 0;
     for (let y = y0; y < y1 - 0.1; y += 0.4, k++) pbox(B, 'paint', c, k % 2 ? 0.34 : 0.52, 0.34, 0.035, x - side * (k % 2 ? 0.17 : 0.26), y + 0.19, 0.0175);
@@ -373,6 +416,8 @@ export function register(D, H) {
 
   // stone balustrade along +X (freestanding, centred on the run line): plinth, vase balusters, coping, piers every
   // `bay` m with ball finials or urns; a rail collider (kids blocked, shots / squids pass) unless col: false
+  // 【石制瓶柱栏杆】沿 +X 的自承重栏杆(压在走线正中):基座 + 花瓶形瓶柱 + 压顶;每隔 bay 米一根栏柱,
+  //   柱顶石球或盆栽石瓮;默认交栏杆型碰撞(col:false 关闭)。
   const BALU = [[0, 0], [0.068, 0], [0.068, 0.05], [0.048, 0.075], [0.043, 0.11], [0.07, 0.21], [0.076, 0.27], [0.062, 0.37], [0.04, 0.45], [0.036, 0.5], [0.05, 0.53], [0.064, 0.56], [0.064, 0.6], [0, 0.6]];
   function balustrade(B, L, o = {}) {
     const Hh = o.h ?? 0.95, c = o.c ?? K.stone, bay = o.bay ?? 2.6, nb = Math.max(1, Math.round(L / bay)), bl = L / nb;
@@ -395,15 +440,19 @@ export function register(D, H) {
     if (o.col !== false) COL(B, o.c0 ?? -pw / 2, 0, -0.2, L + (o.c1 ?? pw / 2), Hh + 0.1, 0.2, { rail: true });
   }
   // planted stone urn
+  // 【盆栽石瓮】石瓮 + 一团 foliage 绿植 + 一圈花球,放在栏柱顶、墙角等处。
   function urn(B, x, y, z, flowers = K.coral) {
     B.lathe('paint', K.stone, [[0, 0], [0.12, 0], [0.12, 0.04], [0.06, 0.08], [0.06, 0.14], [0.16, 0.2], [0.21, 0.32], [0.22, 0.4], [0.2, 0.42], [0, 0.42]], x, y, z, { seg: 10 });
     B.add('foliage', G_blob(0.2, 1, 3), K.leaf, x, y + 0.47, z, { sy: 0.7 });
     for (let i = 0; i < 5; i++) { const a = (i / 5) * TAU + 0.3; B.sph(NS('paint'), flowers, 0.045, x + Math.cos(a) * 0.14, y + 0.52 + (i % 2) * 0.04, z + Math.sin(a) * 0.14, { ws: 6, hs: 4 }); }
   }
+  // 【缓存的树冠团块】走 H.blobGeo 的噪声球团,follage 材质,全关共享同一份几何。
   const G_blob = (r, det, seed) => tpl(['blob', r, det, seed].map(kf).join('|'), () => H.blobGeo(r, det, seed));
 
   // cast-iron sea railing along +X (height 1.05): moulded posts with ball finials every ~1.8 m, rounded top rail,
   // bottom rail, dog bars, a band of rings under the top rail; collides as a thin wall (players can hop it)
+  // 【铸铁海栏杆】沿 +X 的海滨栏杆(高 1.05):约 1.8 m 一根带球形柱头的模铸立柱 + 圆扶手 + 底横杆 +
+  //   竖条 + 扶手下一排圆环;按薄墙碰撞(玩家可以翻越)。
   function ironRail(B, L, o = {}) {
     const Hh = o.h ?? 1.05, c = o.c ?? K.iron, nb = Math.max(1, Math.round(L / (o.bay ?? 1.8))), bl = L / nb;
     B.cyl('gloss', c, 0.028, L, L / 2, Hh, 0, { rz: HP, seg: 8, open: true });
@@ -427,8 +476,10 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ street furniture
+  // 【街道家具】路灯、长椅等可独立摆放的小道具。
   // Victorian seafront lamp standard: a coiled-dolphin cast-iron base on a stone plinth, fluted column with collars,
   // variant 0 = one lantern on top, 1 = scrolled crossarm with two lanterns, 2 = five-light candelabra
+  // 【路灯灯头】维多利亚海滨路灯顶端的那盏灯(灯杆另建):发光灯罩 + 六根护栅 + 铁顶,黄昏时点亮。
   function lantern(B, x, y, z, s = 1) {
     B.push(x, y, z, 0, 0, 0, s);
     B.lathe('gloss', K.ironDk, [[0, 0], [0.05, 0], [0.11, 0.06], [0.13, 0.1], [0.1, 0.12], [0, 0.12]], 0, 0, 0, { seg: 6 });
@@ -438,6 +489,7 @@ export function register(D, H) {
     B.sph('gloss', K.gold, 0.035, 0, 0.66, 0, { ws: 6, hs: 4 });
     B.pop();
   }
+  // 【海豚盘绕灯座】路灯底座:花岗岩基座 + 三段铁座;三只胖海豚盘绕柱脚,螺旋升起到上翘的尾鳍。
   function dolphinBase(B, c) {
     B.lathe('paint', K.granite, [[0, 0], [0.34, 0], [0.34, 0.1], [0.3, 0.14], [0.28, 0.3], [0.24, 0.34], [0, 0.34]], 0, 0, 0, { seg: 10 });
     B.lathe('gloss', c, [[0, 0.34], [0.2, 0.34], [0.2, 0.4], [0.14, 0.46], [0.11, 0.62], [0.13, 0.66], [0.09, 0.7], [0, 0.7]], 0, 0, 0, { seg: 10 });
@@ -450,6 +502,8 @@ export function register(D, H) {
       B.push(p[0], p[1], p[2], -(a0 + 2.2)); pbox(B, 'gloss', c, 0.02, 0.08, 0.12, 0, 0.02, 0, { rx: 0.4 }); B.pop();
     }
   }
+  // 【路灯】维多利亚海滨路灯:海豚盘绕铸铁灯座(见上)+ 凹槽灯柱 + 鎏金环;三种灯头——0 单灯、
+  //   1 双臂卷草双灯(沿 X 展开)、2 五头烛台式;可加悬挂花篮。仅灯座出碰撞,灯头黄昏点亮。
   D.tidewater_lamp = {
     desc: 'Victorian seafront lamp standard: granite plinth, three coiled cast-iron dolphins round the foot, fluted column with gilt collars; variant 0 single lantern on top, 1 scrolled crossarm with two lanterns (arm along X), 2 five-light candelabra. Lanterns glow at dusk. Base collides.',
     params: { color: 'iron paint', height: 'm (4.2)' }, variants: 3, mount: 'ground',
@@ -491,6 +545,7 @@ export function register(D, H) {
   };
 
   // seaside bench: cast-iron scroll ends (sea green), varnished slats, faces +Z; optional back-to-back pair
+  // 【长椅单元】铸铁卷花椅端(海绿色)+ 清漆木板坐面与靠背,面朝 +Z;variant 1 为背靠背双联。
   function benchUnit(B, L, c) {
     for (const fx of [-1, 1]) {
       const x = fx * (L / 2 - 0.08);
@@ -502,6 +557,7 @@ export function register(D, H) {
     for (let i = 0; i < 4; i++) B.box('wood', shade(K.woodLt, 0.92 + (i % 2) * 0.08), L, 0.035, 0.085, 0, 0.47, 0.17 - i * 0.105, { r: 0.012 });
     for (let i = 0; i < 3; i++) { B.push(0, 0.56 + i * 0.12, -0.215 - i * 0.03, 0, -0.25); B.box('wood', shade(K.woodLt, 0.95 + (i % 2) * 0.06), L - 0.05, 0.085, 0.03, 0, 0, 0, { r: 0.012 }); B.pop(); }
   }
+  // 【长椅】海边长椅(见 benchUnit);低矮小碰撞。
   D.tidewater_bench = {
     desc: 'Victorian seaside bench: sea-green cast-iron scroll ends, varnished slat seat + back, faces +Z. variant 1 = back-to-back pair. Low collider.',
     params: { length: 'm (1.9)', color: 'iron' }, variants: 2, mount: 'ground',
@@ -516,11 +572,13 @@ export function register(D, H) {
     },
   };
 
+  // 【石栏注册】把上面的 balustrade 建成可摆放道具;urns 参数 = 每隔第 N 根栏柱换盆栽石瓮。
   D.tidewater_balustrade = {
     desc: 'Portland-stone balustrade run along +X from pos: plinth, vase balusters, moulded coping, piers every ~2.6 m with ball finials (urns: every Nth pier carries a planted urn). Collides as a low wall (0.95 m) unless col:false.',
     params: { length: 'm (4)', h: 'm (0.95)', urns: 'N', col: 'bool', p0: 'first pier', p1: 'last pier' }, variants: 1, mount: 'ground',
     build(B, o) { balustrade(B, o.length ?? 4, o); },
   };
+  // 【海栏杆注册】把上面的 ironRail 建成可摆放道具。
   D.tidewater_searail = {
     desc: 'Sea-green cast-iron promenade railing along +X from pos (posts with ball finials, rings under the top rail, dog bars); collides as a thin 1.1 m wall.',
     params: { length: 'm (6)', col: 'bool' }, variants: 1, mount: 'ground',
@@ -528,8 +586,11 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ the Jubilee clock tower
+  // 【钟楼区段】下面开始是各大场景道具;先是 Jubilee 纪念钟楼。
   // dial: cream glass disc (glows at dusk), iron bezel, minute ring, hour batons (heavier at 12 / 3 / 6 / 9), gilt
   // spade hands at ten past ten, centre boss
+  // 【钟面】奶油色玻璃盘(黄昏发光)+ 铁圈 + 分刻环 + 12 根时标棒(3/6/9/12 加粗)+ 鎏金铲形指针,
+  //   永远指向十点十分(广告惯例),中心一颗铜毂。
   function clockFace(B, x, y, z, R, ry) {
     B.push(x, y, z, ry);
     B.add(NS('glow'), discGeo(R, 32), '#f6eedb', 0, 0, 0.02, { glow: 0.95 });
@@ -548,6 +609,9 @@ export function register(D, H) {
     B.cyl(NS('gloss'), K.gold, 0.05, 0.05, 0, 0, 0.07, { rx: HP, seg: 10 });
     B.pop();
   }
+  // 【Jubilee 纪念钟楼】给广场上 3.4 m 见方、11.3 m 高的塔身方块做装饰(自身四面循环建造,只放一次,
+  //   mirror:false):基座 ±Z 面是 JUBILEE 铜牌、±X 面是饮水喷泉;塔身有隅石、腰线、尖拱长窗;顶部
+  //   四面钟面、开放式钟亭(栏杆碰撞)+ 铜制葱形穹顶 + 灯亭 + 帆船风向标,总高约 18 m。
   D.tidewater_clocktower = {
     desc: 'Jubilee clock tower dressing for the 3.4 m square tower block (pos = centre of its base on the terrace, block rises 11.3 m): granite quoins, drinking-fountain troughs (±X) and JUBILEE plaques (±Z) on the plinth, string courses, tall lancet slots, four gabled clock stages with glowing dials, then (above the block) an open belfry with a bell, a balustrade, the copper ogee dome, a lantern and a ship weather vane (~18 m). Mirror-symmetric; place once (mirror:false).',
     params: {}, variants: 1, mount: 'ground',
@@ -650,9 +714,14 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ Town Hall / Custom House
+  // 【市政厅 / 海关大楼区段】广场两端各一栋。
   // pos = centre of the playable back wall face (local z = 0), building behind (local -z). The spawn loggia floor is
   // at y = 2.4 (x -9.5 … 9.5), the east wing's roof walk at 2.4 (x 9.5 … 22); the playable wall is 5.2 m tall.
   // variant 0 = TOWN HALL (Alpha's end), 1 = CUSTOM HOUSE (Bravo's end): same massing, own name + crest + colours.
+  // 【市政厅(0)/ 海关大楼(1)】pos 是可玩后墙正面的中心(局部 z = 0,楼体在 -z 一侧):下层是出生
+  //   凉廊与东翼屋顶步道后面的盲拱廊;5.2 m 可玩墙之上是一栋两层灰泥宫殿立面——中央巨柱式山花、
+  //   青铜楼名、带雨罩与小阳台的竖窗、瓶柱女儿墙、石板屋顶与天窗烟囱、旗杆;墙后补齐楼体体量供场外
+  //   远眺。上层整体按 roof 碰撞(保护相机)。
   D.tidewater_townhall = {
     desc: 'Town Hall (variant 0) / Custom House (1): blind arcade of glazed doors with fanlights behind the spawn loggia and the east wing walk, pilasters, lanterns; above the 5.2 m wall a two-storey stucco palazzo — giant-order centre pavilion with a pediment carrying the borough crest, the name in bronze letters on the frieze, sash windows with hoods and balconettes, balustraded parapet with urns, slate roof with dormers and chimneys, a flagstaff; building mass behind the wall for outside views. Upper storey collides (camera-safe).',
     params: {}, variants: 2, mount: 'ground',
@@ -749,7 +818,9 @@ export function register(D, H) {
     },
   };
   // ------------------------------------------------------------------------------------------ the Colonnade
+  // 【柱廊区段】新月楼(Crescent)侧的铸铁柱廊。
   // cast-iron column (foot at y = 0, abacus top at yTop): square plinth, fluted shaft with collars, bell capital
+  // 【铸铁柱】柱廊的单根立柱:方形柱础 + 凹槽柱身(两道环箍)+ 钟形柱头,柱脚在 y = 0。
   function ironColumn(B, x, z, yTop, c = K.iron) {
     B.box('gloss', c, 0.36, 0.28, 0.36, x, 0.14, z, { r: 0.03 });
     B.lathe('gloss', c, [[0.15, 0.28], [0.15, 0.34], [0.115, 0.4], [0.1, 0.48], [0.09, yTop - 0.55], [0.105, yTop - 0.5], [0.095, yTop - 0.44], [0.14, yTop - 0.32], [0.19, yTop - 0.2], [0, yTop - 0.2]], x, 0, z, { seg: 10 });
@@ -758,6 +829,8 @@ export function register(D, H) {
     B.box('gloss', c, 0.42, 0.2, 0.42, x, yTop - 0.1, z, { r: 0.02 });
   }
   // shopfront on a wall (z = 0, facing +Z), W wide centred on x = 0, fascia with the name; o.c = paint, o.sign = board
+  // 【店面】墙上宽 W 的单个商铺门面:两侧门垛 + 陈列橱窗(带气窗格带)+ 镶板门 + 带凸字招牌的楣板
+  //   + 托架;doorLeft 可把门挪到左侧。
   function shopfront(B, W, name, o = {}) {
     const c = o.c ?? K.navy, board = o.board ?? c, lc = o.lc ?? K.gold, Hs = o.h ?? 2.7;
     for (const sx of [-1, 1]) { pbox(B, 'paint', c, 0.2, Hs, 0.1, sx * (W / 2 - 0.1), Hs / 2, 0.05); pbox(B, 'paint', shade(c, 1.1), 0.26, 0.3, 0.16, sx * (W / 2 - 0.1), Hs - 0.02, 0.08); }
@@ -789,6 +862,8 @@ export function register(D, H) {
   }
   // wares by a shop door (a little cover on the covered walk): v 0 bucket-and-spade stand, 1 postcard spinner +
   // rock barrel, 2 fish-box of lettered rock + bins, 3 news + sweets stand
+  // 【店门口货品】骑楼下的零星小摊(兼作低掩体,带碰撞):0 水桶铁铲架、1 明信片旋转架 + 硬糖木桶、
+  //   2 字母硬糖鱼箱、3 报刊糖果摊。
   function wares(B, x, z, v) {
     B.push(x, 0, z);
     if (v === 0) {
@@ -820,12 +895,19 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ the Crescent
+  // 【新月楼区段】柱廊 + 三栋立面楼都跟随 layout 里折线形的店面线(COLO / chainSections):每一段在
+  //   自己的框架里装饰——局部 +z 沿该段(从栏杆线角点 q0 起),+x 向外(x = 0 是栏杆线,0.2 是柱,
+  //   DK 是店面,DK + 进深是店后墙)。
   // The colonnade + its three buildings follow the layout's bent shop-front line (COLO / chainSections): each section
   // is dressed in its own frame — local +z along the section (from its railing-line corner q0), local +x outward (the
   // railing line at x = 0, columns at 0.2, the shop fronts at DK, the shops' backs at DK + shops depth).
   const SECS = chainSections(COLO.front, -COLO.deck), DK = COLO.deck, YT = COLO.deckBot, DT = COLO.deckTop, BK = COLO.deck + COLO.shops;
   const secFrame = (B, s) => fpush(B, s.q0[0], 0, s.q0[1], (s.h * PI) / 180);
   const frontSpan = (s, i) => { const f0 = COLO.front[i], f1 = COLO.front[i + 1]; return [(f0[0] - s.q0[0]) * s.d[0] + (f0[1] - s.q0[1]) * s.d[1], (f1[0] - s.q0[0]) * s.d[0] + (f1[1] - s.q0[1]) * s.d[1]]; };
+  // 【铸铁柱廊】整组场景件(pos = 世界原点,只做 Alpha 半边,镜像副本自动装饰 Bravo 半边):沿三段折线
+  //   的每个开间与转角立凹槽海绿铸铁柱(柱身出 roof 碰撞),柱间椭圆拱 + 镂空拱肩,步道外缘的饰带,
+  //   横梁 + 垂灯;步道栏杆仅为视觉(碰撞由 layout 承载);还有北端的登陆码头、中段楼梯的铁扶手
+  //   (rail 碰撞)与开口端的石柱。
   D.tidewater_colonnade = {
     desc: 'The Crescent’s cast-iron colonnade (site piece, pos = world origin, Alpha half; mirrored copy dresses Bravo’s): fluted sea-green columns (collide) at every bay and bend of the three bent sections, elliptical arches with pierced spandrels, the frieze on the terrace-walk edge, transverse girders + pendant lanterns, the walk railing (visual; the layout carries the rail collision), the landing pier, the mid stair’s handrail (rail collision), the open end’s stone piers.',
     params: {}, variants: 1, mount: 'ground',
@@ -882,7 +964,9 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ the Crescent's frontage
+  // 【新月楼立面区段】店面 + 露台上方三栋楼的立面。
   // bay window (projects from the wall, first floor and up): canted sides, sashes, cornice + lead roof
+  // 【凸肚窗】自墙面挑出的梯形凸窗(一楼起):斜侧 + 竖窗 + 檐口 + 铅皮顶。
   function bayWindow(B, x, y, w, h, c, o = {}) {
     const d = 0.55, sw = 0.45;
     B.box('paint', c, w, 0.3, d, x, y - 0.15, d / 2, { r: 0.03 });
@@ -894,6 +978,7 @@ export function register(D, H) {
     pbox(B, NS('paint'), K.white, w - 0.2, 0.05, d, x, y + h * 0.62, d / 2 - 0.02);
     if (o.lit) pbox(B, NS('glow'), K.lamp, w - sw * 1.4, h * 0.25, 0.004, x, y + h * 0.84, d - 0.005, { glow: o.lit });
   }
+  // 【店面名单】九家骑楼商铺(名字 / 油漆色 / 字色 / 额外项),arcadefront 按顺序循环取用。
   const SHOPS = [
     ['PENNY ARCADE', '#7a3b67', K.yellow, { glowLetters: 1.4, glowC: '#ffd27a', lit: 1.2 }],
     ['ROCK SHOP', '#e8a7b8', '#8a2f52', {}],
@@ -905,6 +990,9 @@ export function register(D, H) {
     ['SWEETS', '#c97a9a', K.white, {}],
     ['THE ANCHOR', '#2f4a3a', K.gold, { lit: 0.9 }],
   ];
+  // 【新月楼立面】整组场景件(pos = 世界原点,Alpha 半边):骑楼下九个店面(门口货品 = 低掩体、带碰撞)
+  //   + 挑出招牌;露台步道上方是三栋沿折线的楼——0 段是带凸肚窗的海滨住宅、1 段是 GRAND HOTEL(玻璃
+  //   雨棚、屋顶发光字)、2 段是端头的八角角楼;石板屋顶、烟囱、天窗与朝海背立面。
   D.tidewater_arcadefront = {
     desc: 'The Crescent’s frontage (site piece, pos = world origin, Alpha half): nine shopfronts on the covered walk (PENNY ARCADE … THE ANCHOR) with wares out front (small cover, collides) and blade signs, then above the terrace walk the three buildings of the bent terrace: seaside houses with bay windows, the GRAND HOTEL (glazed canopy, parapet, roof letters), a turreted corner house at the mid end; slate roofs, chimneys, dormers, the sea-side backs.',
     params: {}, variants: 1, mount: 'ground',
@@ -986,9 +1074,14 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ the bandstand
+  // 【乐队亭区段】
   // on the 1 m octagonal stage (OCT R 3.8, flat faces on ±X / ±Z, steps on ±Z): eight cast-iron columns at the
   // vertices, railings on the six faces without steps (collide), fretwork frieze, an ogee roof with a cresting and a
   // lantern cupola, music stands + chairs, pendant lamps; grilles on the stage's plinth faces
+  // 【乐队亭】给广场上 1 m 高的八角形台子(R 3.8,±X / ±Z 是平面,±Z 面是台阶)做装饰:八角各一根
+  //   铸铁柱(柱身碰撞),无台阶的六个面装栏杆(rail 碰撞),镂空拱饰带,奶油 + 珊瑚双曲屋面 + 脊饰 +
+  //   灯亭与里拉琴风向标;台上有乐谱架、椅子、吊灯和大鼓定音鼓;台基立面是铸铁格栅。屋面按 roof 禁入
+  //   (防止 Ink Jet / 滑索落顶)。
   D.tidewater_bandstand = {
     desc: 'Victorian bandstand dressing for the octagonal 1 m stage (pos = stage centre at ground level, R 3.8): eight sea-green cast-iron columns (collide), railings on the six step-less faces (collide), fretwork frieze, cream + coral ogee roof with cresting, cupola lantern and lyre vane, music stands and chairs, pendant lanterns; cast-iron grilles on the plinth faces.',
     params: { R: 'circumradius (3.8)' }, variants: 1, mount: 'ground',
@@ -1074,6 +1167,10 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ the fountain
+  // 【喷泉区段】
+  // 【广场喷泉】市政厅广场中央的大喷泉(pos = 中心):4.8 m 花岗岩水盆(0.34 m 边沿,可直接跨过)+
+  //   水面;中央是多层铸铁喷泉——海豚底座、花瓣形下水盘、上水盘、鎏金帆船顶饰,配跌水水帘;底座与
+  //   下水盘出碰撞(作战掩体)。
   D.tidewater_fountain = {
     desc: 'Town Hall Square fountain (pos = centre): granite basin 4.8 m across (0.34 m kerb, walk-over), water, a tiered cast-iron fountain — dolphin pedestal, scalloped lower bowl, upper bowl, gilt ship finial — with falling water; the pedestal + lower bowl collide (cover).',
     params: {}, variants: 1, mount: 'ground',
@@ -1119,9 +1216,13 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ promenade shelter
+  // 【海滨避雨亭区段】
   // cross-plan glazed shelter on the cross of stucco screens (level blocks, 1.15 m, centred on pos): glazed screens
   // above them (collide, so the walls can't be stood on), a bench in each bay facing out, four iron corner columns
   // (collide), a hipped slate roof with a coral fascia, a gilt finial, a clock on the seaward gable
+  // 【避雨亭】十字形平面的玻璃亭,架在 1.15 m 高的十字灰泥矮墙(关卡方块)上(pos = 中心):矮墙之上的
+  //   白框玻璃屏(出碰撞,墙头不可站)、四个朝向外的开间各一条长椅(碰撞)、四角铸铁柱(碰撞)、石板
+  //   四坡顶 + 珊瑚色镂空檐带 + 鎏金顶饰。屋顶整体 roof 禁入。
   D.tidewater_shelter = {
     desc: 'Cross-plan promenade shelter over the 5 × 5 m cross of 1.15 m stucco screens (pos = centre): white-framed glazed screens above the walls (collide), four bays with benches (collide), iron corner columns (collide), hipped slate roof with a coral fretwork fascia and a finial.',
     params: {}, variants: 1, mount: 'ground',
@@ -1167,6 +1268,10 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ the ice-cream kiosk
+  // 【冰淇淋亭区段】
+  // 【冰淇淋亭】2.6 m 见方、2.5 m 高的方块上做装饰(pos = 块底中心):朝广场与出生区的两侧是带条纹
+  //   雨棚的售卖窗、菜单板;窗口旁一台冷藏柜(碰撞);平屋顶一圈扇贝形檐带(乌贼专属落脚点),屋顶
+  //   立着巨型 99 甜筒雕塑(碰撞,全关地标);墙上有海报贴花。
   D.tidewater_icecream = {
     desc: 'Ice-cream kiosk dressing on the 2.6 m square, 2.5 m block (pos = block base centre): serving hatches with striped awnings on the plaza + spawn-facing sides, menu boards, a chest freezer (collides), a scalloped canopy valance round the flat roof (a squid-only perch) and a giant 99 cone sculpture on the roof (collides), wall posters.',
     params: {}, variants: 1, mount: 'ground',
@@ -1212,6 +1317,10 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ tea rooms
+  // 【茶室区段】
+  // 【茶室】4 × 4 m、2.8 m 高的方块上做装饰(pos = 块底中心):四面拱形玻璃凸窗间、玻璃门廊;广场一侧
+  //   (-X)是铁柱支起的游廊雨棚 + TEA ROOMS 招牌;四坡屋顶 + 铜皮灯亭(roof 禁入);门外咖啡座桌椅
+  //   与条纹遮阳伞(低掩体,碰撞)。
   D.tidewater_tearooms = {
     desc: 'Tea rooms pavilion on the 4 × 4 m, 2.8 m block (pos = block base centre): arched glazed bays on all sides, a glass entrance porch, a verandah canopy on iron posts on the plaza side, a hipped roof with a lantern cupola and TEA ROOMS letters (roof collides), café tables + parasols outside (cover, collide).',
     params: {}, variants: 1, mount: 'ground',
@@ -1248,6 +1357,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ floral clock + border
+  // 【花钟与花坛区段】
+  // 【花床撒花】在 w × d 范围内用种子随机撒 n 团小花球(颜色取自 cols 表)。
   function flowerBed(B, w, d, y, seed, cols) {
     const n = Math.round(w * d * 5), rnd = H.mulberry32(seed);
     for (let i = 0; i < n; i++) {
@@ -1255,6 +1366,8 @@ export function register(D, H) {
       B.sph(NS('foliage'), cols[Math.floor(rnd() * cols.length)], 0.07 + rnd() * 0.05, x, y + 0.04, z, { ws: 5, hs: 3 });
     }
   }
+  // 【花钟】4.4 m 见方、0.7 m 石边花坛上的倾斜花钟(pos = 花坛中心):五色花坛圆盘铺成表盘(数字是深色
+  //   叶丛棒)、巨型铁指针、铜牌;倾斜坡面交一个斜置碰撞(低矮掩体)。
   D.tidewater_floralclock = {
     desc: 'Floral clock on the 4.4 m square, 0.7 m kerbed bed (pos = bed centre on the ground): a tilted dial of bedding plants in rings (numerals as dark leaf batons), giant iron hands, a bronze plaque, box-hedge border. A raked collider over the dial (cover).',
     params: {}, variants: 1, mount: 'ground',
@@ -1281,6 +1394,8 @@ export function register(D, H) {
       B.push(hw + 0.06, 0.35, 0, HP); letters(B, 'FLORAL CLOCK', { h: 0.05, x: 0, y: 0, z: 0, c: K.gold, flat: true, wt: 0.24, track: 0.1, mat: 'metal' }); B.pop();
     },
   };
+  // 【高花坛】W × D、高 h 的石边抬高花坛(pos = 中心):密植花境(珊瑚、奶油、紫、黄)、三株朱蕉、
+  //   四颗修剪黄杨球,外侧插一块 TIDEWATER IN BLOOM 标牌。
   D.tidewater_border = {
     desc: 'Raised flower border on a W × D stone-kerbed bed of height h (pos = bed centre on the ground): massed bedding (coral, cream, violet, yellow), cordyline palms, clipped box balls, a TIDEWATER IN BLOOM sign.',
     params: { w: 'm (6)', d: 'm (5)', h: 'm (0.9)' }, variants: 1, mount: 'ground',
@@ -1303,6 +1418,9 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ anchor memorial
+  // 【船锚纪念碑区段】
+  // 【船锚纪念碑】救生艇队纪念碑(pos = 2.2 m 见方花岗岩基座中心):基座四面铜牌(IN MEMORIAM /
+  //   LOST AT SEA),上立黑色海军锚 + 垂链花彩、月桂花环;锚身整体 roof 碰撞。
   D.tidewater_anchor = {
     desc: 'Lifeboat memorial on the 2.2 m square, 1.0 m granite plinth (pos = plinth base centre): a great black admiralty anchor standing on it with a chain swag, bronze plaques, a wreath.',
     params: {}, variants: 1, mount: 'ground',
@@ -1330,8 +1448,12 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ stair + wall dressing
+  // 【楼梯与墙面装饰区段】
   // stone balustrade following a flight along +X from height ya (x = 0) to yb (x = L), on the flight's open edge; a
   // skirt panel (facing local +Z, skirtZ behind pos) over the flight's side face below it; stepped colliders
+  // 【坡道石栏】沿 +X 爬升的楼梯侧边石栏:从 pos(x = 0,高 ya)到远端(x = L,高 yb),两端栏柱 + 石球,
+  //   斜压顶顺坡,瓶柱随行;碰撞按阶梯步进式提交。下方顺带做梯段侧裙板:朝局部 +Z 的挂板 + 斜梁 +
+  //   粗石砌缝(rusticated),裙板位置由 skirtZ 控制。
   function rampBalustrade(B, L, ya, yb, o = {}) {
     const c = o.c ?? K.stone, Hh = o.h ?? 0.95, sl = Math.atan2(yb - ya, L), len = Math.hypot(L, yb - ya), yAt = (x) => ya + (yb - ya) * (x / L);
     if (o.rail !== false) {
@@ -1358,6 +1480,7 @@ export function register(D, H) {
       for (let x = 0.9, k = 0; x < L - 0.3; x += 0.9, k++) { const top = Math.min(ya + (yb - ya) * (x / L), 99) - 0.3; for (let y = 0.6 + (k % 2) * 0.42; y < top - 0.42; y += 0.84) pbox(B, NS('paint'), shade(c, 0.74), 0.03, 0.42, 0.02, x, y + 0.21, zS + 0.012); }
     }
   }
+  // 【坡道石栏注册】rail:false 只留裙板、skirt:false 只留栏杆。
   D.tidewater_rampbal = {
     desc: 'Stone balustrade on a flight’s open edge: runs along +X from pos, from height ya to yb over `length` (piers + ball finials at both ends, raking coping, balusters), with a skirt over the flight’s side face (rail:false = skirt only); stepped colliders.',
     params: { length: 'm', ya: 'm at pos', yb: 'm at the far end', col: 'bool', rail: 'bool', skirt: 'bool', skirtZ: 'm behind pos (0.22)' }, variants: 1, mount: 'ground',
@@ -1365,12 +1488,16 @@ export function register(D, H) {
   };
   // rusticated stone wall dressing on a block face (wall z = 0, W wide centred on x = 0, Hh tall): channelled courses,
   // a plinth, optional blind arches / doors
+  // 【粗石墙面】给方块墙面做粗石饰面(z = 0、宽 W、高 Hh):水平凿缝分皮 + 墙基线脚 + 顶部压顶线。
   function rusticate(B, W, Hh, o = {}) {
     const c = o.c ?? K.stone;
     B.add('paint', ext('plinthR', PROF.plinth, W), shade(c, 0.9), 0, 0, 0, {});
     for (let y = 0.6; y < Hh - 0.1; y += 0.45) pbox(B, NS('paint'), shade(c, 0.82), W, 0.035, 0.02, 0, y, 0.008);
     if (o.cap !== false) B.add('paint', ext('capR', PROF.string, W + 0.04), K.trim, 0, Hh - 0.12, 0, {});
   }
+  // 【市政厅基座层】出生台下方的地面层装饰(pos = 世界原点,Alpha 半边):阳台正面的粗石入口拱门 +
+  //   双灯 + 楼名铜牌;凉廊朝海与朝凹口的两侧墙;东翼正面的盲拱 + 边门 + 告示板;东段楼梯后的凹角里
+  //   是自行车架、垃圾桶与路灯(均带碰撞)。
   D.tidewater_townhallbase = {
     desc: 'Town Hall ground storey under the spawn (site piece, pos = world origin, Alpha half): the balcony front with the rusticated entrance arch + doors, lanterns and a plaque; the east wing front with blind arches + a side door; the wing-steps block’s side; bike stands, a notice board and bins in the nook behind the east flight.',
     params: {}, variants: 1, mount: 'ground',
@@ -1412,6 +1539,11 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ the lifeboat station
+  // 【救生艇站区段】
+  // 【救生艇站】探出海堤尖端的独立石码头上的救生艇站(pos = 正立面中心,正面朝 +Z;场外景物,无碰撞):
+  //   15.5 × 7.6 m、6.2 m 高的站房——粗石基座、山墙与 LIFEBOAT STATION 字牌、船员门、窗、告示板与铜钟;
+  //   石板屋顶 + 东端八角瞭望塔(彩旗杆);local -X 端的船库大门敞开,木滑道一路伸进海里,滑道上
+  //   停着放在托架上的救生艇(放样船体 + 橙色舷带 + 蓝色警灯)。
   D.tidewater_lifeboat = {
     desc: 'Lifeboat station out on its own stone jetty off the tip of the promenade (pos = centre of its front at the foot, front faces +Z; out of play, no collision): the 15.5 × 7.6 m, 6.2 m house — gable, LIFEBOAT STATION letters, crew door, windows, service boards, the old bell — roofs + the octagonal lookout tower with its flagstaff, the boat-hall doors (local -X end) open onto a slipway running down into the sea with the lifeboat on its cradle.',
     params: {}, variants: 1, mount: 'ground',
@@ -1520,8 +1652,13 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ pier gate + the pier
+  // 【码头大门与栈桥区段】
   // pos = the gate centre on the sea edge (x = -25 side for Alpha's promenade, gate spanning local z -2.5 … 2.5,
   // the pier running out along local -X). The booths either side are level blocks (3 × 3 × 2.6).
+  // 【码头】入口收费亭 + 海上栈桥(pos = 海缘大门中心,栈桥沿 local -X 伸向海里;两侧 3 × 3 × 2.6 收费亭
+  //   是关卡方块):亭身粗石饰面、穹顶亭阁(roof 禁入);两亭之间是铁艺拱门 + 发光栈桥名(0 PALACE
+  //   PIER / 1 VICTORIA PIER)+ 关闭的装饰铁门(rail 碰撞);海上部分(场外,无碰撞)是铸铁桥墩 + 斜撑
+  //   上的木板桥面、两侧栏杆与路灯、半途的双亭,以及尽头带洋葱穹顶和四角塔楼的大舞厅。
   D.tidewater_pier = {
     desc: 'Pier gate + pier (pos = gate centre on the promenade edge, pier out along local -X): booth dressing (turnstile windows, clocks, pay boards, domed cupolas), a lit wrought-iron arch with the pier’s name, closed ornamental gates (collide), then the pier over the sea: cast-iron legs + bracing, a planked deck with railings and lamps, twin kiosks halfway, and the domed pavilion at the end with flags. variant 0 PALACE PIER, 1 VICTORIA PIER.',
     params: {}, variants: 2, mount: 'ground',
@@ -1624,7 +1761,9 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ seaside furniture
+  // 【海滨小件区段】咖啡桌、潘趣木偶戏台等。
   // café table: iron pedestal, marble top, three bistro chairs, a striped parasol (st 0 teal, 1 coral)
+  // 【咖啡桌】铁座大理石面圆桌 + 三把法式小椅 + 条纹遮阳伞(0 青绿、1 珊瑚);桌面低碰撞(掩体)。
   function cafeTable(B, x, y, z, st) {
     B.push(x, y, z);
     B.cyl('metal', K.ironDk, 0.03, 0.72, 0, 0.36, 0, { seg: 6 });
@@ -1637,12 +1776,15 @@ export function register(D, H) {
     B.blob(1.8, 1.8);
     B.pop();
   }
+  // 【咖啡桌注册】cafeTable 的独立摆放版,variant 选伞色。
   D.tidewater_cafe = {
     desc: 'Café table (marble top on an iron pedestal) with three bistro chairs and a striped parasol; the table collides (low cover). variant 0 teal, 1 coral.',
     params: {}, variants: 2, mount: 'ground',
     build(B, o) { cafeTable(B, 0, 0, 0, (o.variant ?? 0) % 2); },
   };
 
+  // 【潘趣木偶戏台】红白条纹帆布亭(pos 朝 +Z):鎏金舞台框 + 红色幕布 + PUNCH & JUDY 字牌,台上有
+  //   潘趣先生和鳄鱼的小偶;整体碰撞(掩体)。
   D.tidewater_punchjudy = {
     desc: 'Punch & Judy booth (front +Z): red-and-white striped canvas tower on a frame, a gilt proscenium with PUNCH & JUDY letters, curtains, Mr Punch and his crocodile, a swazzle-man’s bottle bag; collides (cover).',
     params: {}, variants: 1, mount: 'ground',
@@ -1683,6 +1825,7 @@ export function register(D, H) {
       B.blob(W + 0.8, Dd + 0.8);
     },
   };
+  // 【投币望远镜】海滨双筒观景镜,立在凹槽铸铁柱上,面朝 +Z;小碰撞。
   D.tidewater_telescope = {
     desc: 'Coin-operated seafront binocular viewer on a fluted cast-iron pedestal, faces +Z; small collider.',
     params: {}, variants: 1, mount: 'ground',
@@ -1699,6 +1842,7 @@ export function register(D, H) {
       B.blob(0.7, 0.7);
     },
   };
+  // 【潮汐牌】挂在海栏杆上的潮位告示:白色标尺柱 + 潮汐时刻表(带小檐)+ 铜壳潮汐钟;仅柱身碰撞。
   D.tidewater_tidegauge = {
     desc: 'Harbour tide board on the sea railing: a tall white post with a painted metre scale, a TIDE TABLE board with high/low water times and a little hood, a brass tide-clock dial. Non-colliding apart from the post.',
     params: {}, variants: 1, mount: 'ground',
@@ -1715,6 +1859,7 @@ export function register(D, H) {
       COL(B, -0.12, 0, -0.08, 0.12, 2.6, 0.08, { roof: true });
     },
   };
+  // 【六角邮筒】维多利亚六角红柱邮筒:王冠顶饰 + VR 花押 + 投信口 + 取信铭牌;碰撞。
   D.tidewater_pillarbox = {
     desc: 'Victorian hexagonal pillar box (red, crowned cap with acanthus bud, VR cypher, posting slit, collection plate); collides.',
     params: {}, variants: 1, mount: 'ground',
@@ -1730,6 +1875,8 @@ export function register(D, H) {
       B.blob(0.9, 0.9);
     },
   };
+  // 【公共气压计】波特兰石方尖碑柱 + 大无液气压计表盘(双面,黄昏发光)+ 温度计 + 潮汐时刻铜牌,
+  //   柱顶一盏灯;整体碰撞(掩体)。
   D.tidewater_barometer = {
     desc: 'The public barometer: a Portland-stone obelisk pillar on a stepped base with a big aneroid barometer dial (glows at dusk), a thermometer, a tide-time plaque and a gas lamp on top; collides (cover).',
     params: {}, variants: 1, mount: 'ground',
@@ -1755,6 +1902,7 @@ export function register(D, H) {
       B.blob(1.4, 1.4);
     },
   };
+  // 【游船售票亭】BOAT TRIPS 六角木亭:玻璃售票窗 + 票价板 + 钟形弧顶 + 三角旗;碰撞(掩体)。
   D.tidewater_boattrips = {
     desc: 'BOAT TRIPS booking kiosk: hexagonal timber booth (2 m across) with a glazed hatch, fare boards, a bell-cast roof and a pennant; collides (cover).',
     params: {}, variants: 1, mount: 'ground',
@@ -1780,6 +1928,7 @@ export function register(D, H) {
       B.blob(2.6, 2.6);
     },
   };
+  // 【盆栽石瓮(独立版)】方座上的盆栽石瓮,高 1.3 m;碰撞。
   D.tidewater_urn = {
     desc: 'Planted Portland-stone urn on a square pedestal (1.3 m), bedding flowers; collides.',
     params: { color: 'flowers' }, variants: 1, mount: 'ground',
@@ -1794,6 +1943,7 @@ export function register(D, H) {
 
 
   // granite band / kerb laid flush in the paving along +X from pos (w wide, 2 cm proud): covers pattern seams
+  // 【花岗岩嵌带】嵌在铺装里与地齐平的花岗岩带(宽 w,仅凸出 2 cm):用来盖住铺装分格的接缝;无碰撞。
   D.tidewater_kerb = {
     desc: 'Granite band laid in the paving along +X from pos (length, width w), 2 cm proud; non-colliding.',
     params: { length: 'm', w: 'm (0.36)' }, variants: 1, mount: 'ground',
@@ -1803,6 +1953,8 @@ export function register(D, H) {
     },
   };
 
+  // 【路标 fingerpost】铸铁指路柱(王冠顶饰),三层指向臂(PIER / TOWN HALL / BANDSTAND 等),臂的
+  //   角度用 arms 参数 [[字, 偏航度], …] 指定;柱身碰撞。
   D.tidewater_fingerpost = {
     desc: 'Cast-iron fingerpost with a crown finial and three or four pointing arms (PIER, TOWN HALL, BANDSTAND, LIFEBOAT, TEA ROOMS, PROMENADE); arm angles via `arms` [[label, deg], …]. Post collides.',
     params: { arms: '[[label, yaw deg], …]' }, variants: 1, mount: 'ground',
@@ -1825,6 +1977,7 @@ export function register(D, H) {
       B.blob(0.6, 0.6);
     },
   };
+  // 【炮管缆桩】铸铁炮筒形系缆桩(倒插的旧炮),带碰撞;count / step 可沿 +X 连排摆放。
   D.tidewater_bollard = {
     desc: 'Cast-iron cannon bollard (a muzzle-down old cannon, painted), collides; `count` of them along +X every `step` m.',
     params: { count: '1', step: 'm (1.4)' }, variants: 1, mount: 'ground',
@@ -1838,6 +1991,7 @@ export function register(D, H) {
       }
     },
   };
+  // 【排水井盖】嵌在铺装里的圆形铸铁雨水口 / 煤井盖;无碰撞。
   D.tidewater_drain = {
     desc: 'Round cast-iron gully cover / coal-hole plate flush in the paving (no collider).',
     params: { r: 'm (0.3)' }, variants: 1, mount: 'ground',
@@ -1849,6 +2003,7 @@ export function register(D, H) {
   };
 
 
+  // 【矮柱头灯】栏杆栏柱顶上的小灯柱(铸铁柱 + 灯),用于石栏柱端。
   function pierLamp(B, x, y, z) {
     B.lathe('gloss', K.iron, [[0, 0], [0.14, 0], [0.14, 0.06], [0.09, 0.12], [0.06, 0.2], [0.05, 0.85], [0.07, 0.9], [0, 0.92]], x, y, z, { seg: 8 });
     B.tor(NS('gloss'), K.gold, 0.055, 0.012, x, y + 0.3, z, { rx: HP, rs: 3, ts: 8 });
@@ -1856,6 +2011,8 @@ export function register(D, H) {
   }
 
   // pollarded London plane in a cast-iron tree grate with a hooped guard; trunk collides
+  // 【行道树】重剪头悬铃木:斑驳树干 + 五根结果枝球,约 3.5 m 高处一团团 foliage 叶簇(宽约 5 m);
+  //   树下是方形铸铁树篦 + 环形护树栏;树干碰撞,护树栏是 rail 型碰撞。s 是整体缩放。
   D.tidewater_tree = {
     desc: 'Pollarded London plane: mottled trunk with knuckled pollard heads, a cloud of leaf clusters (≈ 3.5 m up, 5 m across), a square cast-iron tree grate + hooped guard; the trunk collides.',
     params: { s: 'size (1)' }, variants: 2, mount: 'ground',
@@ -1880,6 +2037,8 @@ export function register(D, H) {
     },
   };
 
+  // 【路名牌】墙面铸铁路牌(z = 0,pos = 牌中心):白珐琅底 + 黑字 + 珊瑚色腰线(或全铜版 bronze:true),
+  //   text 主行 + sub 副行。
   D.tidewater_streetname = {
     desc: 'Cast-iron street name plate on a wall (z = 0, pos = plate centre): white enamel, black letters, a coral key line, fixing bolts; text param.',
     params: { text: 'TIDEWATER PLAZA', sub: 'second line (optional)' }, variants: 1, mount: 'wall',
@@ -1896,6 +2055,8 @@ export function register(D, H) {
   };
 
   // a herring gull perched on something (pos = its feet), facing +Z; variant 1 = hunched, 2 = calling (beak up)
+  // 【海鸥】歇在某物上的银鸥(pos = 脚的位置,面朝 +Z):白身灰翅黑尖、黄喙红斑、粉腿;
+  //   variant 1 缩头团身、2 仰头鸣叫。无碰撞。
   D.tidewater_gull = {
     desc: 'Herring gull perched (pos = feet), faces +Z: white body, grey back + wings with black tips, yellow beak with a red spot, pink legs. variant 1 hunched, 2 calling. No collider.',
     params: {}, variants: 3, mount: 'ground',
@@ -1916,6 +2077,7 @@ export function register(D, H) {
 
 
 
+  // 【救生艇捐款箱】红柱上搁着一艘小救生艇的募捐箱;碰撞,顶面禁入。
   D.tidewater_rnlibox = {
     desc: 'Lifeboat collection box: a little navy-and-orange lifeboat on a red pillar (collides, off-limits top).',
     params: {}, variants: 1, mount: 'ground',
@@ -1931,12 +2093,17 @@ export function register(D, H) {
     },
   };
 
+  // 【收尾】把本包注册的所有 tidewater_ 道具都套上 def 防护(每个 build 前清空碰撞帧栈)。
   for (const k of Object.keys(D)) if (k.startsWith('tidewater_')) def(D[k]);
 }
 
 // ------------------------------------------------------------------------------------------ placements
+// 【摆放清单】Alpha 半边的全部摆放条目(除 mirror:false 外自动镜像到 Bravo 半边)。沿曲线排布的装饰
+//   (海滨新月弧、露台环、柱廊分段)直接由 layout 的几何量生成,保证栏杆、路灯、长椅精确落在曲线上。
 // Alpha's half (mirrored automatically unless mirror:false). Curve-following dressing is generated from the layout's
 // geometry (PROM crescent, TERR ring, COLO sections) so railings, lamps and benches sit exactly on the curves.
+// 【角度换算与曲线工具】polar 按圆心 + 极角求点;runRot / faceRot 把"沿线段方向 / 朝向"换算成 rotY;
+//   SECT / onSec 把柱廊分段参数 (x 横向, z 沿段) 换算成世界坐标。
 const D2R = Math.PI / 180;
 const polar = (c, r, a) => [c[0] + r * Math.cos(a * D2R), c[1] + r * Math.sin(a * D2R)];
 const runRot = (p, q) => Math.atan2(-(q[1] - p[1]), q[0] - p[0]);          // rotY so local +X runs from p to q
@@ -1946,6 +2113,8 @@ const SECT = chainSections(COLO.front, -COLO.deck);
 const onSec = (i, x, z) => { const s = SECT[i]; return [s.q0[0] + s.d[0] * z + s.n[0] * x, s.q0[1] + s.d[1] * z + s.n[1] * x]; };
 const out = [];
 // ---- the promenade crescent: sea railing chords, lamps with baskets, bunting, benches + deckchairs facing the bay
+// 【海滨新月弧】沿弧外缘逐弦摆海栏杆,加上花篮路灯、灯间彩旗、面海长椅、投币望远镜、救生圈、潮汐牌、
+//   垃圾箱、沙滩椅,以及栏杆顶和灯臂上的海鸥。
 {
   const c = PROM.c, rR = PROM.rOut - 0.16, a0 = 181.9, a1 = PROM.a1, n = 13, da = (a1 - a0) / n;
   for (let i = 0; i < n; i++) {
@@ -1971,6 +2140,7 @@ const out = [];
   { const a = 210, p = polar(c, PROM.rOut - 0.65, a), t = [-Math.sin(a * D2R), Math.cos(a * D2R)]; out.push({ type: 'tidewater_gull', pos: [p[0] + t[0] * 0.45, 3.8, p[1] + t[1] * 0.45], rotY: 0.6 }); }
 }
 // ---- the round terrace (single, mirror:false): balustrade chords round the ring, open at the four flights
+// 【圆形露台环】(单独摆放,mirror:false):沿环逐弦摆石栏,四条楼梯口留空;栏柱上交替石瓮,环上落一只海鸥。
 {
   const skip = new Set([7, 8, 9, 16, 17, 18, 25, 26, 27, 34, 35, 0]), r = TERR.rOut - 0.22;
   for (let i = 0; i < TERR.n; i++) {
@@ -1982,6 +2152,7 @@ const out = [];
   out.push({ type: 'tidewater_gull', pos: [g[0], TERR.top + 0.95, g[1]], rotY: -0.9, variant: 1, mirror: false });
 }
 // ---- the Crescent's terrace walk: café tables, benches against the frontage, a viewer at the open end
+// 【新月楼步道露台】沿三段柱廊摆咖啡桌、靠立面的长椅、开口端的望远镜,以及栏杆上的一只海鸥。
 {
   const tbl = [[0, 2.6, 0.5], [1, 2.6, 0.3], [1, 2.6, 0.72], [2, 2.7, 0.62]];
   tbl.forEach(([i, x, t], k) => { const p = onSec(i, x, SECT[i].len * t); out.push({ type: 'tidewater_cafe', pos: [p[0], COLO.deckTop, p[1]], variant: k % 2 }); });
@@ -1989,7 +2160,9 @@ const out = [];
   { const p = onSec(2, 1.2, SECT[2].len - 0.9); out.push({ type: 'tidewater_telescope', pos: [p[0], COLO.deckTop, p[1]], rotY: 0.2 }); }
   { const s = SECT[1], p = onSec(1, 0.08, s.len * 0.4); out.push({ type: 'tidewater_gull', pos: [p[0], COLO.deckTop + 1.03, p[1]], rotY: 1.9, variant: 1 }); }
 }
+// 【SQL 快捷函数】把 pos 抬到广场铺装面高度 SQ。
 const SQL = (x, z, o) => ({ pos: [x, SQ, z], ...o });
+// 【主体摆放清单】广场上的各大道具与家具;末尾展开前面生成的曲线装饰数组 out。
 export const PLACEMENTS = [
   // ---- the clock tower (single, self-symmetric) on its dais
   { type: 'tidewater_clocktower', pos: [0, TERR.daisTop, 0], rotY: 0, top: 12.5 - TERR.daisTop, mirror: false },

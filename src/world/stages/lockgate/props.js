@@ -1,3 +1,38 @@
+// ============================================================================
+// 【中文导读】Lockgate Canals(船闸运河)关卡道具包
+//
+// 【模块定位】stages/lockgate/props.js 是 Lockgate 关卡的专属道具包,与全局
+//   props-marina-dock.js 同一契约:register(D, H) 向 PropKit 类型表 D 注册
+//   本关特有道具(类型名一律带 'lockgate_' 前缀);H 提供 THREE 与全套套件工具
+//   (HP、P3、col、shade、mixc、latheGeo、tubeGeo、extrudeGeo、arcPts 等)。
+//
+// 【两大出口】
+//   1. register(D, H) —— 注册 40 余种 lockgate_* 道具构建器;
+//   2. export const PLACEMENTS —— 本关摆设清单(半份:除 mirror:false 外,
+//      每条都会在 (x,z) → (-x,-z)、rotY + π 处镜像出另一半 Bravo 场)。
+//
+// 【场景设定】一级宽阔的船闸从海港盆地爬升而出,穿过旧砖砌仓库区。
+//   材质:红蓝工程砖、砂岩压顶、黑白船闸木、铸铁。招牌全部建模
+//   (平面彩绘 / 凸起笔画字,按字形缓存),绝不使用共享招牌图集。
+//
+// 【结构速览】调色板 K → 几何工具(GB 手写缓冲几何、tpl 缓存、碰撞助手)
+//   → 笔画字体(GL 字形表、ribbon/glyph 字模挤出、letters 排版)→ 铸铁小件
+//   (路灯、系船柱、导缆环、启闭机)→ 闸门 / 闸池水面 / 驼峰拱桥 → 建筑套件
+//   (坡屋顶、拱窗、吊装门、烟囱)→ 仓库、磨坊、背景镇 → 小楼四栋(闸管所、
+//   办公室、马厩、货棚)→ 窄船与码头货物家具 → 舞台与花园套件 → 墙面杂件。
+//
+// 【关键约定】
+//   1. 单位米,Y 向上,pos 为基点,rotY 旋转局部 +Z(正面);贴墙件以
+//      局部 z = 0 为墙面、向 +Z 伸出。
+//   2. 实体道具负责交还关卡碰撞盒(B.col / colC);ROOF = { roof: true }
+//      表示"仅相机碰撞"(玩家可站上),RAIL = { rail: true } 表示透视栏杆
+//      (拦人,子弹 / 墨水 / 乌贼可穿过,不可站立)。
+//   3. NS() 把材质换成无阴影变体:小件不投影,省 draw call;几何一律经
+//      tpl() 按 key 缓存复用。
+//   4. B.aoBase = null 表示该道具不生成贴地 AO 阴影斑。
+//
+// 【配套阅读】layout.js(关卡布局与文件夹契约)、docs/ASSETS*.zh-CN.md 系列
+// ============================================================================
 // Lockgate Canals — stage prop pack + placements (owner: the lockgate stage; see layout.js for the folder contract).
 //
 // register(D, H): this stage's own prop builders (types prefixed 'lockgate_'), same contract as props-marina-dock.js:
@@ -15,6 +50,8 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ palette
   // muted, sooty canal tones: the team inks stay the loudest thing on screen
+  // 【调色板】K:烟灰色调的运河配色,刻意压低饱和度与对比 —— 让队伍墨水的
+  //   颜色始终是画面里最"响"的元素;全部色值集中于此,供各道具按名取用
   const K = {
     black: '#26272b', blackLt: '#34363b', white: '#e9e5da', whiteDk: '#cfcabd', timber: '#3b3029', timberLt: '#5a4a3d',
     oak: '#7a6048', oakLt: '#9a7d5f', stone: '#cdc3ae', stoneDk: '#a99f8a', stoneLt: '#ddd4c1', brick: '#8c4a3b',
@@ -26,6 +63,10 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ geometry kit
+  // 【几何工具箱】本节是全套底层助手:
+  //   GB —— 手写 BufferGeometry 构建器(顶点带法线 + 顶点色,三角形按法线
+  //   朝向自动纠正绕向);tpl —— 几何缓存(同 key 只构建一次);pbox / cyl —
+  //   单位几何缩放摆放;seg —— 两点间横梁;colC / colSeg / rot —— 碰撞盒助手
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
@@ -71,7 +112,9 @@ export function register(D, H) {
     B.pop();
   }
   // collision boxes are always in the prop's root frame: rotate a local (x, z) about Y by ry and offset
+  // 碰撞盒永远建在道具根坐标系里:把局部 (x, z) 绕 Y 旋转 ry 后再平移
   const rot = (x, z, ry) => [x * Math.cos(ry) + z * Math.sin(ry), -x * Math.sin(ry) + z * Math.cos(ry)];
+  // 【居中碰撞盒助手】colC 以 (x,z) 为中心、按宽高深建盒;ROOF/RAIL 是碰撞类别标记
   const colC = (B, x, y, z, w, h, d, o) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
   const ROOF = { roof: true };
   const RAIL = { rail: true };   // see-through railings: kids blocked, shots / ink / squids pass, nobody stands on top
@@ -84,6 +127,8 @@ export function register(D, H) {
     }
   }
   // brick-coursed box: body + faint course lines on the ±X/±Z faces (flush lines, no shadow) — for prop brickwork
+  // 【砖砌体助手】brickBox:砖盒主体 + ±X/±Z 面上隐约的砖缝水平线(齐平细条、
+  //   无阴影),用于各道具上的砖砌部分;step 为砖缝间距,faces 控制哪些面出线
   function brickBox(B, c, w, h, d, x, y, z, o = {}) {
     B.box(o.mat ?? 'paint', c, w, h, d, x, y, z, { r: o.r ?? 0.02 });
     if (o.courses === false) return;
@@ -95,6 +140,10 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ stroke font (from the dock pack)
+  // 【笔画字体总览】与码头包同一套圆头粗黑体描边字库:GL 是字形表(每个字符 =
+  //   [字宽, 若干条笔画折线 / 弧]);EA 生成椭圆弧点列,LOOP 生成闭合椭圆。
+  //   之后 ribbon / disc / glyph 三层把笔画挤出成立体笔画(带倒角、圆头、圆角
+  //   连接),letters() 负责整行排版;SEG7 是独立的七段数码管表(记分牌用)。
 
   // ------------------------------------------------------------------------------------------ stroke font
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
@@ -195,6 +244,10 @@ export function register(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
+  // 【字模工厂】glyph:把单个字符转成几何(大写高度 1,基线 y = 0,背面 z = 0,
+  //   字面 z = dep),返回 { geo, adv } —— adv 是该字推进宽度,供排版累加;
+  //   dep = 0 退化为纯平面彩绘字;几何按 [字,笔宽,深,倒角,段数] 缓存;
+  //   多笔画字按笔画的沉降量错开深度,模拟手写先后压痕
   function glyph(ch, wt, dep, bev, ds = 10) {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -237,6 +290,9 @@ export function register(D, H) {
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
+  // 【排版入口】letters:在当前坐标架里摆一整行朝 +Z 的字,返回行宽(米);
+  //   flat 用纯平面彩绘,否则挤出凸字;lit 给每个字再贴一层发光面板
+  //   (glow 材质、不投影),让招牌白天清晰、黄昏"通电";glow 参数控制光晕
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
@@ -261,10 +317,14 @@ export function register(D, H) {
   }
 
   // 7-segment LED digits (unit cell 0.62 × 1, slight italic): lit segments on 'glow', the unlit "ghost 8" on 'paint'
+  // 【七段数码管】SEG7 为单位字格(0.62×1,微斜体)的 7 段线段表;DIG 按数字 0-9
+  //   给出应点亮的段名集合;亮段走 glow 发光桶,不亮的"幽灵 8"用 paint 压底
   const SEG7 = { a: [[0.1, 1], [0.46, 1]], b: [[0.53, 0.94], [0.53, 0.56]], c: [[0.53, 0.44], [0.53, 0.06]], d: [[0.1, 0], [0.46, 0]], e: [[0.03, 0.44], [0.03, 0.06]], f: [[0.03, 0.94], [0.03, 0.56]], g: [[0.1, 0.5], [0.46, 0.5]] };
   const DIG = ['abcdef', 'bc', 'abged', 'abgcd', 'fgbc', 'afgcd', 'afgedc', 'abc', 'abcdefg', 'abcdfg'];
 
   // flush sign board with flat painted letters (board centred at x, y; faces +Z); returns the board width
+  // 【招牌底板】boardSign:齐平式招牌 —— 底板盒 + 可选双线边框 + 平面彩绘字
+  //   (板中心在 x, y,朝 +Z),返回板宽,供调用方继续排版
   function boardSign(B, text, x, y, o = {}) {
     const h = o.h ?? 0.2, pad = o.pad ?? h * 0.6, W = o.w ?? textW(text, o.wt ?? 0.18, o.track ?? 0.12) * h + pad * 2, Hb = o.hb ?? h + pad * 1.1;
     const bd = o.bd ?? 0.04, z = o.z ?? 0;
@@ -276,6 +336,8 @@ export function register(D, H) {
 
   // ================================================================================================ small cast iron
   // Victorian gas lamp: stepped plinth, fluted shaft, ladder bar, square tapered lantern (glowing panes), crown + finial.
+  // 【共用灯头】lantern:维多利亚式灯头(旋成底座、四棱发光灯罩、肋架、
+  //   四坡顶冠 + 顶饰),所有灯具(路灯、壁灯、墩顶灯)统一调用
   function lantern(B, x, y, z, s = 1) {
     B.push(x, y, z, 0, 0, 0, s);
     B.lathe('metal', K.iron, [[0.07, 0], [0.11, 0.03], [0.12, 0.06], [0.07, 0.09], [0, 0.09]], 0, 0, 0, { seg: 8 });
@@ -286,6 +348,10 @@ export function register(D, H) {
     cyl(B, 'metal', K.iron, 0.012, 0.1, 0, 0.68, 0, { seg: 4 });
     B.pop();
   }
+  // 【运河煤气路灯】铸铁路灯:variant 0 为 3.6 m 高灯柱(台阶底座、凹槽灯杆、
+  //   爬梯横档、方形暖光灯笼),1 为壁挂灯(z = 0 为墙面,pos.y 为挑臂高度、
+  //   卷草挑臂),2 为压顶矮墩顶灯;lantern() 是三者共用的灯头,pierLamp() 供
+  //   矮墩与桥头复用
   D.lockgate_lamp = {
     desc: 'Cast-iron canal gas lamp. variant 0 = 3.6 m post (plinth, fluted shaft, ladder bar, square lantern with warm panes); 1 = wall bracket lamp (wall at z = 0, pos.y = bracket height) with a scroll arm; 2 = short pier-top lamp (sits on a parapet pier).',
     params: {}, variants: 3, mount: 'ground',
@@ -319,6 +385,8 @@ export function register(D, H) {
   }
 
   // canal bollard: waisted cast-iron mushroom, black with a white band; variant 1 = timber mooring post (stump)
+  // 【系船柱】运河系泊柱:variant 0 黑色铸铁蘑菇柱(白环、磨损缆槽),
+  //   1 为带铁箍的橡木缆桩;沿岸摆放,生成碰撞
   D.lockgate_bollard = {
     desc: 'Canal mooring bollard. variant 0 = cast-iron mushroom bollard (black, white band, worn rope groove); 1 = oak mooring stump with an iron cap band.',
     params: {}, variants: 2, mount: 'ground',
@@ -347,6 +415,8 @@ export function register(D, H) {
     B.pop();
   }
 
+  // 【系缆环】嵌在压顶石边缘的铁环(扣在 U 形钉上;z = 0 为水缘,水在 +Z),
+  //   窄船系缆的另一端;纯装饰,无碰撞
   D.lockgate_ring = {
     desc: 'Iron mooring ring on a staple set in the coping (edge at z = 0, water +Z). Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
@@ -377,6 +447,9 @@ export function register(D, H) {
     const [cx, cz] = rot(0, 0, ry);
     colC(B, x + cx, y, z + cz, 0.44, 1.1, 0.44);
   }
+  // 【闸门启闭机(地面桨齿机构)】黑色铸铁齿条立柱,装在石基座上:齿轮颊板、
+  //   绞盘轴(白尖)、棘爪,齿条从顶部伸出 —— 船闸的放水阀门机构,立在闸门旁
+  //   的操作平台上;raised 齿条提起,windlass 轴上留一把绞盘
   D.lockgate_paddle = {
     desc: 'Lock ground-paddle gear: black cast-iron rack post with gear cheeks, pinion spindle (white tip) and pawl on a stone bed plate. raised: rack drawn up; windlass: a windlass left on the spindle.',
     params: { raised: 'bool', windlass: 'bool' }, variants: 1, mount: 'ground',
@@ -390,7 +463,11 @@ export function register(D, H) {
   // the lock sides (colliding, waist high). kind 'lower': leaves down to the chamber floor, lower pound downstream,
   // handrail on the downstream side, gate paddles. kind 'upper': leaves stand on the brick cill (colliding) with the
   // upper pound behind (visual water, higher than the sea), leaks spraying through into the drained chamber.
+  // 【闸室尺寸常量】LOCK:half = 闸室半宽,floor / low / up = 闸底与各水位,
+  //   heelX / mitreX = 门轴柱与人字合龙点(两扇门的斜接处)
   const LOCK = { half: 2.75, floor: -3.2, low: -2.9, up: -1.6, heelX: -0.7, mitreX: -0.1 };
+  // 【门扇建造】gateLeaf:一扇从门轴柱斜人到人字合龙点的木门扇(黑框白顶
+  //   横档、上游面板 + 板缝、下游铁带、门轴处铁箍),返回几何参数供平衡梁用
   function gateLeaf(B, side, yb, yt) {
     const hx = LOCK.heelX, hz = side * LOCK.half, mx = LOCK.mitreX, dx = mx - hx, dz = -hz, L = Math.hypot(dx, dz);
     const ry = Math.atan2(-dz, dx), H = yt - yb, dn = side < 0 ? 1 : -1;       // local z * dn = downstream
@@ -412,6 +489,8 @@ export function register(D, H) {
     B.pop();
     return { L, ry, dn };
   }
+  // 【平衡梁】balanceBeam:门轴柱顶伸过闸岸的推杆(黑白分段、端部握持刻痕、
+  //   根部铁箍),闸员踩地面弧形砖棱推动它开关闸门;碰撞为齐腰木覆盖链
   function balanceBeam(B, side, len = 4.4, sweep = 1) {
     const hx = LOCK.heelX, hz = side * LOCK.half;
     // heel post extension above the coping + the beam running back over the lock side
@@ -435,6 +514,10 @@ export function register(D, H) {
     colSeg(B, [hx, hz], [b[0], b[2]], 0.2, 0.62, 1.1, 3);   // timber cover at waist height; squids + shots pass under
     return b;
   }
+  // 【人字闸门】横跨闸室的一对黑色木闸门(黑白船闸木),白端平衡梁向后伸过闸岸;
+  //   kind lower = 下闸(门扇落到闸室底、下游低水位拍打下门面),upper = 上闸
+  //   (门扇立在砖砌门槛上,上游水从门缝喷进干涸的闸室);闸顶走道是可行走的
+  //   关卡方块,梁 / 门槛 / 栏杆均生成碰撞
   D.lockgate_gates = {
     desc: 'A pair of black timber mitre gates with white-ended balance beams across a broad lock chamber (local +X upstream, chamber z ±2.75, origin on the gate line at coping level; the walkway on top is a level block x ±0.6). kind lower | upper (see LOCK notes in props.js). Beams, heel posts, handrail, cill (upper) collide.',
     params: { kind: 'lower | upper' }, variants: 1, mount: 'ground',
@@ -510,6 +593,9 @@ export function register(D, H) {
       return g.geo();
     });
   }
+  // 【上游闸池水面】仅上游段的视觉水面(高于海面的运河),竞技场隔着闸门才
+  //   与它相望:微皱 gloss 水面(烘焙法线抖动),两岸泡沫线、闸口泡沫、漂叶
+  //   与一只遗失的红球;纯视觉,无碰撞
   D.lockgate_pound = {
     desc: 'Upper-pound canal water (visual, above the sea): rippled gloss sheet running along local +X for `length` (width `width`, surface at pos.y), foam lines along both walls and at the start (the gate).',
     params: { length: 'm (18)', width: 'm (5.5)' }, variants: 1, mount: 'ground',
@@ -535,6 +621,8 @@ export function register(D, H) {
   // towpath arches (z ±5…±7, springing 1.9) the towpaths pass under, spandrel walls, the barrel soffits, blue-brick
   // voussoir rings, stone string course, saddleback parapet copings (colliding), end piers with lamps, bridge plates.
   const BR = { R: 5.11, yc: 2.45 - 5.11, Rt: 1.336, yt: 1.014, spring: 1.9, face: 2.6 };
+  // 【桥面高程三件套】deckTop = 桥面行走面高度(随 z 的驼峰曲线),
+  //   soffitW / soffitT = 水拱 / 纤道拱的拱腹内缘高度
   const deckTop = (z) => { const a = Math.abs(z); return a >= 8.4 ? (3.0 * (15.2 - a)) / 6.8 : a >= 7 ? 3.0 : 3.0 + 0.3 * (1 - a / 7); };
   const soffitW = (z) => BR.yc + Math.sqrt(Math.max(0, BR.R * BR.R - z * z));
   const soffitT = (z) => { const c = z < 0 ? -6 : 6; return BR.yt + Math.sqrt(Math.max(0, BR.Rt * BR.Rt - (z - c) * (z - c))); };
@@ -552,6 +640,8 @@ export function register(D, H) {
   }
   // voussoir ring on a face (face plane at local z = 0, facing +Z in the ring frame): blocks between radii r0 … r1 on a
   // circle centred (cz, cy) from angle a0 → a1; colours alternate (blue headers, the odd red), mortar gaps between
+  // 【拱楔环几何】voussoirGeo:拱券一圈楔形砖块(蓝砖丁头为主、偶见红砖,
+  //   块间留灰缝),含外露面 + 内缘 + 侧缘;按参数缓存,桥拱与窗拱共用
   function voussoirGeo(key, cz, cy, r0, r1, a0, a1, n, proud) {
     return tpl('vous|' + key, () => {
       const g = new GB(), cb = cx3(K.blue), cb2 = cx3(K.blueDk), cr = cx3(K.brickDk), gap = 0.006;
@@ -573,6 +663,8 @@ export function register(D, H) {
     });
   }
   // a curved barrel soffit (under an arch): rows along X, profile fn(z) → y, faces down
+  // 【筒形拱腹】barrelGeo:沿 X 方向的拱腹板条(剖面 fn(z) → y,法线朝下),
+  //   逐行烘焙明暗抖动,水拱与纤道拱共用
   function barrelGeo(key, z0, z1, fn, W, n, colr) {
     return tpl('barrel|' + key, () => {
       const g = new GB(), rows = [], c0 = cx3(colr);
@@ -586,6 +678,10 @@ export function register(D, H) {
       return g.geo();
     });
   }
+  // 【驼峰砖拱桥】场地中心的跨界桥(只放一次,mirror:false):大跨度水拱 +
+  //   两侧纤道小拱(纤道从拱下穿过)、拱肩砖面细刻(砖缝 + 蓝砖丁头 + 逐砖
+  //   色差)、筒形拱腹、蓝砖拱楔环、石腰线、鞍形压顶、端墩顶灯与铸铁 BRIDGE 2
+  //   桥牌;桥面行走面由关卡承载,桥体砌体只交碰撞
   D.lockgate_bridge = {
     desc: 'The humpback brick bridge dressing (placed once at the origin, mirror: false): water arch + towpath arches, spandrels, barrel soffits, blue-brick voussoir rings, stone string course, saddleback parapet copings, end piers with lamps, cast-iron bridge plates, rope guards. See the BR notes in props.js.',
     params: {}, variants: 1, mount: 'ground',
@@ -695,8 +791,12 @@ export function register(D, H) {
 
   // ================================================================================================ building kit
   // Façades face +Z in the current frame with the wall plane at z = 0 (fittings ≤ 0.12 m proud on playable walls).
+  // 【建筑套件约定】各楼立面统一朝 +Z、墙皮在 z = 0(可玩墙上的附件突出
+  //   不超过 0.12 m);坡屋顶函数、拱窗、吊装门、烟囱、雨水管共用一套
   // pitched slate roof over x0…x1 × z0…z1, ridge along X at yE + rise: gable-end prisms, slates with course lines,
   // ridge tiles, eaves gutter. o.wall = gable brick colour, o.ov = overhang, o.hip: no gable prisms (hidden ends)
+  // 【板岩坡屋顶】slateRoof:山墙三角棱 + 双坡石板(瓦垄线)、脊瓦、檐沟;
+  //   wall 指定山墙砖色,ov 出檐,hip / noGable 隐藏山墙(端头被遮时)
   function slateRoof(B, x0, x1, z0, z1, yE, rise, o = {}) {
     const L = x1 - x0, cx = (x0 + x1) / 2, d = z1 - z0, cz = (z0 + z1) / 2, ov = o.ov ?? 0.3, sc = o.slate ?? K.slate;
     const mat = o.ns ? NS('paint') : 'paint';
@@ -712,6 +812,8 @@ export function register(D, H) {
     B.box(mat, shade(sc, 0.7), L + ov * 2 + 0.04, 0.16, 0.26, cx, yE + rise + 0.06, cz, { r: 0.05 });
   }
   // segmental-arched cast-iron window (opening w × h, sill at y): dark glass, glazing bars, blue-brick arch, stone sill
+  // 【拱形铸铁窗】archWin:段拱窗(深色玻璃 + 棂条 + 蓝砖拱眉 + 石窗台),
+  //   lit 选项点亮室内暖光(仓库、磨坊黄昏窗火)
   function archWin(B, x, y, w, h, o = {}) {
     const mat = o.ns ? NS('paint') : 'paint', gl = o.glass ?? K.glass, fr = o.frame ?? K.iron;
     pbox(B, NS('gloss'), gl, w, h, 0.02, x, y + h / 2, 0.01);
@@ -727,6 +829,8 @@ export function register(D, H) {
     B.box(mat, o.sill ?? K.stone, w + 0.22, 0.09, 0.14, x, y - 0.045, 0.06, { r: 0.015 });
   }
   // timber taking-in door pair (opening w × h, bottom at y), open: one leaf folded back, a sack in the dark doorway
+  // 【吊装门】takingDoor:仓库立面上吊运货物的大门(石过梁 + 双开木板门);
+  //   open 时一扇折回、门洞里露出麻袋 —— 仓库正立面逐层叠一樘,形成吊装门垛
   function takingDoor(B, x, y, w, h, o = {}) {
     const c = o.c ?? K.green;
     pbox(B, NS('paint'), '#141517', w, h, 0.02, x, y + h / 2, 0.01);
@@ -749,6 +853,7 @@ export function register(D, H) {
     }
   }
   // chimney stack with oversailing courses and pots
+  // 【烟囱】chimney:砖烟囱(逐层挑出 + 双压顶线 + 陶土烟囱管)
   function chimney(B, x, y, z, w, d, h, pots = 2, mat = 'paint') {
     B.box(mat, K.brick, w, h, d, x, y + h / 2, z, { r: 0.03 });
     B.box(mat, K.brickDk, w + 0.12, 0.12, d + 0.12, x, y + h - 0.2, z, { r: 0.02 });
@@ -767,6 +872,10 @@ export function register(D, H) {
   // carries the ground floor up to 4.6 m). Five-storey centre block with a pediment, clock and the lucam hoist over the
   // loading-door stack; three-storey wings with a cast-iron wall crane; painted LOCKGATE WHARF band; canopy over the
   // loading stage; slate roofs, chimneys; the building mass collides above the wall (camera-safe).
+  // 【LOCKGATE WHARF 保税仓库】出生建筑(pos = 后墙立面中心,局部 z = 0 即立面,
+  //   楼体在其后方,关卡墙体承载底层 4.6 m):五层主楼(三角楣、发光钟、
+  //   lucam 吊楼 + 悬臂吊钩吊着货包)、三层翼楼(铸铁墙式起重机)、彩绘招牌带、
+  //   出生舞台上方的装卸雨棚;上部楼体与屋顶交"仅相机"碰撞(不挡玩家)
   D.lockgate_warehouse = {
     desc: 'LOCKGATE WHARF bonded warehouse (spawn building; pos = centre of the back wall face, local z = 0, building behind): ground-floor fittings on the playable wall, loading canopy over the spawn stage, 5-storey centre block with pediment + clock + lucam hoist (jib, chain, hook, bale), 3-storey wings with a cast-iron wall crane, painted sign band, slate roofs, chimneys; upper mass collides.',
     params: {}, variants: 1, mount: 'ground',
@@ -905,6 +1014,9 @@ export function register(D, H) {
   // rotY -π/2: local +Z faces into the arena, local x = world z). The level supplies the wall up to 9 m (with the canal
   // opening up to 4.2 m); this prop builds the arch ring + tunnel vault, the storeys above, windows, the name band,
   // lucam, roof — and beyond, the canal running on through the mill into daylight toward the next lock up.
+  // 【ANCHOR MILLS 磨坊】跨骑上游运河尽头的五层砖磨坊(竞技场两端各一):
+  //   运河拱洞 + 隧道拱洞、成排拱窗、名号带、lucam 吊楼;拱洞深处透光的下一
+  //   级船闸人字门暗示运河向上游延伸;pos 为面向竞技场的立面中心
   D.lockgate_mill = {
     desc: 'ANCHOR MILLS: five-storey brick mill straddling the upper pound (pos = arena face at the canal centre, local +Z into the arena, building behind). Arch ring + tunnel vault over the canal, windows, name band, lucam, slate roof; collides above the level wall.',
     params: {}, variants: 1, mount: 'ground',
@@ -956,6 +1068,9 @@ export function register(D, H) {
   // Everything outside the walls for one half (placed once, mirrored): land slabs so the district reads as land, not a
   // raft in the bay; terraced houses behind the west wall (backs, yards, chimneys), ANCHOR WAREHOUSE behind the transit
   // shed, the mill chimney (a landmark from anywhere), roofs behind the wharf warehouse, the upper canal's banks.
+  // 【排屋生成器】terraceRow:沿 +X 连排 n 栋背靠 z0 的排屋(背面朝竞技场、
+  //   5 m 进深,逐栋换色、后院披屋、山墙烟囱,远处整排共用一条长屋顶),
+  //   只用于背景镇景
   function terraceRow(B, x0, z0, n, o = {}) {
     // n houses along local +X from (x0, z0), rear elevation facing +Z at z0, 5 m deep behind it
     const hw = o.w ?? 4.6, eaves = o.eaves ?? 6.4, rise = o.rise ?? 2.2, D = 5.2, rend = o.render;
@@ -974,6 +1089,10 @@ export function register(D, H) {
     }
     slateRoof(B, x0 - 0.1, x0 + hw * n + 0.1, z0 - D - 0.1, z0 + 0.1, eaves, rise, { ov: 0.25, ns: true, noGable: !o.gable });
   }
+  // 【背景镇景】墙外世界(只放一半,自动镜像):地块垫层让城区读作陆地而非
+  //   海湾中的筏子、斜切角后的排屋背面与院落、制桶坊、阶梯角上的 ANCHOR
+  //   WAREHOUSE、仓库屋顶后方成排屋脊与远处教堂尖顶、磨坊大烟囱地标;全部
+  //   NS 材质(不投影),无碰撞
   D.lockgate_backdrop = {
     desc: 'The town beyond one half of the arena (placed once at the origin, mirrored): land slabs (incl. the cut SW + SE corners inside the bounds), a terrace row along the chamfered SW corner, the cooperage in the SW notch, ANCHOR WAREHOUSE in the stepped SE corner, the upper canal walls east of the mill, roofs behind the wharf warehouse, a spire, the mill chimney. No colliders, no shadows.',
     params: {}, variants: 1, mount: 'ground',
@@ -1035,11 +1154,15 @@ export function register(D, H) {
 
   // ================================================================================================ small buildings
   // face helper for block dressings: side 0 +Z, 1 +X, 2 -Z, 3 -X → frame on that face (x along the face, z out)
+  // 【楼面定向助手】onFace:把回调临时推到实体块某一面(0 +Z、1 +X、2 -Z、
+  //   3 -X)的坐标架里执行,楼内四面装饰统一用它
   function onFace(B, W, Dd, side, fn) {
     const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
     B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
   }
   // painted timber sash window (opening w × h, sill at y): white frame, 2-over-2 bars, stone sill + lintel
+  // 【推拉窗】sashWin:民居木推拉窗(白框 2×2 棂、石窗台 + 过梁),lit 点灯,
+  //   box 挂窗台花箱(五朵小花球)
   function sashWin(B, x, y, w, h, o = {}) {
     const fr = o.frame ?? K.sash;
     pbox(B, NS('gloss'), K.glass, w, h, 0.02, x, y + h / 2, 0.01);
@@ -1055,6 +1178,8 @@ export function register(D, H) {
       for (let k = 0; k < 5; k++) B.sph('foliage', ['#c94f5c', '#e8b64a', '#f2eee6', '#b563a8', '#5ba257'][(k + Math.round(x * 3)) % 5], 0.07, x - w / 2 + 0.1 + (k * (w - 0.1)) / 4, y - 0.05, 0.12, { ws: 6, hs: 4 });
     }
   }
+  // 【木板门】plankDoor:民居大门(板缝、黄铜把手),dutch 上下分门、frame
+  //   门框、fan 扇形气窗
   function plankDoor(B, x, y, w, h, c, o = {}) {
     pbox(B, NS('paint'), '#141517', w + 0.04, h + 0.04, 0.012, x, y + h / 2, 0.006);
     B.box('wood', c, w, h, 0.06, x, y + h / 2, 0.03, { r: 0.01 });
@@ -1068,6 +1193,9 @@ export function register(D, H) {
   function doorStep(B, x, w, n = 1) { for (let i = 0; i < n; i++) B.box('paint', K.stone, w + 0.3 - i * 0.1, 0.16, 0.36 + (n - 1 - i) * 0.3, x, 0.08 + i * 0.16, 0.18 + (n - 1 - i) * 0.15, { r: 0.02 }); }
 
   // ---- lock-keeper's cottage (pos = centre of the 6.5 x 6.5 x 5.2 block base; front door +Z toward the lock)
+  // 【闸管所小屋】围绕 6.5×6.5×5.2 实体块的门面装饰:板岩坡屋顶 + 山墙烟囱
+  //   (碰撞)、正门 (+Z 朝船闸) 带山墙木门廊、推拉窗 + 窗台花箱、LOCK HOUSE
+  //   牌匾、后门雨水桶;+X 侧平顶洗衣房披屋(压顶可走,烟囱碰撞)
   D.lockgate_cottage = {
     desc: "Lock-keeper's cottage dressing around a 6.5 x 6.5 x 5.2 rendered block: slate roof + gable chimneys (roof collides), gabled timber porch over the front door (+Z), sash windows with window boxes, lamp, LOCK HOUSE plaque, back door + water butt, the flat-roofed wash-house outshut on +X (walkable roof: coping + chimney pot).",
     params: {}, variants: 1, mount: 'ground',
@@ -1118,6 +1246,9 @@ export function register(D, H) {
   };
 
   // ---- canal company office (pos = centre of the 6.5 x 8 block, roof terrace at 2.6 with parapets N + E in the level)
+  // 【运河公司办公室】围绕 6.5×8×2.45 实体块的装饰:四面推拉窗 + 蓝砖基座、
+  //   +X 面板大门带气窗与台阶、运河侧公司名牌、东北角双面发光挂钟、屋顶平台
+  //   套件(烟囱碰撞、公司旗、天窗)、南面上屋顶铁楼梯的 RAIL 栏杆
   D.lockgate_office = {
     desc: 'LOCKGATE CANAL Co. office dressing around a 6.5 x 8 x 2.45 block: sash windows, panelled door with fanlight + steps (+X), name board on the canal face, bracket clock at the NE corner, roof terrace kit (chimney stack collides, flag staff), rails for the iron stair up the south face.',
     params: {}, variants: 1, mount: 'ground',
@@ -1175,6 +1306,8 @@ export function register(D, H) {
   };
 
   // ---- stables with a hay loft (pos = centre of the 7 x 8 x 3.6 block; stable doors + loft door face +Z, the wharf)
+  // 【马厩】围绕 7×8×3.6 实体块的装饰:荷兰式上下分马厩门(+Z 朝码头)、拱窗、
+  //   +Z 坡面干草阁楼山墙小窗(带吊货杆与滑轮)、脊部百叶通风窗、板岩屋顶(碰撞)
   D.lockgate_stables = {
     desc: 'Canal horse stables with a hay loft around a 7 x 8 x 3.6 brick block: Dutch stable doors, loft gablet with a hay door + hoist beam, louvred ridge vent, slate roof (collides), tack hooks, a horse trough and a hay rack on the wharf side.',
     params: {}, variants: 1, mount: 'ground',
@@ -1209,6 +1342,9 @@ export function register(D, H) {
   };
 
   // ---- transit shed (pos = centre of the 10 x 15 x 4.8 block; loading bank side = -X at 1.3 m)
+  // 【转运货棚】围绕 10×15×4.8 实体块的装饰:装货岸侧 (-X,岸高 1.3) 三扇滑
+  //   门 + 木板雨棚(碰撞)、院落端大车车门与拱窗、板岩屋顶(碰撞)带吊装
+  //   小阁与脊部百叶
   D.lockgate_shed = {
     desc: 'Canal carriers\' transit shed around a 10 x 15 x 4.8 brick block: three sliding goods doors on the loading-bank side (-X, bank at 1.3 m) under a boarded canopy on iron brackets (collides), painted band, cart door + windows on the yard end, slate roof with a hoist gablet and ridge louvres (collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1263,6 +1399,8 @@ export function register(D, H) {
   // pos = hull block centre at gunwale height; bow toward local -X. kind 'cabin' (painted cabin, windows, roof kit,
   // livery on the level face = mural) or 'working' (cloth-covered hold on the level block: strings, top plank, stern
   // back-cabin, cratch at the fore end). L = hull block length (the blocks' ends), W = beam, cab = cabin half length.
+  // 【船艏几何】bowGeo:窄船尖艏的自定义缓冲几何(剖面随 t 收分、黑色船壳
+  //   + 红丹顶带、井甲板),挂在船体块前端
   function bowGeo(len, hw, key) {
     return tpl('bow|' + key, () => {
       const g = new GB(), n = 10, cBlk = cx3('#1f2226'), cTop = cx3('#8d2f2a'), cDeck = cx3(K.oak);
@@ -1289,6 +1427,8 @@ export function register(D, H) {
       return g.geo();
     });
   }
+  // 【船尾几何】sternGeo:窄船假尾(椭圆收分的尾封板 + 甲板扇面),挂在船体
+  //   块后端
   function sternGeo(len, hw, key) {
     return tpl('stern|' + key, () => {
       const g = new GB(), n = 8, cBlk = cx3('#1f2226'), cTop = cx3('#8d2f2a'), cDeck = cx3('#3a3d42');
@@ -1316,6 +1456,11 @@ export function register(D, H) {
     B.cyl('gloss', K.green, 0.03, 0.2, 0.17, 0.3, 0, { rz: -0.9, seg: 6 });
     B.pop();
   }
+  // 【窄船】围绕关卡船体块(舷缘 -0.7)与船舱块(顶 0.25,可行走)的装饰:
+  //   尖艏(顶部反曲、轮胎碰垫、井甲板)、假尾 + 黄铜鹅颈舵柄、护舷条、艏艉
+  //   碰撞、伸向岸边的系缆绳(lines 为道具局部系点);kind cabin = 彩绘居家船
+  //   (舷窗、舱门画、屋顶沿口的烟囱碰撞、水壶花草自行车),working = 货运船
+  //   (布罩货舱、压绳、舱口围板、假尾小舱的玫瑰城堡画)
   D.lockgate_narrowboat = {
     desc: 'Narrowboat dressing around level hull (gunwale -0.7) + cabin (top 0.25) blocks. kind cabin | working. Bow (pointed, top bend, button fender, well deck) at local -X, counter stern + rudder + brass tiller at +X, rubbing strakes, portholes / cloth strings, roof kit kept to the edges (chimney collides), mooring lines to the bank (lines: [[x, z] …] prop-local bank points).',
     params: { kind: 'cabin | working', L: 'hull block length (7.8)', W: 'beam (2.0)', cab: 'cabin half length (2.9)', lines: 'bank tie points (local)', name: 'boat name on the stern' }, variants: 1, mount: 'ground',
@@ -1406,6 +1551,8 @@ export function register(D, H) {
 
   // ================================================================================================ wharf goods + furniture
   // oak cask (hoops, bung): upright at (x, y, z) or lying along local X (lie: true)
+  // 【单桶】cask:橡木桶(鼓腹桶板 + 四道铁箍),可立放可卧放(lie),
+  //   货堆与花园雨水桶共用
   function cask(B, x, y, z, o = {}) {
     const s = o.s ?? 1, c = o.c ?? K.oak;
     B.push(x, y, z, o.ry ?? 0, 0, o.lie ? HP : 0, s);
@@ -1414,6 +1561,9 @@ export function register(D, H) {
     for (const y2 of [0.05, 0.2, 0.52, 0.67]) B.lathe(NS('metal'), K.iron, [[0.27 + (y2 > 0.1 && y2 < 0.6 ? 0.045 : 0.005), y2], [0.27 + (y2 > 0.1 && y2 < 0.6 ? 0.045 : 0.005), y2 + 0.04]], 0, oy, 0, { seg: 12 });
     B.pop();
   }
+  // 【橡木桶堆】码头上的木桶组(生成碰撞):variant 0 = 木架卧放金字塔 + 两只
+  //   立放,1 = 三只立放 + 盖板,2 = 单只卧放、砖块垫楔;cask() 是共用桶体
+  //   (桶板 + 铁箍),可立放可卧放
   D.lockgate_casks = {
     desc: 'Oak casks on the wharf. variant 0 = a pyramid of 3 lying on a timber stillage + 2 upright; 1 = 3 upright with a lid plank; 2 = a single lying cask chocked with bricks.',
     params: {}, variants: 3, mount: 'ground',
@@ -1440,6 +1590,8 @@ export function register(D, H) {
     },
   };
   // hessian sacks + tea chests on a pallet-ish stillage
+  // 【码头货堆(生成碰撞)】三种堆码:variant 0 = 垫架麻袋 + 茶箱,1 = 绳索捆
+  //   扎的油布机械箱,2 = 垫木上的成摞 timber 板材
   D.lockgate_goods = {
     desc: 'Wharf goods stack (collides): variant 0 = sacks on a stillage + tea chests; 1 = crated machinery under a tied tarpaulin; 2 = timber deals stacked on bearers.',
     params: {}, variants: 3, mount: 'ground',
@@ -1468,6 +1620,8 @@ export function register(D, H) {
     },
   };
   // two-wheeled flat cart (dray) with big spoked wheels, shafts down on the setts
+  // 【两轮平板大车】铁箍大辐条轮、车辕着地(+X 朝向),载麻袋与卧放木桶
+  //   (生成碰撞);load:false 为空车
   D.lockgate_cart = {
     desc: 'Two-wheeled timber flat cart: big iron-tyred spoked wheels, shafts resting on the ground (+X), a load of sacks + a cask (collides).',
     params: { load: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -1489,6 +1643,7 @@ export function register(D, H) {
     },
   };
   // stone horse trough on two plinths
+  // 【石马槽】1.9 m 花岗岩马槽,双墩支承、槽内盛水,端头带铸铁饮水铭牌(碰撞)
   D.lockgate_trough = {
     desc: 'Granite horse trough (1.9 m) on plinths with water in it and a cast-iron drinking fountain plate at one end (collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1503,6 +1658,8 @@ export function register(D, H) {
     },
   };
   // lock-side bench: slatted timber on cast-iron ends, a brass plaque
+  // 【运河长椅】黑色铸铁卷花椅腿 + 绿色板条凳面,面向 +Z,椅背嵌黄铜纪念
+  //   铭牌(生成碰撞)
   D.lockgate_bench = {
     desc: 'Canal-side bench: painted slats on black cast-iron scroll ends, faces +Z (collides).',
     params: { length: 'm (1.8)' }, variants: 1, mount: 'ground',
@@ -1521,6 +1678,7 @@ export function register(D, H) {
     },
   };
   // cast-iron canal milepost
+  // 【铸铁里程碑】白柱黑凸字:BASIN ½ MILE(距船闸盆地半英里),生成碰撞
   D.lockgate_milepost = {
     desc: 'Cast-iron canal milepost (white with black raised lettering): LOCKGATE BASIN ½ MILE (collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1537,6 +1695,7 @@ export function register(D, H) {
     },
   };
   // pillar box (Victorian post box)
+  // 【维多利亚邮筒】红色铸铁柱筒、皇冠顶盖、投信口与白色开取铭牌(碰撞)
   D.lockgate_postbox = {
     desc: 'Red cast-iron pillar box with a crowned cap, a slot and a collection plate (collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1550,6 +1709,8 @@ export function register(D, H) {
     },
   };
   // canal fingerpost
+  // 【运河指路牌】黑白铸铁柱 + 白球顶,三个指路臂(HARBOUR / TOWPATH /
+  //   LOCKS),臂双面写字(生成碰撞)
   D.lockgate_fingerpost = {
     desc: 'Canal junction fingerpost: black-and-white post with cast finial, three arms (HARBOUR BASIN / TOWPATH / LOCKS) (collides as a post).',
     params: {}, variants: 1, mount: 'ground',
@@ -1569,6 +1730,8 @@ export function register(D, H) {
     },
   };
   // life ring on a post (canal pattern: red/white ring in a wooden cabinet-free holder)
+  // 【救生圈架】黑色立杆 + 白色雨罩,挂红白相间的运河式救生圈与 V 形投掷绳
+  //   (按立柱生成碰撞)
   D.lockgate_lifebuoy = {
     desc: 'Towpath life buoy on a black post with a white hood + throwline (collides as a post).',
     params: {}, variants: 1, mount: 'ground',
@@ -1582,6 +1745,9 @@ export function register(D, H) {
     },
   };
   // stop planks stacked on the lock side (the chamber is drained behind them) + LOCK CLOSED notice on trestles
+  // 【停航检修道具组】闸边维护场景(生成碰撞):木垛上的挡水板堆、马架上的
+  //   LOCK CLOSED FOR REPAIR 告示、两只交通锥、滑架便携泵 + 盘过闸缘探入闸室
+  //   的排水管(+Z 一侧为闸室);暗示闸室正排干检修
   D.lockgate_stopplanks = {
     desc: 'Maintenance kit on the lock side: a stack of timber stop planks on bearers, a LOCK CLOSED FOR REPAIR notice on a trestle, cones, a portable pump with its hose over the chamber edge (+Z side = the chamber) (collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1609,6 +1775,8 @@ export function register(D, H) {
     },
   };
   // junk in the drained chamber: an old bike, a pram chassis, a tyre, silt banks + puddles
+  // 【干涸闸室杂物】排干闸室底部的低档装饰(贴地无 AO):淤泥滩、水洼、苔藓、
+  //   沉在泥里的旧自行车、侧翻的生锈婴儿车底盘(全件唯一碰撞)、旧轮胎与碎砖
   D.lockgate_silt = {
     desc: 'Drained-chamber floor dressing (flat, non-colliding except the pram): silt banks along the walls, puddles, weed, a lost bike, a rusty pram chassis, a tyre, bricks.',
     params: {}, variants: 1, mount: 'ground',
@@ -1633,6 +1801,8 @@ export function register(D, H) {
     },
   };
   // iron ladder recessed in a wall (wall at z = 0, water/chamber on +Z), from y0 up to the coping
+  // 【暗装铁梯】嵌在闸室 / 运河墙里的检修爬梯(墙在 z = 0、面向 +Z),从
+  //   pos.y - depth 一路到压顶,顶端带翻越抓环;纯装饰,无碰撞
   D.lockgate_ladder = {
     desc: 'Recessed iron ladder in a canal / chamber wall (wall at z = 0, facing +Z) from y0 up to the coping (pos.y), grab hoop over the edge. Non-colliding.',
     params: { depth: 'm below the coping (3)' }, variants: 1, mount: 'wall',
@@ -1646,6 +1816,8 @@ export function register(D, H) {
     },
   };
   // half-barrel planter of bright flowers (lock keepers' pride)
+  // 【半桶花坛】对半剖开的橡木种植桶,天竺葵 / 金盏菊两色变体(生成碰撞)——
+  //   船闸管理员的门面骄傲
   D.lockgate_planter = {
     desc: 'Half-barrel planter with geraniums / marigolds (collides).',
     params: {}, variants: 2, mount: 'ground',
@@ -1661,6 +1833,8 @@ export function register(D, H) {
     },
   };
   // an apple tree for the cottage garden
+  // 【老苹果树】扭曲树干 + 五团疙瘩状树冠(复用 H.puffGeo),挂九颗红苹果;
+  //   树干生成碰撞,种在小屋花园
   D.lockgate_tree = {
     desc: 'Old apple tree: gnarled trunk, lumpy canopy puffs with a few apples (trunk collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1673,6 +1847,8 @@ export function register(D, H) {
     },
   };
   // wharf crane: cast-iron hand crane on a stone pier (jib over the water, gear frame, crank, chain + hook)
+  // 【码头手摇起重机】石墩上的维多利亚铸铁起重机:锥形立柱、双曲板吊臂伸向
+  //   水面 (+Z)、齿轮架与曲柄、链垂吊钩挂着货包;黑白涂装,柱墩生成碰撞
   D.lockgate_crane = {
     desc: 'Victorian cast-iron wharf crane on a stone plinth at the canal edge: tapering post, curved jib over the water (+Z), gear frame with crank handles, chain + hook with a bale, painted black and white (post + plinth collide).',
     params: {}, variants: 1, mount: 'ground',
@@ -1696,6 +1872,8 @@ export function register(D, H) {
     },
   };
   // iron railing along +X (painted black, spear-top bars) — spawn stage edges, office stair …
+  // 【铸铁栏杆】沿 +X 的黑色矛尖栏杆(出生舞台边、办公室楼梯等):方柱约
+  //   每 1.8 m 一根;RAIL 碰撞 —— 拦人,子弹 / 墨水 / 乌贼可穿过,不可站立
   D.lockgate_railing = {
     desc: 'Black cast-iron railing along +X: spear-top bars, top + bottom rails, square posts every ~1.8 m (rail collider: shots / squids pass).',
     params: { length: 'm (4)', height: 'm (1.0)' }, variants: 1, mount: 'ground',
@@ -1710,6 +1888,9 @@ export function register(D, H) {
 
   // scaffold-tube handrail along a chamber stair (local +X from the foot at (0,0,0) up to (run, rise, 0), open side at
   // local z = side * 0.75): standards, top + knee rails, a toe board (the rail collides, off-limits on top)
+  // 【脚手架管扶手】闸室检修楼梯旁的镀锌钢管栏杆:从 (0,0,0) 沿 +X 爬升到
+  //   (run, rise),立杆 + 上下横杆 + 踢脚板,开口侧在 z = side * 0.93;
+  //   碰撞为 RAIL 斜坡链
   D.lockgate_scaffrail = {
     desc: 'Scaffold-tube handrail for the chamber maintenance stairs (local +X from the foot up to (run, rise); rail on the open side z = side * 0.93): galvanised standards with couplers, top + knee rails, toe board. Rail colliders follow the slope.',
     params: { run: 'm (7.25)', rise: 'm (3.2)', side: '+1 | -1' }, variants: 1, mount: 'ground',
@@ -1727,6 +1908,8 @@ export function register(D, H) {
     },
   };
   // lock-keeper's timber tool hut on the lock side (collides; the roof is off-limits)
+  // 【闸管员工具棚】柏油木板小黑棚:白色门窗、油毡斜顶 + 炉筒、门边挂两把
+  //   绞盘、一只水桶;棚体碰撞,屋顶禁上(ROOF 碰撞)
   D.lockgate_hut = {
     desc: "Lock-keeper's tool hut: black-tarred weatherboards, white window + door, felt roof with a stove pipe, windlasses hung by the door, a bucket (collides; roof off-limits).",
     params: {}, variants: 1, mount: 'ground',
@@ -1749,6 +1932,8 @@ export function register(D, H) {
     },
   };
   // cast-iron yard water pump with a stone trough (cover)
+  // 【铸铁压水井】教区水泵:凹槽立柱 + 穹顶、 Swan 颈龙头对石槽、长压杆,
+  //   金顶饰球;生成碰撞
   D.lockgate_pump = {
     desc: 'Cast-iron parish pump: fluted column with a domed cap, swan-neck spout over a stone basin, long handle (collides).',
     params: {}, variants: 1, mount: 'ground',
@@ -1769,6 +1954,9 @@ export function register(D, H) {
   // spawn stage dressing (pos = centre of the stage front edge at ground level, stage spans x ±9, back to z -7):
   // stone copings on the front parapets (off-limits), the grand stair's stone cheeks + newel piers with lamps, a
   // cast-iron sack barrow + weighing machine on the stage corners
+  // 【出生装货台套件】围绕出生舞台(stage 顶 2.4)的装饰:前沿女儿墙压顶石
+  //   (ROOF 禁上)、大台阶两侧斜砌石 cheek 与砖砌灯柱墩(墩碰撞)、后台两角
+  //   的麻袋手推车与地磅台秤、NOTICE TO BOATMEN 告示牌
   D.lockgate_stagekit = {
     desc: 'Loading-stage dressing for the spawn: parapet copings, grand-stair cheeks + newel piers with lamps (piers collide, off-limits), stage-edge stone band, sack barrow + platform scale in the back corners.',
     params: {}, variants: 1, mount: 'ground',
@@ -1814,6 +2002,9 @@ export function register(D, H) {
   };
   // cottage garden kit (pos = garden centre, lawn level): picket fence + gate on the street side, veg beds, washing
   // line with sheets (cloth flags), beehive, water butt, rhubarb forcers, a watering can
+  // 【小屋后花园套件】白色尖桩栅栏(+X 沿街,留门洞)、抬升菜畦(卷心菜 +
+  //   豆架)、晾衣绳床单(布面旗,自带颜色)、蜂箱、雨水桶、大黄催熟罩、洒水壶;
+  //   栅栏 / 菜畦 / 蜂箱生成碰撞
   D.lockgate_garden = {
     desc: "Lock-keeper's back garden kit: white picket fence along +X with a gate gap, raised veg beds, a washing line of cloth, beehive, water butt, rhubarb forcers (fence + beds + hive collide).",
     params: { length: 'fence length (5.8)' }, variants: 1, mount: 'ground',
@@ -1852,10 +2043,14 @@ export function register(D, H) {
     },
   };
   // enamel / cast signs for walls and posts (wall at z = 0, faces +Z): variant = which sign
+  // 【搪瓷牌文案表】ENAMEL:8 个变体的 [文字, 字色, 底色]
   const ENAMEL = [
     ['NO MOORING', K.white, K.red], ['BEWARE OF THE LOCK', K.white, K.blue], ['DEAD SLOW', K.black, '#e8c84a'],
     ['TOWPATH', K.white, K.green], ['LOCK 2', K.black, K.white], ['NO SWIMMING', K.white, K.red], ['KEEP CLEAR', K.black, '#e8c84a'], ['BASIN', K.white, K.blue],
   ];
+  // 【搪瓷告示牌】贴墙(z = 0 为墙面)或自立柱(post:true)的珐琅铁皮牌,
+  //   8 个变体(NO MOORING、BEWARE OF THE LOCK、DEAD SLOW、TOWPATH、
+  //   LOCK 2、NO SWIMMING、KEEP CLEAR、BASIN),四角铆钉
   D.lockgate_enamel = {
     desc: 'Enamel sign on a wall (wall at z = 0, pos.y = sign centre): variant 0 NO MOORING, 1 BEWARE OF THE LOCK, 2 DEAD SLOW, 3 TOWPATH, 4 LOCK 2, 5 NO SWIMMING, 6 KEEP CLEAR, 7 BASIN. post: true stands it on its own post (pos = ground).',
     params: { post: 'bool' }, variants: ENAMEL.length, mount: 'wall',
@@ -1874,6 +2069,8 @@ export function register(D, H) {
 
   // brick cheek wall along the open side of a stone flight (local +X from the foot at (0,0,0) up to (run, rise); the
   // cheek stands just outside the flight's side face at local z = 0 and covers it down to the ground) + stone coping
+  // 【砖砌梯帮】石阶敞开一侧的斜砖帮墙 + 随坡压顶石:沿 +X 从 (0,0,0) 爬升到
+  //   (run, rise),贴住梯段侧面并遮到地面;自身无碰撞(梯段侧面本身即墙)
   D.lockgate_cheek = {
     desc: 'Brick cheek wall with a sloping stone coping along the open side of a flight of steps (local +X from the foot up to (run, rise), cheek face at local z = 0 facing +Z; covers the flight\'s side). Non-colliding (the flight\'s own side is the wall).',
     params: { run: 'm', rise: 'm', up: 'coping height above the treads (0.25)' }, variants: 1, mount: 'ground',
@@ -1889,6 +2086,8 @@ export function register(D, H) {
     },
   };
   // weeds + moss tufts along a wall foot (along +X from pos, wall at z = 0 behind, tufts toward +Z)
+  // 【墙脚杂草】沿墙根 / 路缘的草簇、蒲公英与醉鱼草小枝(沿 +X 散布约
+  //   每米 1.6 簇,尺寸随机);纯装饰,无碰撞
   D.lockgate_weeds = {
     desc: 'Weeds and moss along a wall foot / kerb: tufts of grass, dandelions, a buddleia sprig (along +X for length). Non-colliding.',
     params: { length: 'm (4)' }, variants: 1, mount: 'ground',
@@ -1904,7 +2103,11 @@ export function register(D, H) {
     },
   };
   // paper bills pasted on a wall (wall at z = 0): coloured bills with printed-looking bars + a headline
+  // 【招贴文案表】BILLS:5 个变体的 [标题, 纸色, 墨色](赛船会 / 地盘战 /
+  //   停闸公告 / 舞会 / 租船)
   const BILLS = [['REGATTA', '#e9dcb8', '#8e2f2a'], ['TURF WAR', '#f0e6c8', '#2f4a3c'], ['LOCK CLOSED', '#e6e0cf', '#3a4a6a'], ['DANCE', '#efd9b0', '#6a2a5a'], ['BOATS FOR HIRE', '#e8e2d0', '#2c3a58']];
+  // 【墙上招贴】2~3 张互相叠压的海报(赛船会 / 地盘战 / 停闸公告 / 舞会 /
+  //   租船),带标题大字与印刷体横条、微微歪斜;纯装饰,无碰撞
   D.lockgate_bills = {
     desc: 'Paper bills pasted on a wall (wall at z = 0, pos.y = bottom): 2–3 overlapping posters with headlines and print bars, a torn one (non-colliding).',
     params: { count: '2|3' }, variants: 5, mount: 'wall',
@@ -1924,6 +2127,8 @@ export function register(D, H) {
   };
 
   // stone coping along a wall top (along +X for length, centred on the wall, pos.y = wall top). Non-colliding.
+  // 【墙顶压顶石】鞍形断面石板沿墙顶敷设(沿 +X,约 0.9 m 一道风化缝,逐段
+  //   色差);纯装饰,无碰撞
   D.lockgate_wallcap = {
     desc: 'Saddleback stone coping along a wall top (along +X, width w, pos.y = the wall top), weathered joints every ~0.9 m. Non-colliding.',
     params: { length: 'm (6)', w: 'wall width + overhang (0.72)' }, variants: 1, mount: 'ground',
@@ -1945,8 +2150,24 @@ const C45 = Math.SQRT1_2;
 const DW = (s, t, y = 0) => [C45 * (s - t), y, C45 * (s + t)];
 const Q = -P / 4;                       // rotY that turns local +X along u (local +Z along v)
 
+// ================================================================================
+// 【中文导读】PLACEMENTS —— 本关摆设清单(半份清单)
+//
+// 【镜像规则】除显式 mirror:false 的条目(中心拱桥、背景镇景等只放一次的
+//   整体)外,每条都会在 (x,z) → (-x,-z)、rotY + π 处镜像出另一半(Bravo 场)。
+//
+// 【斜向船池坐标】C45 / DW / Q 是斜贯场地的对角运河(船池)坐标换算助手,
+//   数值必须与 layout.js 保持一致:s 沿 u = (√2/2, √2/2)、t 沿 v =
+//   (-√2/2, √2/2);Q = -π/4 即把道具局部 +X 对齐 u 方向所需的 rotY。
+//
+// 【清单分区】地标建筑 → 闸 E(闸 W 是其 180° 孪生:人字门、上游闸池水面、
+//   检修扶手与码头小件)→ 斜向船池纤道(窄船、系船柱、导缆环、起重机、
+//   长椅、里程碑)→ 桥街与起重机场院 → 西侧(小屋花园、马道、西院)→
+//   中后院与装货台 → 东侧场院与装货岸 → 楼梯帮、墙顶压顶、杂草、招贴、告示牌。
+// ================================================================================
 export const PLACEMENTS = [
   // ================= landmarks + buildings (Alpha half; each is mirrored to Bravo's)
+  // 【地标建筑】Alpha 半场;拱桥与背景镇各放一次,其余逐条镜像到 Bravo
   { type: 'lockgate_bridge', pos: [0, 0, 0], rotY: Q, mirror: false },
   { type: 'lockgate_warehouse', pos: [4, 0, -45.4], rotY: 0, fill: [[-26.3, -16], [18, 26.3]] },
   { type: 'lockgate_cottage', pos: [-17.75, 0, -28.75], rotY: 0 },
@@ -1957,6 +2178,8 @@ export const PLACEMENTS = [
   { type: 'lockgate_backdrop', pos: [0, 0, 0], rotY: 0 },
 
   // ================= lock E (lock W is its 180° twin): gates, upper pound + railings, drained chamber, maintenance
+  // 【闸 E 组】闸 W 是绕场地中心旋转 180° 的孪生:下闸门、上闸门、上游闸池
+  //   水面与栏杆、检修脚手架扶手、两岸启闭机、停航道具、工具棚与码头小件
   { type: 'lockgate_gates', pos: [16.5, 1.3, 12], rotY: 0, kind: 'lower' },
   { type: 'lockgate_gates', pos: [24.5, 1.3, 12], rotY: 0, kind: 'upper' },
   { type: 'lockgate_pound', pos: [25.12, -0.3, 12], rotY: 0, length: 66, width: 5.5 },
@@ -1990,6 +2213,8 @@ export const PLACEMENTS = [
   { type: 'lockgate_enamel', pos: [26.98, 3.2, 18.2], rotY: -P / 2, variant: 4 },
 
   // ================= the diagonal pound: Alpha's towpath quay, moored boats, wharf crane, ladders, rings
+  // 【斜向船池纤道】沿对角运河的 Alpha 纤道:两艘窄船(工作船 + 居家船)、
+  //   系船柱、导缆环、登岸铁梯、码头起重机、救生圈、长椅、里程碑、搪瓷牌、路灯
   { type: 'lockgate_narrowboat', pos: DW(7.5, -3.67, -0.7), rotY: Q, kind: 'working', L: 7.8, W: 2.0, cab: 2.9, lines: [[-2.3, -1.5, 0.9], [2.7, -1.5, 0.9]] },
   { type: 'lockgate_narrowboat', pos: DW(7.2, -1.52, -0.7), rotY: Q, kind: 'cabin', L: 7.8, W: 2.0, cab: 2.9, lines: [[-2.0, -3.6, 0.9], [3.0, -3.6, 0.9]] },
   { type: 'lockgate_bollard', pos: DW(5.2, -5.25, 0.15) },
@@ -2010,6 +2235,8 @@ export const PLACEMENTS = [
   { type: 'lockgate_lamp', pos: DW(8.2, -9.5), variant: 0 },
 
   // ================= the bridge street + crane wharf courtyard (bends round the stables onto the bridge)
+  // 【桥街与起重机场院】绕过马厩折上拱桥的街面:货堆、木桶、马槽、压水井、
+  //   邮筒、指路牌与两盏壁挂灯
   { type: 'lockgate_goods', pos: [12.4, 0, -15.3], rotY: 0.2, variant: 0 },
   { type: 'lockgate_casks', pos: [7.2, 0, -16.6], rotY: -0.4, variant: 1 },
   { type: 'lockgate_goods', pos: [1.2, 0, -13.8], rotY: -P / 4, variant: 1 },
@@ -2022,6 +2249,7 @@ export const PLACEMENTS = [
   { type: 'lockgate_lamp', pos: [9, 2.7, -18.98], rotY: 0, variant: 1 },
 
   // ================= west: the lock-keeper's front garden, the horse ramp, the west yard
+  // 【西区】闸管所前花园(苹果树、花坛、长椅)、马车坡与西院(大车、货堆、木桶、路灯)
   { type: 'lockgate_tree', pos: [-26.2, 0, -28.6] },
   { type: 'lockgate_planter', pos: [-19.8, 0, -22.4], variant: 0 },
   { type: 'lockgate_planter', pos: [-15.7, 0, -22.4], variant: 1 },
@@ -2033,12 +2261,14 @@ export const PLACEMENTS = [
   { type: 'lockgate_casks', pos: [-9.6, 0, -38.8], rotY: -0.2, variant: 0 },
 
   // ================= centre: the back yard + loading stage
+  // 【中区】仓库后院的货堆木桶 + 出生装货台套件(2.4 m 台面上的装饰与告示)
   { type: 'lockgate_goods', pos: [-2.9, 0, -35.2], rotY: 0, variant: 1 },
   { type: 'lockgate_casks', pos: [10.6, 0, -35.8], rotY: 0.2, variant: 1 },
   { type: 'lockgate_casks', pos: [-2.8, 2.4, -40.4], rotY: 0.3, variant: 1 },
   { type: 'lockgate_stagekit', pos: [4, 0, -38.4], rotY: 0 },
 
   // ================= east: the yard south of the shed, the loading bank
+  // 【东区】货棚南侧场院与 1.3 m 装货岸:货堆、木桶、路灯与限速搪瓷牌
   { type: 'lockgate_goods', pos: [19.2, 0, -31.2], rotY: 0, variant: 2 },
   { type: 'lockgate_goods', pos: [20.2, 0, -24.8], rotY: P / 2, variant: 1 },
   { type: 'lockgate_lamp', pos: [16.4, 0, -30.6], variant: 0 },
@@ -2047,6 +2277,7 @@ export const PLACEMENTS = [
   { type: 'lockgate_enamel', pos: [17.98, 3.45, -13.0], rotY: -P / 2, variant: 2 },
 
   // ================= stair cheeks, wall copings, weeds, bills, signs
+  // 【收边杂件】各石阶的砖砌梯帮、墙顶压顶石、墙脚杂草、墙上招贴与各式告示牌
   { type: 'lockgate_cheek', pos: [14.5, 0, -22], rotY: -P / 2, run: 5, rise: 1.3 },
   { type: 'lockgate_cheek', pos: [17.5, 0, -22], rotY: -P / 2, run: 5, rise: 1.3, flip: true },
   { type: 'lockgate_cheek', pos: [12, 0, 16.4], rotY: 0, run: 3.5, rise: 1.3, flip: true },

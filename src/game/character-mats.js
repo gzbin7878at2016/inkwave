@@ -8,9 +8,31 @@
 //  • hair  : aTint (+ lighter / − darker team ink; ≤ −1.5 = "gear" accessory, class = −aTint − 2),
 //            colour = strand data (t, suckers, sinA) | cap flag (b ≥ 1.5) | gear rgb (r < 0 → team × g).
 //  • weapon plastic: aMat = material class (0 satin, 1 gloss, 2 rubber, 3 metal, 4 lens, 5 LED, 6 print).
+//
+// 【中文导读 · 角色材质工厂】
+// 【零贴图策略】整个文件不加载任何贴图:图案、缝线、迷彩、虹膜纹理等全部由 fragment shader
+//   用 SDF(有向距离场)+ fbm 噪声现场绘制;颜色则来自顶点色与少量 uniform(队伍色/肤色/装备色)。
+//   好处:任意分辨率下都清晰、显存占用极小、换色只需改 uniform。
+// 【顶点语义契约】几何体在生成时把"每个顶点的身份"写进语义属性(详见 character-geo.js):
+//   aEx=子材质/颜色槽,aCloth=(部件 id, 材质类别, 参数), aTint=装备类别或染色,
+//   colour 分量被复用为束发/吸盘/装备数据。shader 据此决定"这块碎片画什么"。
+// 【iwLod 防闪烁】所有周期性细节(缝线、针织、罗纹)都乘 iwLod(coord, P):当图案周期 P
+//   在屏幕上小于约 3 像素时逐渐淡出,避免远处摩尔纹/闪点(细节见 NOISE 块中的注释)。
+// 【program 共享】身体材质是【每角色一个实例】(携带该角色的受伤/无敌闪烁 uniform),
+//   但同一种材质只编译一份 program(customProgramCacheKey 固定字符串去重);
+//   武器塑料/暗色/玻璃/发光材质则是【全局单例】,直接共享。
+// 【结构速览】NOISE/BUMP 公共 GLSL 库 → 受伤斑块 → inject() 注入器 → 角色 uniform 包 →
+//   身体三件套(皮肤/布料/头发)→ 暗色/眼球 → 墨水槽玻璃/墨水填充 → 鱿鱼形态 → 武器/墨水/发光。
 import * as THREE from 'three';
 import { FACE_SHADER } from './character-face.js';
 
+// 【公共 GLSL 库 · NOISE】几乎所有材质 fragment 都内嵌这一份:
+// 【iwHash/iwNoise/iwFbm】经典值噪声三件套,fbm 三分频叠加(0.56/0.29/0.15),画迷彩/污渍/墨迹用;
+// 【iwBand】y 轴上的抗锯齿色带(条纹图案的基本件);
+// 【iwFill/iwStroke】把 SDF 变成"填充面/描边"两种覆盖率,都用 fwidth 做屏幕空间抗锯齿;
+// 【iwLod】图案亚像素淡出(见文件头导读)——所有周期细节的"防闪烁开关";
+// 【iwDash】沿参数 s 的虚线(缝线!duty 控制针脚占空比),配合 iwStroke 画出双针缝线;
+// 【iwSdBox/iwSdSeg/iwSmin】圆角盒/线段距离场/平滑并集,是各种徽章、口袋、拉链的积木。
 const NOISE = /* glsl */`
 float iwHash(vec3 p){ p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3)); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float iwNoise(vec3 x){ vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
@@ -33,6 +55,8 @@ float iwSmin(float a, float b, float k){ float h = clamp(0.5 + 0.5 * (b - a) / k
 `;
 
 // screen-space bump: perturb the view-space shading normal by a scalar height field (metres)
+// 【公共 GLSL 库 · BUMP】屏幕空间 bump:只用一个标量高度场 h(缝线凸起、针织纹理、
+//  吸盘边缘等都累计进 iwH),借屏幕空间导数扰动视空间法线——不需要切线空间,也不需要法线贴图。
 const BUMP = /* glsl */`
 vec3 iwBumpN(vec3 n, float h, vec3 pos){
   vec3 dpx = dFdx(pos), dpy = dFdy(pos);
@@ -43,6 +67,9 @@ vec3 iwBumpN(vec3 n, float h, vec3 pos){
 }
 `;
 
+// 【受伤斑块 HURT_FRAG】挂在 color_fragment 之后:uHurt.w 是受伤强度,在绑定姿势坐标
+//  (vBindPos,即模型局部坐标——不随动画扭曲)上用 fbm 阈值切出墨水状的灼烧斑块,
+//  边缘一圈先压暗成"焦痕"再混入 uHurt.rgb 队伍墨色;粗糙度段会把它拉到 0.16(湿亮)。
 const HURT_FRAG = /* glsl */`
   float iwHurtM = 0.0;
   if (uHurt.w > 0.002) {
@@ -58,6 +85,10 @@ const HURT_FRAG = /* glsl */`
   }
 `;
 
+// 【inject() 注入器】本文件的核心机制:不手写整段 shader,而是对 three.js 标准材质的
+//  shader 字符串做锚点替换——在每个 #include <xxx> 之后(或之前,如 fOpaque)插入自定义段。
+// 键名与锚点一一对应:vPars/vBegin(顶点)、fPars/fColor/fRough/fMetal/fNormal/fEmissive/
+// fLights/fAO/fOpaque(片段)。所有材质工厂共用它,只是喂不同的注入内容。
 function inject(shader, o) {
   let v = shader.vertexShader, f = shader.fragmentShader;
   if (o.vPars) v = v.replace('#include <common>', '#include <common>\n' + o.vPars);
@@ -75,6 +106,10 @@ function inject(shader, o) {
 }
 
 /** Per-character uniform bundle (shared by that character's body materials). */
+// 【角色 uniform 包】每个角色一份,身体材质按引用共享同一份对象——改一处,全身生效。
+//  颜色类(uTeam/uShirt/…)直接驱动布料取色;状态类(uHurt 受伤/uFlash 无敌闪白/uGlow 大招发光/
+//  uOpacity 透明度)由战斗逻辑每帧写;面部钩子(uLid 眨眼/uGaze 注视/uPupil 瞳孔/uMouth2 表情)
+//  由 character.js 驱动,叠加在旧的骨骼驱动之上。
 export function makeCharUniforms() {
   return {
     uTeam: { value: new THREE.Color('#ff8a14') },
@@ -105,6 +140,10 @@ export function makeCharUniforms() {
   };
 }
 
+// 【身体材质公共注入段】三种身体材质(皮肤/布料/头发)共用的"varying 底座":
+//  vBindPos=绑定姿势局部坐标(画图案/受伤的稳定空间)、vEx=aEx 子材质槽;
+//  fragment 侧再统一声明 uHurt/uHurtSeed/uFlash 并内嵌 NOISE+BUMP。
+// 注意头发材质会去掉 vEx(它用 aTint 走另一条分派)。
 const bodyVPars = /* glsl */`
 varying vec3 vBindPos;
 attribute float aEx;
@@ -131,6 +170,11 @@ ${BUMP}
 //    wet lid margins, mouth cavity / teeth / tongue.
 // Sub-materials (aEx): 0 skin · 1 nail · 2 ear cup · 8 ear shell · 9 lid margin · 10 inner lip / cavity · 11 teeth · 12 tongue.
 // ================================================================================================
+// ================================================================================================
+// 【面部 GLSL 库 · FACE_GLSL】皮肤与眼球共用的 SDF 几何:
+// 【iwVisorSD】Inkling 眼罩(面罩)的有向距离场——两枚圆角"镜片瓣"+鼻梁桥+外展的翼,
+//   用平滑最大值(iwSmax)拼成一个剪影,皮肤材质用它画出发色眼罩;
+// 【iwHairline】发际线曲线,同时遮帽檐与皮肤的接缝(线上方画队伍色发根,线下方压一道软阴影)。
 const FACE_GLSL = /* glsl */`
 float iwSmax(float a, float b, float k){ float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, h) + k * h * (1.0 - h); }
 float iwVisorSD(float az, float el){
@@ -146,6 +190,9 @@ float iwVisorSD(float az, float el){
 float iwHairline(float az){ float a = abs(az) / 3.14159265; float h = mix(0.58, 0.3, smoothstep(0.1, 0.42, a)); return mix(h, -0.8, smoothstep(0.5, 0.96, a)); }
 `;
 // eye-space constants shared by the skin (lids) and eye (ball, lid shadow) shaders
+// 【眼部常量包】把 character-face.js 算好的眼球/嘴部骨架数据(球心、眼空间矩阵、
+//  上下眼睑曲线、嘴平面)以 uniform 形式递给皮肤与眼球两个 shader,保证眼睑与眼球的
+//  几何在数学上严格同源——眼球转动时虹膜精确滑在眼皮之下。
 function faceUniforms() {
   const S = FACE_SHADER;
   return {
@@ -155,6 +202,9 @@ function faceUniforms() {
   };
 }
 // lid closure from the eye bones (character.js blinks/squints by scaling eyeL/eyeR Y): 0 open … 1 shut
+// 【眼睑闭合 GLSL】闭眼有两个驱动源:① 眼骨骼的 Y 缩放(character.js 眨眼/眯眼),
+// 这里通过比较眼球骨与头骨 Y 轴长度反推开合度;② uniform uLid(上/下、左/右四个分量)。
+// 两者取大——任一来源闭上就算闭上;无骨骼动画时(非蒙皮网格)恒为睁开。
 const LID_BONE_GLSL = /* glsl */`
 #ifdef USE_SKINNING
 float iwBoneClose(float bi){ mat4 bE = getBoneMatrix(bi); mat4 bH = getBoneMatrix(${FACE_SHADER.bones.head.toFixed(1)}); float open = length(bE[1].xyz) / max(length(bH[1].xyz), 1e-5); return clamp((1.0 - open) / 0.93, 0.0, 1.0); }
@@ -168,6 +218,9 @@ vec2 iwLidClose(int si, vec4 lid){
 `;
 
 export function makeSkinMaterial(u, skinHex) {
+  // 【皮肤材质】每角色一个实例(带自己的受伤/闪白 uniform),但 program 全局共享(缓存键恒定)。
+  //  配色思路:VertexColors 提供烘焙顶点色,材质底色是肤色;fragment 再按 aEx 子材质槽分派:
+  //  指甲/耳壳/牙/舌各有专色,面部(vHead 长度>0.5 即"在头上")叠加发际线/腮红/雀斑/鼻/唇/眼罩/口腔。
   const m = new THREE.MeshPhysicalMaterial({
     color: skinHex, roughness: 0.6, metalness: 0, vertexColors: true, specularIntensity: 0.32,
     sheen: 1, sheenRoughness: 0.85, sheenColor: new THREE.Color('#ffd2c0'),
@@ -176,6 +229,7 @@ export function makeSkinMaterial(u, skinHex) {
   const tone = new THREE.Color(skinHex);
   const lum = tone.r * 0.3 + tone.g * 0.59 + tone.b * 0.11;
   // freckles on the second-lightest tone only (a character trait, not noise on everyone)
+  // 【按肤色推散射参数】亮度越低,红光包裹越窄、散射色越沉——深肤色不再"番茄红"。
   if (u.uFreckle && Math.abs(lum - 0.5) < 0.2 && tone.r > 0.8) u.uFreckle.value = 1;
   m.userData.iwLum = lum;
   // scatter: how far each channel wraps past the terminator, and the colour light picks up inside the skin
@@ -302,6 +356,9 @@ export function makeSkinMaterial(u, skinHex) {
       fAO: 'reflectedLight.indirectDiffuse *= iwAO; reflectedLight.indirectSpecular *= mix(1.0, iwAO, 0.8);',
     });
     // vertex: lids + mouth (before skinning; normals too, so the lids shade as they slide)
+    // 【顶点段:眼睑+嘴】在蒙皮之前、于眼空间内绕眼球轴旋转眼睑(精确贴合眼球滑动),
+    //  嘴部按 uMouth/uMouth2 的曲线/宽度/开合/撇嘴/嘟嘴参数做位移变形;法线同步旋转,
+    //  让滑动的眼睑光照正确。
     shader.vertexShader = shader.vertexShader
       .replace('#include <skinning_pars_vertex>', '#include <skinning_pars_vertex>\n' + LID_BONE_GLSL)
       .replace('#include <beginnormal_vertex>', /* glsl */`#include <beginnormal_vertex>
@@ -334,6 +391,9 @@ export function makeSkinMaterial(u, skinHex) {
           iwPos += dp * w;
         }`);
     // stylised SSS: replace the Lambert lobe of the direct light with a per-channel wrapped profile + ear translucency
+    // 【风格化 SSS】整体替换 three.js 的 RE_Direct:先调用原版物理直接光,再在其上加
+    //  逐通道包裹漫反射(红通道包裹最宽——红光在皮下走得远)、明暗交界带染上散射色、
+    //  薄部位(耳朵)逆光透光。以 #define 劫持 RE_Direct,所有灯自动走新路径。
     shader.fragmentShader = shader.fragmentShader.replace('#include <lights_physical_pars_fragment>', /* glsl */`#include <lights_physical_pars_fragment>
       void RE_Direct_IwSkin(const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight) {
         vec3 dd = reflectedLight.directDiffuse;
@@ -371,6 +431,10 @@ const lerpN = (a, b, t) => a + (b - a) * t;
 // part id + material class (aCloth.xy) and part coordinates (uv) drive seams, stitching, graphics,
 // ribbing, weave micro-normals, tread and per-class roughness / metalness / sheen / clearcoat.
 // ================================================================================================
+// 【布料顶点语义】三套并行的顶点分派表(几何生成时写入,契约见文件头):
+// 【CS 颜色槽】aEx 决定 fragment 取哪个 uniform 色(队伍/上衣/短裤/鞋/袜/底/织带…);
+// 【MC 材质类别】aCloth.y 决定微观纹理与 PBR 参数(针织/斜纹/罗纹/皮革/泡棉/橡胶/塑料/金属…);
+// 【PART 部件 id】aCloth.x 决定"这块碎片是什么部件"——走哪个装饰分支(T恤身/袖/领/短裤/鞋面/中底…)。
 // colour sources (aEx)
 export const CS = { white: 0, team: 1, shirt: 2, shorts: 3, shoe: 4, sock: 5, sole: 6, strap: 7, shoe2: 8, outsole: 9, metal: 10, darkPlastic: 11, lace: 12, teamDark: 13, trim: 14 };
 // material classes (aCloth.y)
@@ -379,6 +443,9 @@ export const MC = { jersey: 0, twill: 1, rib: 2, leather: 3, foam: 4, rubber: 5,
 export const PART = { none: 0, tee: 1, sleeve: 2, collar: 3, shorts: 4, shortLeg: 5, sock: 6, upper: 7, midsole: 8, outsole: 9, strap: 10, tongue: 11, tankCap: 12, gauge: 13, hem: 14, cuff: 15, cord: 16, collarPad: 17, plate: 18, heelTab: 19, toeCap: 20 };
 
 // squid badge shared by the cloth prints and the headgear embroidery
+// 【鱿鱼徽章 EMBLEM】队伍徽章的纯 SDF 实现:外圈是带角向扰动+三颗卫星墨滴的"墨渍泼溅",
+//  内部白色鱿鱼剪影用平滑并集拼出(箭头状外套膜+ swept 鳍+四根触手+椭圆眼),
+//  返回 (泼溅覆盖率, 剪影覆盖率)。T恤印花、帽子刺绣共用这一个函数。
 const EMBLEM = /* glsl */`
 // squid badge: ink splat with a white squid glyph; returns (splat coverage, glyph coverage)
 vec2 iwEmblem(vec2 q, float R) {
@@ -409,6 +476,16 @@ vec2 iwEmblem(vec2 q, float R) {
 }
 `;
 
+// 【布料图案库 · CLOTH_GLSL】整张"零贴图印花系统",全部在绑定姿势坐标里画:
+// 【iwTeeCrease】T恤细褶皱高度场(腰部压缩纹、腋下放射纹、下摆短竖纹)——大褶皱由几何承担,
+//   这里只补近景细节,并用 iwLod 随像素足迹淡出;
+// 【iwShirtPattern】老款图案 0..3(色丁滚边/双细条纹/插肩袖+侧拼/人字纹+下摆带);
+// 【iwTrimCol/iwCuffCol】按 uPattern 查领口罗纹/袖口配色;
+// 【iwSplat3】贴在圆柱面上的墨渍(波瓣边缘+卫星滴),溅泼图案的基本件;
+// 【iwDigitSD】七段数码管式运动号码(圆角段,查表 0x3F…),球衣号码用;
+// 【iwShirtCol】上衣主体配色总入口:0..3 走老图案,4..9 依次是
+//   布列塔尼条纹/墨迹泼溅/泼溅迷彩/扎染/运动衫(V 领+侧幅+号码)/运动外套(双白条+拉链),
+//   每种都是 SDF+噪声的配方;迷彩即三层 fbm 阈值切斑。
 const CLOTH_GLSL = /* glsl */`
 uniform vec3 uTeam; uniform vec3 uShirt; uniform vec3 uShorts; uniform vec3 uShoe; uniform vec3 uSole; uniform vec3 uSock; uniform vec3 uStrap; uniform float uPattern;
 varying vec3 vCloth; varying vec2 vIwUv; varying float vOcc;
@@ -587,6 +664,10 @@ ${EMBLEM}
 `;
 
 export function makeClothMaterial(u) {
+  // 【布料材质】一套 program 画全身衣物。fragment 主体是"两段式":
+  //  ① 按 aEx 颜色槽取 base 色;② 按 aCloth.x 部件 id 进对应装饰分支——
+  //  侧缝/下摆/口袋/拉链/号码/徽章/鞋带孔……缝线统一用 iwStroke+iwDash 画虚线并 iwLod 淡出,
+  //  高度累计进 iwH 交给 BUMP 凸起;最后按 aCloth.y 材质类别叠加针织/斜纹微观法线。
   const m = new THREE.MeshPhysicalMaterial({
     color: 0xffffff, roughness: 0.82, metalness: 0, vertexColors: true,
     sheen: 1, sheenRoughness: 0.6, sheenColor: new THREE.Color(1, 1, 1), clearcoat: 1, clearcoatRoughness: 0.3,
@@ -900,6 +981,8 @@ export function makeClothMaterial(u) {
         }
       ` + HURT_FRAG,
       fRough: /* glsl */`
+        // 【粗糙度表】按材质类别查表(斜纹0.8/皮革0.46/橡胶0.86/塑料0.3/金属0.28…),
+        //  印刷装饰(iwShine)把粗糙度压低一档模拟胶印光泽;受伤斑块一律拉到湿亮 0.16。
         {
           float r = 0.84;
           if (iwCls == 1.0) r = 0.8; else if (iwCls == 2.0) r = 0.86; else if (iwCls == 3.0) r = 0.46; else if (iwCls == 4.0) r = 0.62;
@@ -913,6 +996,9 @@ export function makeClothMaterial(u) {
       fNormal: 'normal = iwBumpN(normal, iwH, -vViewPosition);',
       fEmissive: 'totalEmissiveRadiance += uFlash;',
       fLights: /* glsl */`
+        // 【PBR 类别表】每类材质一份 (clearcoat, clearcoatRoughness, sheen, sheenRoughness):
+        //  针织靠 sheen 出绒光,皮革/塑料给薄 clearcoat,金属交给 metalnessFactor;
+        //  sheen 色取自当前 diffuse,让布料泛光"带颜色"。
         {
           float cc = 0.0, ccr = 0.3, sh = 0.0, shr = 0.6;
           if (iwCls == 0.0) { sh = 0.55; shr = 0.55; }        // jersey
@@ -949,8 +1035,14 @@ export function makeClothMaterial(u) {
 // Cap: colour.b >= 1.5, uv = (az, el) → bundle grooves radiating from the crown. Gear accessories
 // (aTint <= -1.5): colour = rgb (r < 0 → team × g), class = -aTint - 2 (0 plastic, 1 metal, 2 fabric, 3 rubber).
 // ================================================================================================
+// 【头发材质总览】队伍墨做的亮面触手:colour 分量复用为束发数据(t=沿发束参数,g=吸盘标记,
+//  b=sin(方位角)或帽标记),aTint 在 -1.5 处切换"发束/装备"两套语义;工厂头注见 makeHairMaterial。
 // Headgear fabrics (hair-mesh gear classes 4–6). uv.x = around the head (0.5 = front), uv.y = height above the rim in
 // radians (crown rows continue as 0.32 + fraction to the top); uv.y ≥ 2 = cap bill / bucket brim (2 + s top, 3.2 + s under).
+// 【帽子织物 · HAT_GLSL】三类头饰共用同一个着色入口 iwHatShade(cls, uv, …, col, h, ao),
+//  通过 cls 4/5/6 分派:【棒球帽】斜纹+六片式接缝(按纬距换算成米,缝线虚线+气眼孔+前额刺绣徽章+
+//  帽檐四道合缝行;【毛线帽】罗纹针织+翻边(cuff)+翻边上的队伍条纹;【渔夫帽】帆布纹+队伍色带+帽檐缝线。
+//  uv 约定:uv.x 绕头(0.5=正前),uv.y 是相对帽檐的高度(≥2 表示帽檐,3.2 起为檐底)。
 const HAT_GLSL = /* glsl */`
 void iwHatShade(float cls, vec2 uv, vec3 bp, inout vec3 col, inout float h, inout float ao) {
   vec3 hd = normalize(bp - vec3(0.0, 1.214, 0.012));
@@ -1027,6 +1119,13 @@ void iwHatShade(float cls, vec2 uv, vec3 bp, inout vec3 col, inout float h, inou
 //  • sharp clearcoat highlight over a soft base-layer lobe, baked contact occlusion in crevices and at the roots.
 // Per fragment the colour stage fills iwGumOn (0 = opaque gear), iwGumThin (0 thick … 1 thin), iwGumTrans (bleed tint).
 // ================================================================================================
+// 【软糖墨水 · GUMMY 三件套】"果冻感"的作弊实现,不开 transmission 通道(省一次全屏 pass):
+// 【GUMMY_PARS】每 fragment 三个状态量:iwGumOn(是不是果冻/装备关掉它)、iwGumThin(视线路径
+//  穿过的墨量,0 厚…1 薄)、iwGumTrans(果冻本体的饱和染色);
+// 【GUMMY_LIGHT】劫持 RE_Direct,在原直接光之后加一项"透光":逆光看薄处透光、明暗交界带吸光染色
+//  (Beer–Lambert 幂次随厚度变化:路越长色越深);
+// 【GUMMY_AMBIENT】环境光从薄部"内发光"(天空光透进来),缝隙里被 iwAO 压掉。
+// injectGummy() 负责把 GUMMY_LIGHT 注入 lights_physical_pars_fragment 锚点。
 const GUMMY_PARS = /* glsl */`
 vec3 iwGumTrans = vec3(0.0); float iwGumThin = 0.0; float iwGumOn = 0.0;
 vec3 iwSat(vec3 c, float k){ float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); return max(mix(vec3(l), c, k), 0.0); }
@@ -1056,10 +1155,16 @@ const GUMMY_AMBIENT = /* glsl */`
 #endif
 `;
 function injectGummy(shader) {
+  // 把果冻透光项注入 three.js 的直接光例程(每盏灯都走 RE_Direct,改一处全灯生效)。
   shader.fragmentShader = shader.fragmentShader.replace('#include <lights_physical_pars_fragment>', '#include <lights_physical_pars_fragment>\n' + GUMMY_LIGHT);
 }
 
 export function makeHairMaterial(u) {
+  // 【头发/头饰材质】一只材质画三种东西,靠顶点语义分派:
+  //  ① aTint≤-1.5 → 装备配件(色码藏在 colour.r:<0 为队伍/上衣/织带/短裤×colour.g,
+  //    类别=-aTint-2:塑料/金属/织物/橡胶/帽子织物);
+  //  ② colour.b≥1.5 → 头皮帽(uv 是经球极投影的方位角/仰角,画出发束放射沟槽);
+  //  ③ 其余 → 发束/发卷 ribbon(着色=路径深度混合果冻芯色,吸盘按细节层级"建模件或印刷件"二选一)。
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 1, sheenRoughness: 0.4, sheenColor: new THREE.Color(1, 1, 1), specularIntensity: 1 });
   m.onBeforeCompile = (shader) => {
     for (const k of ['uHurt', 'uHurtSeed', 'uFlash', 'uTeam', 'uGlow', 'uShirt', 'uShorts', 'uStrap']) shader.uniforms[k] = u[k];
@@ -1194,6 +1299,7 @@ export function makeHairMaterial(u) {
 }
 
 let _dark = null;
+// 【暗色材质】全局单例(武器内衬/缝隙等哑黑件),白底×顶点色,高 clearcoat 湿亮。
 export function getDarkMaterial() {
   if (!_dark) {
     _dark = new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.25, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.03 });
@@ -1209,6 +1315,11 @@ export function getDarkMaterial() {
 // glow), pupil (uPupil), clearcoat cornea + a view-anchored catch-light that stays crisp up close and widens with
 // distance. Legacy flat eye patches (aEx = ±1, e.g. the squid form) keep the painted look.
 // ================================================================================================
+// 【眼球材质】一只材质两种眼球,按 aEx 分派:
+// 【aEx=±2 嵌入式眼球】顶点段在眼空间转眼球(视线角×0.6+钳制,保证虹膜不滑出睁开的缝),
+//  fragment 把视线折射进角膜下平面求虹膜视差,虹膜纹理由角向噪声画(纤维、领环、角巩膜缘环、
+//  下缘反光),另有睫毛遮蔽斑与眼睑接触阴影、视角锚定的高光;
+// 【aEx=±1 贴片眼(旧式)】平面 uv 直接画,给鱿鱼形态等低细节形态用。
 export function makeEyeMaterial(u) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.14, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.03, specularIntensity: 0.5 });
   m.onBeforeCompile = (shader) => {
@@ -1349,6 +1460,8 @@ export function makeEyeMaterial(u) {
         #endif`,
     });
     // gaze: turn the ball in eye space (before skinning), then carry the eye-space basis to view space for the parallax
+    // 【顶点段:注视】先转眼球、再把眼空间基矩阵的逆随 varying 带去 fragment(供角膜折射
+    //  反投影虹膜),眼球坐标 aEyeS 原样传给 fragment 算虹膜位置。
     shader.vertexShader = shader.vertexShader
       .replace('#include <skinning_pars_vertex>', '#include <skinning_pars_vertex>\n' + LID_BONE_GLSL)
       .replace('#include <beginnormal_vertex>', /* glsl */`#include <beginnormal_vertex>
@@ -1389,6 +1502,8 @@ export function makeEyeMaterial(u) {
 // TANK — glass capsule with an etched level gauge; ink fill whose surface stays level in world space
 // (onBeforeRender feeds world-up in fill space), with a bright meniscus and suspended bubbles.
 // ================================================================================================
+// 【墨水槽玻璃】全局单例:极淡透明(0.14),fragment 在背面蚀刻 10% 一格的刻度尺,
+//  fOpaque 里用菲涅尔抬不透明度(掠射角更"毛"),刻度处提亮并兜底不透明度防穿帮。
 let _glass = null;
 export function getGlassMaterial() {
   if (!_glass) {
@@ -1435,6 +1550,10 @@ export function getGlassMaterial() {
 }
 
 /** Ink fill inside the tank (per character: emissive blink on low ink). Surface stays level in world space. */
+// 【墨水填充】每角色一个实例。核心机关在 onBeforeRender:把世界"上"方向换算进墨水槽父空间
+//  喂给 uniform;顶点段据此剪切液柱,让自由液面无论如何倾斜身体都保持水平
+//  (摇晃动画由 character.js 旋转填充网格叠加)。fragment 画深度变暗、悬浮气泡、
+//  贴玻璃壁的亮弯月面;低墨时 emissive 闪烁提示。
 export function makeInkFillMaterial() {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.16, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, emissive: 0x000000 });
   const U = { uUpL: { value: new THREE.Vector3(0, 1, 0) }, uSY: { value: 0.1 } };
@@ -1493,6 +1612,10 @@ export function makeInkFillMaterial() {
 // SQUID — glossy team ink + tentacle wiggle in the vertex shader. colour = (tint, wiggle, phase);
 // uv = (t along tentacle, cos(angle)) with aEx = 1 on tentacles (suckers on the inner face).
 // ================================================================================================
+// 【鱿鱼形态材质】与头发共用 GUMMY 果冻体系,但顶点段多了"触手摆动":
+//  colour.g=摆幅、colour.b=相位,正弦行波从根部传向尖端,触手内外弯曲+侧摆(幅度随
+//  colour.g 平方放大,越到尖越活)。ghost=true 时为潜墨预览:半透明、GreaterDepth
+//  反向深度(只画在已有墨水里)、菲涅尔染色,像"透过墨水看到的身体"。
 export function makeSquidMaterial(u, ghost = false) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 1, sheenRoughness: 0.4, sheenColor: new THREE.Color(1, 1, 1), specularIntensity: 1 });
   if (ghost) {
@@ -1608,6 +1731,9 @@ export function makeSquidMaterial(u, ghost = false) {
 // 0 satin plastic · 1 gloss paint · 2 rubber (diamond knurl) · 3 metal (brushed) · 4 lens/dark glass ·
 // 5 LED (emissive vertex colour) · 6 matte print
 // ================================================================================================
+// 【武器塑料】全局单例,所有武器共用一份 program:aMat(几何写入)挑材质类——
+//  缎面/亮漆/橡胶(菱形滚花 bump)/拉丝金属(各向异性噪声)/镜片黑玻璃/LED(顶点色×2.2 自发光)/
+//  哑光印刷;粗糙度/金属度/clearcoat 全靠查表,微观纹理仍走 iwLod 防闪。
 let _plastic = null;
 export const WMAT = { satin: 0, gloss: 1, rubber: 2, metal: 3, lens: 4, led: 5, print: 6 };
 export function getPlasticMaterial() {
@@ -1652,6 +1778,7 @@ export function getPlasticMaterial() {
 }
 const _inkCache = new Map();
 /** Glossy team ink for weapon parts, cached by hex. */
+// 【武器墨水】按颜色十六进制缓存的高光队伍墨材质(墨水弹/涂层件),同色全局共享一份。
 export function getInkMaterial(color) {
   const hex = color.getHexString();
   if (!_inkCache.has(hex)) {
@@ -1660,6 +1787,7 @@ export function getInkMaterial(color) {
   }
   return _inkCache.get(hex);
 }
+// 【发光材质】无光照的自发光标准材质(特效小件/指示灯),灰底白发光,靠 emissiveIntensity 调亮度。
 export function makeGlowMaterial() {
   return new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0xffffff, emissiveIntensity: 0.4, roughness: 0.3 });
 }

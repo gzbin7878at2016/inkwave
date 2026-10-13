@@ -1,3 +1,17 @@
+// ================================================================================================
+// 【中文导读 · character-geo.js】
+// 本文件是"鱿鱼小子"全部几何的来源:没有模型文件,角色由代码现场生成。三大块内容:
+//   ① 骨骼定义(BODY_BONES / EXTRA_BONES / BONE_NAMES 等)——骨骼表每行 = [名字, 父骨, 静置位置],
+//      全部写在"小子空间"(脚底 y=0、面朝 +Z、角色右侧 = -X);每根骨静置朝向都是单位矩阵,
+//      因此【小子空间 = 骨骼空间,只差一个平移】,逆绑定矩阵就是 translate(-rest)(见文件末尾)。
+//   ② 图元库(superEllipsoid / lathe / sweep / gridGeo 等)——四块积木拼出全身:
+//      超椭球(指数控制方圆)、绕轴车削、截面沿曲线扫掠、显式行参数网格。
+//   ③ Builder 类与 buildXxx 组装函数——把零件顶点流式拼成一个 BufferGeometry;
+//      【蒙皮权重不是贴图,而是回调】:weights(p, i) => [[骨名, 权重], ...],按顶点位置当场算出 1~4 根骨的影响。
+// 共享缓存:getKidShared(lod) 按 lod|bodyLevel 缓存皮肤/衣服/眼睛/墨罐/鱿鱼形态;
+//          getHairStyle(st, lod) 按 发型.帽子.眉毛.lod.画质 缓存发型网格(含装备与帽子)。
+// 配套文档:docs/ASSETS-CHARACTER.zh-CN.md §1-2(生成管线与骨骼)、docs/RIG.zh-CN.md(骨骼契约表)。
+// ================================================================================================
 // INKWAVE — squidkid geometry: rig definition, procedural primitives and the shared (cached) meshes.
 // Everything is authored in "kid space" (feet at y=0, facing +Z, character's right = -X) in the rest pose.
 // Rest orientation of every bone is identity, so kid-space == bone-space up to a translation.
@@ -25,9 +39,16 @@ const TAU = Math.PI * 2;
 // ------------------------------------------------------------------------------------------------
 // Rig
 // ------------------------------------------------------------------------------------------------
+// 【骨骼区】身体骨表 BODY_BONES → 手部/脚趾/脸/衣摆/墨罐/发梢等附加骨 EXTRA_BONES
+//          → 由两者汇总出 BONE_NAMES(顺序即索引)/ BONE_INDEX / BONE_PARENT / REST_BODY。
+// 追加规则:新骨只能排在头发骨之后,已有索引永不移动(RIG 契约"只增不改"的数据层实现)。
 export const HAIR_MAX = 8;
 export const HAIR_SEGS = 3;
 
+// 【身体骨表】每行 = [名字, 父骨, 静置位置(小子空间,米)],共 25 根。
+//   自下而上:脊柱链 hips(髋)→ spine → chest → neck → head;手臂 clav(锁骨)→ uArm → fArm → hand;
+//   腿 thigh → shin → foot;末 6 根是面部辅助骨(eye/brow/mouth*),先占位 [0,0,0],
+//   真实静置位置在下方由头部解析面 headSurf 推导。L/R 成对,X 坐标取负(角色右侧 = -X)。
 // name, parent, rest position (kid space). Right side = -X.
 const BODY_BONES = [
   ['hips', null, [0, 0.64, 0]],
@@ -35,6 +56,7 @@ const BODY_BONES = [
   ['chest', 'spine', [0, 0.86, -0.01]],
   ['neck', 'chest', [0, 0.992, -0.008]],
   ['head', 'neck', [0, 1.05, -0.002]],
+  // 【左肩臂链】clavL(锁骨,几乎贴着 chest)→ uArmL(上臂)→ fArmL(前臂)→ handL(腕);右侧同名加 R。
   ['clavL', 'chest', [0.035, 0.952, -0.012]],
   ['uArmL', 'clavL', [0.146, 0.946, -0.014]],
   ['fArmL', 'uArmL', [0.17, 0.736, -0.022]],
@@ -43,12 +65,15 @@ const BODY_BONES = [
   ['uArmR', 'clavR', [-0.146, 0.946, -0.014]],
   ['fArmR', 'uArmR', [-0.17, 0.736, -0.022]],
   ['handR', 'fArmR', [-0.184, 0.542, -0.006]],
+  // 【左腿链】thighL(大腿,挂 hips)→ shinL(小腿)→ footL(脚踝);右脚镜像。
   ['thighL', 'hips', [0.078, 0.622, 0]],
   ['shinL', 'thighL', [0.081, 0.347, 0.012]],
   ['footL', 'shinL', [0.084, 0.085, -0.01]],
   ['thighR', 'hips', [-0.078, 0.622, 0]],
   ['shinR', 'thighR', [-0.081, 0.347, 0.012]],
   ['footR', 'shinR', [-0.084, 0.085, -0.01]],
+  // 【面部辅助骨】挂在 head 上,不直接带几何(眼球蒙皮到 head,由材质转动;嘴是建模出来的)。
+  // 它们的 Y 缩放/位置被表情系统当信号用(眨眼、嘴型),静置位置稍后由 headSurf 重算。
   ['eyeL', 'head', [0, 0, 0]],
   ['eyeR', 'head', [0, 0, 0]],
   ['browL', 'head', [0, 0, 0]],
@@ -56,9 +81,12 @@ const BODY_BONES = [
   ['mouth', 'head', [0, 0, 0]],
   ['mouthO', 'head', [0, 0, 0]],
 ];
+// 【静置位置表】名字 → V3,身体骨直接来自上表;附加骨与头发骨在后面继续补进同一张表。
 const REST_BODY = {};
 for (const [n, , p] of BODY_BONES) REST_BODY[n] = new V3(...p);
 
+// 【手型设计】规范左手、腕部相对坐标:掌心朝 -X,拇指 +Z,手指 -Y。
+// 静置姿态就是"握住 Ø 约 2.8 cm 的握柄"(武器握把围绕 HAND.hole 构建)——不摆动画也能持械。
 // ---- hand design (canonical LEFT hand, wrist-relative; palm faces -X, thumb +Z, fingers -Y) ----
 // The fingers wrap a Ø ≈ 3.2 cm handle whose axis runs along hand Z through GRIP_HOLE (the weapon grip point).
 export const HAND = {
@@ -66,6 +94,7 @@ export const HAND = {
   holeR: 0.014,                        // handle radius the fist is shaped around (Ø 2.8 cm)
   palmX: -0.0112,                      // palm (inner) surface
 };
+// 【四指参数表】每行 = [名字, MCP 掌指关节点, 指节半径, [近/中/远节长度]];右手用 X 镜像。
 const FINGERS = [
   // name, MCP [x,y,z], radius, [proximal, middle, distal] lengths
   ['index', [0.0005, -0.0585, 0.0183], 0.0077, [0.0215, 0.0135, 0.0122]],
@@ -73,6 +102,8 @@ const FINGERS = [
   ['ring', [0.0, -0.0592, -0.0063], 0.0076, [0.022, 0.0138, 0.0122]],
   ['pinky', [0.0012, -0.0558, -0.0178], 0.0066, [0.0178, 0.011, 0.0106]],
 ];
+// 【手指关节链反解】给定 MCP 与三段节长,反解出让手指恰好绕过握柄圆(半径 rho)的
+// MCP→PIP→DIP→指尖四点链:在掌心平面内以余弦定理求各关节转角,逆时针从柄下绕到远侧。
 /** Finger joint chain (canonical left hand, wrist-relative) wrapping the grip circle. */
 function fingerChain(mcp, r, lens) {
   const H = HAND.hole, rho = HAND.holeR + r * 0.98;
@@ -92,6 +123,9 @@ function fingerChain(mcp, r, lens) {
 const THUMB = [[-0.0058, -0.0142, 0.0148], [-0.0158, -0.0272, 0.0252], [-0.0282, -0.0322, 0.0272], [-0.0372, -0.0438, 0.0238]];
 const THUMB_R = [0.0106, 0.0089, 0.0083];
 
+// 【附加骨】全部追加在头发骨之后,已有索引永不移动(见 RIG.zh-CN.md 新增骨骼表)。
+// 内容:双手 20 根指骨(拇指 2 + 四指×2)、脚趾 toeL/R、脸 jaw/cheek/ear、
+// 衣摆 hemF/hemB、背罐 tank、发梢 hairTip0..7。null 静置位置的由后续代码推导。
 // extra bones (appended after the hair bones so existing indices never move)
 /** Finger bone name: hand{L|R}_{thumb|index|middle|ring|pinky}{1|2} (1 = knuckle, 2 = middle joint). */
 export const fb = (s, finger, k) => `hand${s}_${finger}${k}`;
@@ -112,6 +146,9 @@ EXTRA_BONES.push(['hemF', 'hips', new V3(0, 0.712, 0.082)], ['hemB', 'hips', new
 EXTRA_BONES.push(['tank', 'chest', new V3(0, 0.848, -0.176)]);
 for (let s = 0; s < HAIR_MAX; s++) EXTRA_BONES.push([`hairTip${s}`, `hair${s}_2`, null]);
 
+// 【骨骼总表】顺序 = 索引:BONE_NAMES[ i ] 的 i 即 GPU 骨骼纹理里的槽位。
+// 三段拼接:25 身体骨 → HAIR_MAX×HAIR_SEGS 头发骨(hair{s}_{k},k=0 挂 head,其余链式挂上一级)
+// → 全部附加骨。下游(动画/装配)一律按名字经 BONE_INDEX 查,绝不硬编码数字。
 export const BONE_NAMES = BODY_BONES.map((b) => b[0]);
 for (let s = 0; s < HAIR_MAX; s++) for (let k = 0; k < HAIR_SEGS; k++) BONE_NAMES.push(`hair${s}_${k}`);
 for (const [n] of EXTRA_BONES) BONE_NAMES.push(n);
@@ -127,10 +164,14 @@ export const ADDED_BONES = EXTRA_BONES.map((b) => b[0]);
 // ------------------------------------------------------------------------------------------------
 // Head surface (analytic, so face decals and hair hug it exactly)
 // ------------------------------------------------------------------------------------------------
+// 【头部解析面】headShape 是头部 sculpt 的隐式函数(character-face.js),本节提供
+// 按方位角/仰角采样头面、求法线、算发帽厚度的工具——贴花与头发因此能精确贴合头皮。
 // The sculpt itself (headShape, HEAD_C, the face constants) lives in character-face.js.
 export { HEAD_C, EYE, MOUTH, BROW };
 const _hd = new V3(), _h0 = new V3(), _h1 = new V3(), _h2 = new V3(), _ha = new V3(), _hb = new V3();
 function dirAE(az, el, out) { const c = Math.cos(el); return out.set(Math.sin(az) * c, Math.sin(el), Math.cos(az) * c); }
+// 【头面采样】az=0 为正前,+az 转向 +X(角色左侧);off 沿法线偏移,nOut 可带回法线。
+// 用两个 1e-3 的差分求切向再叉积得法线(极点处退化,故 |el|>1.55 时强行朝上/下)。
 /** Point on the head surface (kid space) at azimuth/elevation (az=0 front, +az toward +X/left), offset along the normal. */
 export function headSurf(az, el, off, out, nOut) {
   dirAE(az, el, _hd); headShape(_hd.x, _hd.y, _hd.z, _h0);
@@ -145,6 +186,8 @@ export function headSurf(az, el, off, out, nOut) {
   return out.copy(_h0).addScaledVector(_hb, off).add(HEAD_C);
 }
 
+// 【发帽厚度】头皮之上、完整发量的径向厚度:顶部更厚、后脑明显加厚(0.0135 项),
+// 让发帽剪影从后面看是圆鼓的;帽 builders 另加卷边。
 /** Hair-cap thickness above the skin at (az, el) (full volume; the rolled lip is added by the cap builder). */
 export function capOffset(az, el) {
   const back = Math.max(0, -Math.cos(az));
@@ -153,6 +196,8 @@ export function capOffset(az, el) {
 
 if (BONE_INDEX.head !== FACE_BONES.head || BONE_INDEX.eyeL !== FACE_BONES.eyeL || BONE_INDEX.eyeR !== FACE_BONES.eyeR) console.error('character-face FACE_BONES out of sync with BONE_INDEX');
 
+// 【面部辅助骨静置位置回填】eye/brow/mouth 取头面上对应特征点(微浮 2 mm 左右),
+// jaw 用下颌枢轴 JAW_PIVOT,cheek/ear 取鼓包与耳根处头面点——全部来自解析面,与 sculpt 零误差。
 // face bone rest positions (derived from the head surface; see docs/RIG.md)
 headSurf(EYE.az, EYE.el, 0.0022, REST_BODY.eyeL);
 headSurf(-EYE.az, EYE.el, 0.0022, REST_BODY.eyeR);
@@ -169,6 +214,10 @@ REST_BODY.earR = headSurf(-EAR.az, EAR.el, -0.006, new V3());
 // ------------------------------------------------------------------------------------------------
 // Primitive helpers
 // ------------------------------------------------------------------------------------------------
+// 【图元库】四块积木拼出全身:superEllipsoid 超椭球(头/躯干/手掌)、lathe 绕轴车削(罐体/耳罩)、
+// sweep 截面沿曲线扫掠(发丝/肩带/手指)、gridGeo 显式行参数网格(头皮/帽/裙边)。
+// 共同约定:finalize 焊接重算平滑法线;自定义逐顶点语义走 uv/color/自定义 attribute,不用贴图。
+// 【收尾统一】删掉 uv 与原法线 → 焊接重合顶点 → 重算平滑法线。所有图元的出口都过这一关。
 function finalize(geo) {
   geo.deleteAttribute('uv');
   if (geo.attributes.normal) geo.deleteAttribute('normal');
@@ -176,8 +225,11 @@ function finalize(geo) {
   g.computeVertexNormals();
   return g;
 }
+// 【绕向修正】三角索引逐组交换 1、2 两项,翻转正面朝向并重算法线(车削镜像后常用)。
 function flipWinding(g) { const ix = g.index.array; for (let q = 0; q < ix.length; q += 3) { const t = ix[q + 1]; ix[q + 1] = ix[q + 2]; ix[q + 2] = t; } g.computeVertexNormals(); }
+// 【符号幂】保留符号的 |v|^e,超椭球公式的心脏(负半轴不自乘丢失符号)。
 function signedPow(v, e) { return Math.sign(v) * Math.pow(Math.abs(v), e); }
+// 【X 镜像】几何跨 X 轴翻转:位置取负、交换绕向、法线 x 取反;自定义顶点属性原样保留。
 /** Mirror a geometry across X (fixes winding + normals). Keeps custom attributes. */
 function mirrorX(g) {
   g.scale(-1, 1, 1);
@@ -186,6 +238,8 @@ function mirrorX(g) {
   return g;
 }
 
+// 【超椭球】先取单位球再按超椭球公式重映射:指数 e1 控纵向方圆、e2 控横向(<1 更方),
+// 一次 deform 回调可做鼓包等精雕。头、躯干、手掌、护膝都出自它。
 /** Super-ellipsoid (chunky rounded box/pill). e1: vertical squareness, e2: horizontal squareness (<1 boxier). */
 export function superEllipsoid(rx, ry, rz, e1 = 1, e2 = 1, ws = 18, hs = 12, deform = null) {
   const g = finalize(new THREE.SphereGeometry(1, ws, hs));
@@ -202,6 +256,8 @@ export function superEllipsoid(rx, ry, rz, e1 = 1, e2 = 1, ws = 18, hs = 12, def
   return g;
 }
 
+// 【车削】[半径, 高度] 轮廓绕 +Y 旋转成体;先按顶点法线点乘位置检查内外(负则翻转绕向),
+// 再可选 deform 精雕。罐体、耳罩等回转件用它。
 /** Lathe around +Y from [r, y] profile, optional per-vertex deform(v). */
 export function lathe(profile, seg = 24, deform = null) {
   const pts = profile.map(([r, y]) => new THREE.Vector2(Math.max(r, 0), y));
@@ -219,12 +275,14 @@ export function lathe(profile, seg = 24, deform = null) {
   return g;
 }
 
+// 【轮廓平滑】稀疏 [r,y] 控制点过 Catmull-Rom 样条加密,车削轮廓不再有可见折角。
 /** Smooth a sparse [r,y] profile with a Catmull-Rom so lathes have no visible kinks. */
 export function smoothProfile(ctrl, n = 20) {
   const c = new THREE.SplineCurve(ctrl.map(([r, y]) => new THREE.Vector2(r, y)));
   return c.getSpacedPoints(n).map((p) => [p.x, p.y]);
 }
 
+// 【定向摆放】把"沿 -Y 悬垂"建好的几何旋转到 dir 方向并平移到 at(挂饰/帽檐常用)。
 /** Orient a geometry built along -Y (hanging) so it points along `dir`, then place at `at`. */
 export function alongAxis(geo, at, dir) {
   const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, -1, 0), dir.clone().normalize());
@@ -232,6 +290,10 @@ export function alongAxis(geo, at, dir) {
   return geo;
 }
 
+// 【扫掠】变半径(可压扁)圆管沿 Catmull-Rom 曲线扫掠,两端圆头封口。
+// 返回值除 geo 外还带 t/cs/sn(每顶点的曲线参数与截面角)与 sample(t),供权重/贴图映射复用。
+// 亮点:opts.transport 把截面坐标架沿曲线"运输",外向提示失效处不翻转(卷曲发梢),再缓缓偏回提示方向;
+// opts.section 可重塑单位截面(如龙骨折角);opts.twist 沿曲线加扭。
 /**
  * Sweep a variable-radius, optionally flattened tube along a Catmull-Rom curve with rounded end caps.
  * Returns { geo, t, cs, sn, sample(t), curve } — t = per-vertex curve param, cs/sn = cos/sin of the ring angle.
@@ -318,6 +380,7 @@ export function sweep(points, opts = {}) {
   return { geo, t: new Float32Array(tt), cs: new Float32Array(cs), sn: new Float32Array(sn), sample, curve };
 }
 
+// 【简单参数网格】(u,v)∈[0,1]² 逐点求值 fn(u,v,out) 成面:索引化、焊接、平滑法线。
 /** Grid over (u,v) in [0,1]^2 → fn(u, v, outPos); indexed, merged, smooth normals. */
 function surfaceGrid(nu, nv, fn) {
   const pos = [], idx = []; const p = new V3();
@@ -329,6 +392,10 @@ function surfaceGrid(nu, nv, fn) {
   return finalize(g);
 }
 
+// 【结构化网格·主力】rows[j] 是等长 V3 行数组。特性:
+//   wrapU 闭环(接缝法线平均、接缝列复制使 uv 连续);skip(i,j) 可挖洞(帽檐下删面);
+//   poles 把首/尾行收成扇形尖点;outward 提示点/函数决定朝向(法线背向它)。
+//   法线在"未复制"的拓扑上算好,输出时再按 wrap 补一列。
 /**
  * Structured grid with explicit rows: rows[j] = array of V3 (all rows the same length nu).
  * wrapU closes the ring (seam normals averaged, seam column duplicated so uv stays continuous).
@@ -380,6 +447,8 @@ function gridGeo(rows, opt = {}) {
   return g;
 }
 
+// 【密度采样】按密度函数 rho(x) 在 [lo,hi] 上非均匀撒 n+1 个点(含两端):
+// 先数值积分出 CDF,再按等分位反查——轮廓突变处(鳍根/领口)自动加密。
 /** Samples on [lo, hi] distributed with density rho(x) (n+1 values, ends included). */
 function densitySamples(n, lo, hi, rho, steps = 3000) {
   const cum = new Float64Array(steps + 1); const h = (hi - lo) / steps;
@@ -394,6 +463,7 @@ function densitySamples(n, lo, hi, rho, steps = 3000) {
   return out;
 }
 
+// 【极坐标穹顶】椭圆域极网格补片:中心 1 点 + 环带;uv 直接取 (u,v)∈[-1,1]²(鱿鱼眼斑用它)。
 /** Elliptical dome patch on a polar grid: fn(u, v in [-1,1], r, outPos). Keeps uv = (u, v). */
 function polarPatch(rings, segs, fn) {
   const pos = [], uv = [], idx = []; const p = new V3();
@@ -410,12 +480,15 @@ function polarPatch(rings, segs, fn) {
   g.setIndex(idx); g.computeVertexNormals();
   return g;
 }
+// 【小工具组】torus 标准圆环;seRing 超椭圆环上一点(发束/帽带截面);interpTable 非均匀键值
+// 表的 Catmull-Rom 插值(骨骼/帽檐轮廓的查曲线工具)。
 function torus(R, r, rs, ts, arc = Math.PI * 2) { return finalize(new THREE.TorusGeometry(R, r, rs, ts, arc)); }
 /** Superellipse ring point: theta 0 = +Z (front), pi/2 = +X. */
 function seRing(th, a, b, n, out, cx = 0, cz = 0) {
   const s = Math.sin(th), c = Math.cos(th);
   return out.set(cx + a * signedPow(s, 2 / n), 0, cz + b * signedPow(c, 2 / n));
 }
+// 【查表插值】非均匀 x 键值表的 Catmull-Rom(端点钳制);帽 rim、鱿鱼轮廓等"稀疏采样曲线"都靠它。
 /** Catmull-Rom interpolation of a keyed table: keys = [x0..], vals = [v0..] (non-uniform keys, clamped). */
 function interpTable(keys, vals, x) {
   const n = keys.length;
@@ -431,9 +504,18 @@ function interpTable(keys, vals, x) {
 // ------------------------------------------------------------------------------------------------
 // Builder: concatenates parts with skin weights + per-vertex extras into one skinned geometry.
 // ------------------------------------------------------------------------------------------------
+// 【Builder · 装配核心】把若干零件几何流式拼成一个蒙皮 BufferGeometry。
+// 每个零件 add(geo, opts) 时可声明:
+//   bone    缺省单骨(不给 weights 回调时整件 rigid 到它);
+//   weights 【权重即回调】weights(p,i) => [[骨名,w],...],1~4 根,内部取前 4 大并归一化;
+//   color   顶点色(常量/回调);ex      每顶点语义标量(材质里叫 aEx/aTint,区分子材质);
+//   v3      每顶点三分量语义(aHead/aHair/aSq 等);face  面部通道(aFace);
+//   uv      沿用原 uv 或回调重写。所有语义都走顶点数据,零贴图。
 const _c = new THREE.Color();
 class Builder {
   constructor() { this.pos = []; this.nrm = []; this.uv = []; this.col = []; this.si = []; this.sw = []; this.ex = []; this.v3 = []; this.idx = []; this.fc = []; this.hasFc = false; }
+  // 【权重取前 4】对回调返回的影响表做无分配的前 4 大选优(插入式排序),再归一化写
+  // skinIndex/skinWeight;全零时回落到 o.bone 单骨。索引按顶点数自动选 Uint16/Uint32。
   /** o.bone | o.weights(p,i) -> [[name,w],..] ; o.color: hex|Color|fn(p,i)->Color ; o.ex: number|fn ; o.uv: bool|fn(i)->[u,v] ; o.v3: fn(p,i)->[x,y,z] | [x,y,z] */
   add(geo, o = {}) {
     const P = geo.attributes.position, N = geo.attributes.normal, UV = geo.attributes.uv;
@@ -471,6 +553,8 @@ class Builder {
     else for (let i = 0; i < P.count; i++) this.idx.push(i + base);
     return this;
   }
+  // 【出网格】把累积的属性流落成 BufferGeometry;extraName/v3Name 决定语义属性的名字
+  // (aEx/aTint/aCloth、aHead/aHair/aSq …);包围球直接给常量(角色尺寸已知,省一次计算)。
   build(extraName = 'aEx', v3Name = null) {
     const g = new THREE.BufferGeometry();
     if (v3Name) g.setAttribute(v3Name, new THREE.Float32BufferAttribute(this.v3, 3));
@@ -488,15 +572,20 @@ class Builder {
   }
 }
 
+// 【兼容槽名】旧的颜色源名字 → CS 常量映射,老调用方继续可用。
 /** Legacy slot names (colour sources) kept for compatibility. */
 export const SLOT = { plain: CS.white, team: CS.team, shirt: CS.shirt, shorts: CS.shorts, shoe: CS.shoe, sock: CS.sock, sole: CS.sole, strap: CS.strap };
 
 // ------------------------------------------------------------------------------------------------
 // Kid: skin (head, ears, neck, arms, hands, legs)
 // ------------------------------------------------------------------------------------------------
+// 【皮肤网格】头/耳/颈/口腔在 character-face.js(addHeadSkin),四肢在 character-outfit.js
+// (addBodyLimbs),双手在本文件下方(handParts,握持契约的"几何半边"),最后合成一个蒙皮网格。
 const R = REST_BODY;
 
 
+// 【规范手部件】生成左手(腕在原点)的全部零件列表;每只零件带几何、权重回调、ex 子材质号。
+// lv 是细节等级(0..4),查表 HD 得各部位的段数:掌面细分、指节段数、指/拇指径向数。
 /** Canonical LEFT hand parts (wrist at the origin). Returns [{geo, weights(localP)->[[bone,w]], ex, isSweep}] */
 function handParts(s, sx, lv = 3) {
   const parts = [];
@@ -578,6 +667,7 @@ function handParts(s, sx, lv = 3) {
   return parts;
 }
 
+// 【皮肤构建】脸/头 + 四肢 + 双手(平移到腕骨静置点再入 Builder);aHead 记录单位头向供脸部贴花。
 function buildSkin(lod = 'hero') {
   const B = new Builder();
   // ---- head, face, mouth cavity, teeth, tongue, ears, neck (character-face.js)
@@ -597,6 +687,7 @@ function buildSkin(lod = 'hero') {
 // ------------------------------------------------------------------------------------------------
 // Eyes: socketed eyeball caps in eye space (character-face.js); the eye material turns them for the gaze
 // ------------------------------------------------------------------------------------------------
+// 【眼球网格】眼窝里的眼球帽,几何在 character-face.js;注视方向由眼球材质按 aEyeS 转动。
 function buildEyes(lod = 'hero') {
   const B = new Builder();
   addEyeballs(B, lod);
@@ -606,24 +697,29 @@ function buildEyes(lod = 'hero') {
 // ------------------------------------------------------------------------------------------------
 // Kid: cloth — built by character-outfit.js (tee, shorts, socks, sneakers, tank + harness), one skinned mesh
 // ------------------------------------------------------------------------------------------------
+// 【布料网格】本体在 character-outfit.js(T 恤用 SDF 现场"长"出来,见 ASSETS-CHARACTER §1.2),
+// 此处只负责:背罐锚点 TANK、供挂饰取样的手臂半径/扁率探针、摆放小零件的 placeBasis/revolve。
 export const TANK = { center: new V3(0, 0.848, -0.176), tilt: -0.1, r: 0.066, h: 0.19, bone: 'tank' };
 // body probes for accessories (the garments themselves live in character-outfit.js)
 const ARM_RADIUS = (t) => armRadiusAt(t);
 const ARM_FLAT = (t) => armFlatAt(t);
 const teePoint = (th, y, off, out) => teeSurfacePoint(th, y, off, out);
 
+// 【右旋摆放基】小零件定位:X、Y 给定(Y 向 X 正交化),Z = X×Y 成右手系,再移到 at。
 /** Right-handed placement basis for a small part: X, Y given (Y is orthogonalised), Z = X × Y. */
 function placeBasis(geo, X, Y, at) {
   const x = X.clone().normalize(); const y = Y.clone().addScaledVector(x, -Y.dot(x)).normalize(); const z = new V3().crossVectors(x, y);
   geo.applyMatrix4(new THREE.Matrix4().makeBasis(x, y, z).setPosition(at));
   return geo;
 }
+// 【回转成面】[r,y] 轮廓直接展开成闭环行网格(只出面、不成实体),走 gridGeo 的 uv 约定。
 function revolve(profile, seg) {
   const rows = profile.map(([r, y]) => { const row = []; for (let i = 0; i < seg; i++) { const th = (i / seg) * TAU; row.push(new V3(r * Math.sin(th), y, r * Math.cos(th))); } return row; });
   const y0 = Math.min(...profile.map((p) => p[1])), y1 = Math.max(...profile.map((p) => p[1]));
   return gridGeo(rows, { wrapU: true, outward: (p, out) => out.set(0, p.y, 0), uv: (i, j) => [i / seg, (profile[j][1] - y0) / Math.max(1e-6, y1 - y0)] });
 }
 
+// 【布料构建】一个 Builder 装下全部衣物,出 aCloth 语义网格(图案/配色全在 shader 侧)。
 function buildCloth(lod = 'hero') {
   const B = new Builder();
   addOutfit(B, bodyLevel(lod));
@@ -635,11 +731,17 @@ function buildCloth(lod = 'hero') {
 // Control points: S(az, el, extra) hugs the scalp; IN(az, el) is buried inside the cap (hidden root);
 // O(az, el, off) is offset from the bare head surface; [x, y, z] are head-relative free points.
 // ------------------------------------------------------------------------------------------------
+// 【发型目录】8 款发型(STYLES),每款是纯数据:发丝控制点列表 + 参数 + gear 装备名。
+// 发丝控制点三种锚定方式:S 贴头皮(加 extra 外移)、IN 埋进发帽(隐形发根)、O 离裸头面 off、
+// 裸 [x,y,z] 为头相对自由点;mirror() 一键生成左右对称副本。
+// 每缕参数:r0/r1 根/梢半径、flat 扁率、K 刚度、G 重力感、suck 吸盘、curl 梢卷曲、taper 锥度、
+// locks 附生小绺刘海、underHat 戴帽变体(低马尾/低丸子等)、cap/tie/knot 发帽与束发锚点。
 const S = (az, el, extra = 0) => ['s', az, el, extra];
 const IN = (az, el) => ['in', az, el];
 const O = (az, el, off) => ['o', az, el, off];
 const mirror = (pts) => pts.map((p) => (p[0] === 's' || p[0] === 'in' || p[0] === 'o' ? [p[0], -p[1], ...p.slice(2)] : [-p[0], p[1], p[2]]));
 
+// 【丸子发髻】球面螺旋线绕半径 Rb 的发球盘卷(轴线可给,戴帽时指向后下方),成对使用相差 π。
 /** Bun coil: a spherical helix winding up and over a ball of radius Rb centred at C (head-relative), around `axis`. */
 function knotCoil(C, Rb, p0, axis = [0, 1, 0]) {
   const q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), new V3(...axis).normalize());
@@ -655,6 +757,7 @@ function knotCoil(C, Rb, p0, axis = [0, 1, 0]) {
 // sculpted fringe locks shared by the Pony style and its under-hat variant (see strandSpec → locks)
 const PONY_LOCKS = [{ d: 0.03, h: -0.003, r: 0.66, len: 0.7, curl: 1.0 }, { d: -0.033, h: 0.006, r: 0.7, len: 0.88, curl: 0.4 }];
 const STYLES = [
+// 【款式 0 · Tide 潮汐】长后掠触手 + 脸侧修饰绺 + 一条横掠刘海;吸盘半开,末绺带龙须刘海。
   { // 0 — "Tide": long swept-back tentacles + face-framing locks + a swept bang
     name: 'Tide',
     strands: (() => {
@@ -671,6 +774,7 @@ const STYLES = [
     })(),
     gear: 'wristbands',
   },
+// 【款式 1 · Spike 尖刺】短促上冲的尖刺 + 前翘;戴帽变体把刺压平、只留颈后小挑。
   { // 1 — "Spike": short upswept spikes + a front quiff
     name: 'Spike',
     strands: (() => {
@@ -695,6 +799,7 @@ const STYLES = [
     },
     gear: 'headphones',
   },
+// 【款式 2 · Twin 双马尾】两条长束尾 + 分叉刘海;ties 记录束发圈位置,戴帽变体束位下移。
   { // 2 — "Twin": two long tied tails + split bangs
     name: 'Twin',
     strands: (() => {
@@ -722,6 +827,7 @@ const STYLES = [
     },
     gear: 'twin',
   },
+// 【款式 3 · Bob 波波头】下颌内扣的圆bob + 斜扫刘海;mk() 工厂按方位角/长度批量生成弧绺。
   { // 3 — "Bob": rounded bob that curls in at the jaw + side-swept bang
     name: 'Bob',
     strands: (() => {
@@ -733,6 +839,7 @@ const STYLES = [
     })(),
     gear: 'bob',
   },
+// 【款式 4 · Pony 高马尾】脑后高束的喷泉马尾(三触手粗束)+ 扫掠刘海;PONY_LOCKS 共享刘海绺。
   { // 4 — "Pony": high fountain ponytail — a thick three-tentacle bundle gathered at the back of the crown, swept fringe
     name: 'Pony',
     strands: (() => {
@@ -758,6 +865,7 @@ const STYLES = [
     },
     gear: 'pony',
   },
+// 【款式 5 · Crest 鸡冠】沿中线一列重叠的触手火焰(莫西干),两侧剃净;out:'x' 截面朝侧扁成鳍片。
   { // 5 — "Crest": a tall mohawk of overlapping tentacle flames along the midline, clean sides
     name: 'Crest',
     strands: (() => {
@@ -778,6 +886,7 @@ const STYLES = [
     },
     gear: 'crest',
   },
+// 【款式 6 · Knot 丸子】盘卷顶髻 + 两根抽芽触手梢 + 脸侧长绺;发髻轴线戴帽时转向后下。
   { // 6 — "Knot": coiled top-knot bun with two sprouting tentacle ends, long face-framing side tentacles
     name: 'Knot',
     strands: (() => {
@@ -803,6 +912,7 @@ const STYLES = [
     },
     gear: 'knot',
   },
+// 【款式 7 · Swoop 斜扫】不对称侧分:厚重刘海横扫眉上、垂落右侧,左侧短收;cap 槽沟极取侧向。
   { // 7 — "Swoop": asymmetric side part — a heavy swoop across the brow and down the right side, short tucked left
     name: 'Swoop',
     strands: (() => [
@@ -820,6 +930,7 @@ const STYLES = [
 ];
 export const HAIR_STYLE_NAMES = STYLES.map((s) => s.name);
 
+// 【控制点求值】把 S/IN/O/裸点统一解析成世界坐标 V3:贴发帽面、埋进帽下、按偏移离面或直接加点。
 function strandPoint(cp, r0, flat, out) {
   if (cp[0] === 's') { const [, az, el, extra = 0] = cp; return headSurf(az, el, capOffset(az, el) + r0 * flat * 0.42 + extra, out); }
   if (cp[0] === 'in') { const [, az, el] = cp; return headSurf(az, el, capOffset(az, el) - 0.012, out); }
@@ -827,11 +938,16 @@ function strandPoint(cp, r0, flat, out) {
   return out.set(cp[0], cp[1], cp[2]).add(HEAD_C);
 }
 
+// 【装备编码】写给头发材质的暗号:aTint = -2 - 类别(0 塑料/1 金属/2 织物/3 橡胶);
+// 顶点色 r 通道放颜色码(-1 队色、-2 衣色、-3 带色、-4 裤色),g 通道放明暗系数 k。
 // gear encoding for the hair material: aTint = -2 - class (0 plastic, 1 metal, 2 fabric, 3 rubber);
 // colour: literal rgb, or code (r = -1 team, -2 shirt, -3 strap, -4 shorts) × g
 const GEAR = { plastic: -2, metal: -3, fabric: -4, rubber: -5 };
 const gcol = (code, k = 1) => new THREE.Color(code, k, 0);
 
+// 【发型装备】按 style.gear 把各款专属小物(护腕/耳机/束圈/发卡/登山扣/发箍/耳环/发簪/一字夹)
+// 建进头发 Builder,与发丝同网格同蒙皮。hatCtx 存在时,被帽遮住的部位直接不建、贴帽檐的也不放。
+// D.lod === 'far' 时一律降细分。隐藏判定 hidden(p) 来自帽分析;hb(si,k) 取发丝所在骨骼(索引会因戴帽丢丝而平移)。
 /** Style accessories, built into the hair mesh (per style, skinned to the full skeleton). */
 function addGear(B, style, strandInfo, hatCtx = null, D = null) {
   const lo = !!D && D.lod === 'far';   // far tier: the accessories keep their shape at a fraction of the facets
@@ -1004,12 +1120,14 @@ function addGear(B, style, strandInfo, hatCtx = null, D = null) {
     }
   }
 }
+// 【最近参数】曲线上离点 p 最近处的参数 t:200 步粗扫取最优(装备要对位到发丝上时用它)。
 /** Parameter of the curve point closest to `p` (coarse scan + refine). */
 function closestT(curve, p) {
   let best = 0, bd = 1e9; const q = new V3();
   for (let k = 0; k <= 200; k++) { curve.getPointAt(k / 200, q); const d = q.distanceToSquared(p); if (d < bd) { bd = d; best = k / 200; } }
   return best;
 }
+// 【褶皱发圈】绕 +Y 的圆环,管半径按 cos(n·θ) 起 n 个褶泡(外缘更明显),发圈/大肠圈用它。
 /** Ruffled ring (scrunchie) around +Y: ring radius R, tube radius r with `n` puffs of amplitude `amp`. */
 function ruffledRing(R, r, n, amp, rs, ts) {
   const g = new THREE.TorusGeometry(R, r, rs, ts);
@@ -1026,10 +1144,14 @@ function ruffledRing(R, r, n, amp, rs, ts) {
   g.rotateX(-Math.PI / 2);
   return finalize(g);
 }
+// 【耳机耳罩局部坐标】cgY = 点沿杯轴的高度;radial = 点离轴心的半径(材质分区:泡棉/壳/网罩)。
 // helpers for the headphone cup lathe (height along the cup axis / radius from it)
 function cgY(g, i, c, n) { const P = g.attributes.position; return (P.getX(i) - c.x) * n.x + (P.getY(i) - c.y) * n.y + (P.getZ(i) - c.z) * n.z; }
 function radial(g, i, c, n) { const P = g.attributes.position; const v = new V3(P.getX(i) - c.x, P.getY(i) - c.y, P.getZ(i) - c.z); const h = v.dot(n); return v.addScaledVector(n, -h).length(); }
 
+// 【头皮发帽】对齐发际线、带一圈厚卷边的发帽。行规格 rowsSpec:内贴行 → 卷边三行(渐放厚度)
+// → 满发行 → K 行收向头顶;槽沟场 groove 按款式"槽沟极"建模出发束间凹沟(与 shader 鼓包同一方向场)。
+// 戴圆顶帽时 skip 掉帽檐以下的全部面片(反正看不见),极尖也省略。
 /** Hairline-aligned scalp cap with a thick rolled lip. */
 function buildCap(pole = null, hat = null, D = null) {
   const nA = D ? D.cap[0] : 48, K = D ? D.cap[1] : 10;
@@ -1088,6 +1210,11 @@ function buildCap(pole = null, hat = null, D = null) {
 
 // ------------------------------------------------------------------------------------------------
 // Headgear (style.hat). Dome hats built into the hair mesh (same skinning / material as the style's gear):
+// 【头饰总览】圆顶帽与发丝共用同一张蒙皮头发网格,契约三条:
+//   ① rim(az) 给出帽缘各处的高度(前让眉毛、侧让耳朵);
+//   ② 每缕发丝在出缘处"重新生根":被盖段不建、骨链从出缘点开始,弹簧只摆看得见的一段;
+//      从帽冠冲出的款式(尖刺/鸡冠/高髻)整条丢弃,有 underHat 变体的换上变体;
+//   ③ 帽内表面贴着头皮发帽,并在发丝出缘处按"保留发丝高度的模糊场"外张,摆动时不会有东西穿出。
 //  • rim(az): the hat's edge as a head elevation per azimuth (clears the brows at the front and the ears at the sides);
 //  • every tentacle is re-rooted where it leaves the rim: the covered part is not built, the bone chain starts at the
 //    exit so the springs swing only what shows, and strands that would leave through the crown (spikes, crests, high
@@ -1096,7 +1223,11 @@ function buildCap(pole = null, hat = null, D = null) {
 //  • the inner surface sits on the scalp cap and flares over the hair emerging at the rim (a blurred height field of
 //    the kept strands near their exits), so nothing pokes through at rest or when the strands swing outward.
 // ------------------------------------------------------------------------------------------------
+// 【rim 表】稀疏 [az, el] 采样 → interpTable 成连续帽缘函数;取 |az| 使左右对称。
 const rimTable = (tab) => { const k = tab.map((e) => e[0]), v = tab.map((e) => e[1]); return (az) => interpTable(k, v, Math.abs(az)); };
+// 【帽款表】none / cap 棒球帽 / beanie 毛线帽 / bucket 渔夫帽。
+// 公共参数:thick 壁厚、exitMax 允许出缘的最大离皮距离、flare 内表面外张上限、rows 外表面行高、
+// crown 冠部收顶行数、rim 帽缘、lift 外表抬升、shape 局部造型(翻边/罗纹)、brim 全周帽舌。
 export const HAT_KINDS = [
   { name: 'none' },
   { // snapback: structured six-panel crown (taller at the front), curved bill, strap + snaps at the back
@@ -1119,6 +1250,11 @@ export const HAT_KINDS = [
   },
 ];
 
+// 【帽分析】对每缕发丝判定与圆顶帽的关系,产出帽上下文:
+//   cut[si] = { keep, tExit }——丢弃,或保留并从参数 tExit 处出缘"重新生根";
+//   H(az,el) 清场场:保留发丝(含附生绺)在帽缘附近的顶部高度,经 撒点→膨胀×2→模糊×2 成连续场,
+//   供帽内表面贴合并微外张;offIn 内表面偏移、tuck 发丝允许的最大半径(帽舌下收成锥腔)、
+//   hidden(p)/nearRim(p) 判定点是否被帽遮住/贴帽缘(装备避让用)。
 /** Classify every strand against a dome hat and build the clearance field the hat's inner surface follows. */
 function analyseHat(hat, specs) {
   const N = 180; const tmp = new V3(), d = new V3(), sk = new V3();
@@ -1197,6 +1333,9 @@ function analyseHat(hat, specs) {
   return { cut, H, offIn, tuck, hidden, nearRim, hat };
 }
 
+// 【帽体构建】圆顶 + 各款专属部件(帽舌/绒球/帽檐围)全部进头发 Builder、蒙皮到 head。
+// 行序:内贴行 → 圆唇 → 外表面(帽缘附近加密,容下翻边/罗纹)→ 冠部 → 极尖;uv 的 v 编码行语义
+// (着色器据此区分翻边/条纹区),aTint = -2 - 帽类别。
 /** Build the hat mesh (dome + its trims) into the hair builder. */
 function buildHat(B, hat, ctx, D = null) {
   const nA = D ? (D.lod === 'far' ? 28 : Math.max(48, D.cap[0])) : 48, T = hat.thick, offIn = ctx.offIn;
@@ -1284,6 +1423,9 @@ function buildHat(B, hat, ctx, D = null) {
   }
 }
 
+// 【发丝规格】把发型的纯数据描述编译成可建几何的规格:控制点 → 曲线(curlTip 卷梢)、
+// 半径/扁率/扭转/截面函数、TentacleSurface 触手面(带 transport 防翻转)、top(t) 半厚度、
+// 附生刘海绺 locks(共享主绺骨骼,lock→主绺参数映射 tMain 保持单调)。
 /** Everything needed to build one strand (built once per style variant; `si` = the style's strand index). */
 function strandSpec(sd, si, capCenter) {
   const raw = sd.pts.map((cp) => strandPoint(cp, sd.r0, sd.flat, new V3()));
@@ -1334,6 +1476,7 @@ function strandSpec(sd, si, capCenter) {
   return { sd, si, pts, radius, section, twist, flat, outward, fin, curve, top, surf, locks };
 }
 
+// 【触手面采样】取 t 处的 { P 点, T 切向, o 外法, b 副法, r 半径 }——装备对位就靠这个帧。
 /** { P, T, o, b, r } of a tentacle surface at t (gear placement). */
 function surfSample(S, t) {
   const P = new V3(), T = new V3(), o = new V3(), b = new V3();
@@ -1341,6 +1484,9 @@ function surfSample(S, t) {
   return { P, T, o, b, r: S.section(t).r };
 }
 
+// 【发用接触遮蔽场】一次发型构建的"环境光遮蔽"来源:头皮 + 每缕主/绺脊柱(椭圆截面)互为遮挡物。
+// ao(p,n,self) 烘出顶点遮蔽(发隙、贴头皮的底面、发根窝);buried(p,R,self) 回答"半径 R 的吸盘
+// 放这儿会不会陷进头皮或别的绺里"——吸盘布点避让用。
 /**
  * Contact-occlusion field of one hair build (baked into the hair vertices: crevices between overlapping locks, the
  * undersides of strands resting on the scalp, the scalp cap round every tentacle root). Occluders: the scalp and every
@@ -1403,6 +1549,7 @@ function hairOccluders(specs) {
   };
 }
 
+// 【压回帽下】把冒出帽内表面的顶点沿径向压回 tuck 限界之下(动过就重算法线),发丝静止时不穿帽。
 /** Pull any vertex standing proud of a hat's inner surface radially under it (see analyseHat → tuck). */
 function tuckUnderHat(geo, hatCtx) {
   const P = geo.attributes.position; const v = new V3(), d = new V3(), sk = new V3(); let moved = false;
@@ -1415,6 +1562,10 @@ function tuckUnderHat(geo, hatCtx) {
   if (moved) geo.computeVertexNormals();
 }
 
+// 【发丝入 Builder】把一根触手管写进头发网格,同时落实头发顶点契约(makeHairMaterial):
+//   colour = (脊柱参数 t, 吸盘模式, sinA);uv = (沿脊柱米数, cosA);
+//   aHair/v3 = (截面半厚度米数, 0 皮肤|1+圈号 吸盘, 烘焙接触遮蔽)。
+// 逐顶点遮蔽先一次性算进数组,避免在 color/uv/v3 回调里重复求 ao。
 /**
  * Add a tentacle tube to the hair builder. Hair vertex contract (makeHairMaterial): colour = (spine t, suckers, sinA),
  * uv = (metres along the spine, cosA), aHair = (half-thickness through the section in metres, 0 = skin | 1 + ring = cup,
@@ -1435,6 +1586,11 @@ function addTube(B, tube, o) {
   });
 }
 
+// 【建一缕发】管体 + 建模吸盘 + 附生刘海,并登记这缕的骨骼静置位置。
+// 戴帽(tExit>0)时:只从 tExit-0.045 起建一小截桩,骨链从出缘点开始,参数化仍用未裁剪的全局 t——
+// 看起来与不戴帽一致,弹簧也只摆露出段。权重是【段中点居中的 C1 帽形】:相邻段权重恒和为 1,
+// 弯曲摊在整段上不起皱(见 ASSETS-CHARACTER §2.3);梢部 t>0.84 渐交给 hairTip 棒槌骨;
+// 帽下桩钉在 head 上。返回 sample/section 等供装备对位。
 /**
  * Build one strand (tube + modelled suckers + its sculpted locks) into the hair mesh and set its bone chain. tExit > 0
  * re-roots it under a hat: the part before tExit is hidden under the hat (only a short stub is built), the bones start
@@ -1502,6 +1658,8 @@ function buildStrand(B, sp, si, tExit, rest, meta, hatCtx = null, D = hairDetail
   return { sw: { curve: S.curve, sample: (t) => surfSample(S, t) }, sd, bi: si, t0, tExit, sample, section: (t) => S.section(t) };
 }
 
+// 【眉形表】4 款眉型:t=0 眉头(靠鼻)→ 1 眉梢;el(t) 是笔画在头上的仰角、r(t) 是笔半径。
+// 0 classic 为原版,其余是给更衣间用的"墨绘变体"(粗平/高挑/直条)。
 // Brow shapes (style.brows). t = 0 inner end (near the nose) → 1 outer end. el(t) is the stroke's elevation on the head,
 // r(t) its radius. 0 is the original stroke (unchanged); the others are painted-ink variants for the locker.
 export const BROW_KINDS = [
@@ -1514,6 +1672,11 @@ export const BROW_KINDS = [
   { name: 'straight', el: (t) => BROW.el + 0.022 + 0.004 * Math.sin(Math.PI * t), r: (t) => 0.0104 * (0.82 + 0.18 * Math.sin(Math.PI * (0.1 + 0.8 * t))), az1: BROW.az1 - 0.05 },
 ];
 
+// 【头发总装配】一次发型构建的全流程:
+//   规格先行(发丝 + 附生绺)→ 帽分析与丢绺 → 遮蔽场 → 头皮发帽 → 眉毛 → 逐缕建丝
+//   → 空槽骨骼归位(被帽丢掉的缕,骨骼静置点收回头心)→ 装备 → 帽体。
+// 返回 { geo, rest, meta, … }:rest 是头发骨的静置位置表(拼进全骨骼静置表),
+// meta 每缕的 { dir, len, K, G }(物理弹簧参数),dropped 记录被帽丢掉的缕数。
 function buildHair(styleIdx, hatIdx = 0, browIdx = 0, lod = 'hero') {
   const style = STYLES[styleIdx % STYLES.length];
   const hat = HAT_KINDS[hatIdx] || HAT_KINDS[0];
@@ -1563,6 +1726,8 @@ function buildHair(styleIdx, hatIdx = 0, browIdx = 0, lod = 'hero') {
 // ------------------------------------------------------------------------------------------------
 // Tank glass + ink fill (tank-local: capsule axis = +Y)
 // ------------------------------------------------------------------------------------------------
+// 【背罐玻璃与墨填充】几何在 character-outfit.js(tankGlass);这里只打包运行时要用的
+// 锚点:相对 chest/tank 骨骼的偏移、倾斜、墨填充的底部与高度(character.js 把填充组重挂到 tank 骨)。
 function buildTankParts(lod = 'hero') {
   const T = TANK; const chest = REST_BODY.chest;
   const { glass, fill } = tankGlass(bodyLevel(lod));
@@ -1575,10 +1740,18 @@ function buildTankParts(lod = 'hero') {
 // ------------------------------------------------------------------------------------------------
 // Squid form: one continuous mantle with blended arrowhead fins, raised visor band, big eyes, ten tentacles
 // ------------------------------------------------------------------------------------------------
+// 【鱿鱼形态】变身后的完整形态:连续外套膜(箭头鳍渐变融入)、凸起护目带、大眼斑、10 条腕。
+// 三个 Builder 出三张网格:body 主色(膜+腕)、dark 深色(护目带)、eyes 眼斑。
+// 顶点契约(makeSquidMaterial):colour = (tint, 摆动权重, 相位);aEx = 部件号
+// (0 膜 · 1 印吸盘腕 · 2 建模吸盘 · 3 吸盘已建模的腕);aSq = (半厚度, 1+吸盘圈号|0, 烘焙遮蔽)。
+// 按 lod×画质缓存(_squid)。
+// 外套膜轮廓表:半径-高度键值对,interpTable 查半径;sqR/sqFin/sqPoint 是轮廓、鳍与表面点函数。
 const SQ_PROF = [[0, -0.034], [0.07, -0.03], [0.108, -0.009], [0.126, 0.03], [0.131, 0.08], [0.127, 0.13], [0.114, 0.175], [0.099, 0.214], [0.081, 0.254], [0.059, 0.298], [0.035, 0.34], [0.015, 0.366], [0, 0.375]];
 const SQ_ZS = 0.86;
 const sqR = (y) => interpTable(SQ_PROF.map((p) => p[1]), SQ_PROF.map((p) => p[0]), y);
 function sqFin(y) { return 0.108 * sstep(0.158, 0.222, y) * Math.pow(1 - sstep(0.222, 0.374, y), 1.05); }
+// 【表面点/法线】sqPoint 按角度 th、高度 y 取膜面点(off 沿法线);鳍片 f 按 |sin th|⁷ 只出现在
+// 两侧,翼尖微下扫。sqSurfN 用差分叉积求法线——护目带、眼斑都贴它定位。
 function sqPoint(th, y, off, out) {
   const r = Math.max(0, sqR(y)) + off;
   const s = Math.sin(th), c = Math.cos(th);
@@ -1594,6 +1767,8 @@ function sqSurfN(th, y, off, out) {
 }
 
 const _squid = new Map();
+// 【鱿鱼构建】膜+鳍 → 10 腕(8 短臂 + 2 条更长触须,背面 4/6 号;扁截面、内面吸盘、卷梢)
+// → 护目带(滚边凸起网格进 dark)→ 双眼斑(极坐标补片,保留眼球材质的极 uv,aEx=side)。
 /**
  * Squid-form meshes for a LOD tier (cached per tier × quality). Contract (makeSquidMaterial): colour = (tint, wiggle
  * weight, phase); aEx = part (0 mantle · 1 arm with printed suckers · 2 modelled sucker · 3 arm whose suckers are
@@ -1683,8 +1858,12 @@ function buildSquid(lod = 'hero') {
 // ------------------------------------------------------------------------------------------------
 // Caches
 // ------------------------------------------------------------------------------------------------
+// 【共享缓存】小子形态的几何只建一次:_shared 按 lod|bodyLevel 缓存皮肤/衣服/眼睛/墨罐/鱿鱼,
+// _hair 按 发型.帽子.眉毛.lod.画质 缓存发型网格——同风格角色零重复构建。
 const _shared = new Map();
 const _hair = new Map();
+// 【小子共享网格】入口:皮肤/衣服/眼睛/墨罐/鱿鱼五件套 + 一次身体 AO 烘焙,按档缓存。
+// 这是 character.js 装配 SkinnedMesh 时几何的唯一来源(见 ASSETS-CHARACTER §1 管线第 ③ 步)。
 /** Shared kid meshes for a LOD tier ('hero' default · 'game' · 'far'); the body/outfit detail also follows the quality. */
 export function getKidShared(lod = 'hero') {
   const key = lod + '|' + bodyLevel(lod);
@@ -1700,36 +1879,47 @@ export function getKidShared(lod = 'hero') {
  * Hair-mesh key of a style: accepts a style object ({ hair, hat, brows, … }) or a bare hair index (legacy callers).
  * The hair mesh carries the tentacles, scalp cap, brows, style accessories and headgear, so all three select it.
  */
+// 【发型键】接受风格对象({hair,hat,brows})或裸发型索引(旧调用方);三值都经 wrapN 取模,
+// 缓存键 = 发型.帽子.眉毛.lod.画质——发型网格同时携带触手/发帽/眉毛/装备/帽,五者缺一不可。
 const wrapN = (v, n) => ((Math.round(+v || 0) % n) + n) % n;
 function hairKey(st) {
   if (st && typeof st === 'object') return { hair: wrapN(st.hair, STYLES.length), hat: wrapN(st.hat, HAT_KINDS.length), brows: wrapN(st.brows, BROW_KINDS.length) };
   return { hair: wrapN(st, STYLES.length), hat: 0, brows: 0 };
 }
 const keyStr = (k) => `${k.hair}.${k.hat}.${k.brows}`;
+// 【发型网格入口】按风格 + LOD 档取缓存(未建则现场构建)。
 /** Hair mesh of a style at a LOD tier ('hero' | 'game' | 'far'; resolution also follows the settings quality). */
 export function getHairStyle(st, lod = 'hero') {
   const k = hairKey(st), ks = `${keyStr(k)}.${lod}.${hairQuality()}`;
   if (!_hair.has(ks)) _hair.set(ks, buildHair(k.hair, k.hat, k.brows, lod));
   return _hair.get(ks);
 }
+// 【静置位置总表】REST_BODY(身体+附加骨)与发型 rest(头发/发梢骨,由发丝曲线推导)合并:
+// 头发骨优先取发型值——换发型会移动发骨静置点;都没有时回落头心。character.js 装配骨架用它摆 Bone。
 export function getRestPositions(st) {
   const h = getHairStyle(st); const out = {};
   for (const n of BONE_NAMES) out[n] = (REST_BODY[n] || h.rest[n] || HEAD_C).clone();
   return out;
 }
 const _inv = new Map();
+// 【逆绑定矩阵】本文件最重要的约定落地处:骨骼静置朝向恒为单位矩阵 ⇒ 逆绑定 = 纯平移
+// translate(-rest),无旋转参与;Skeleton 的 bindMatrices 直接由它生成,装配与调试都因此极简。
+// 只依赖 发型.帽子.眉毛(不随 lod/画质变),单独缓存。
 export function getBoneInverses(st) {
   const ks = keyStr(hairKey(st));
   if (!_inv.has(ks)) { const rest = getRestPositions(st); _inv.set(ks, BONE_NAMES.map((n) => new THREE.Matrix4().makeTranslation(-rest[n].x, -rest[n].y, -rest[n].z))); }
   return _inv.get(ks);
 }
+// 【衣服网格】所有服装共享同一 T 恤版型,图案/配色全是 shader 侧的事——衣服网格与风格无关。
 /** Cloth (garment) mesh for a style — every outfit currently shares the tee cut (patterns/colours are shader-side). */
 export function getClothGeo(st, lod = 'hero') { return getKidShared(lod).cloth; }
+// 【三角计数】遍历可见网格统计三角形数(预算审计/实验室用;角色预算见 RIG.zh-CN.md)。
 /** Triangle count of the visible meshes under an object (for budgets / the lab). */
 export function countTriangles(obj) {
   let n = 0;
   obj.traverseVisible((o) => { if (o.isMesh && o.geometry) { const g = o.geometry; n += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
   return n;
 }
+// 【导出】REST 即静置位置表;末尾再导出图元工具给 character-outfit/character-face 等姊妹模块复用。
 export const REST = REST_BODY;
 export { sstep, clamp, lerp, finalize, torus, mirrorX, gridGeo, revolve, placeBasis, densitySamples };

@@ -23,6 +23,39 @@
 // Hands: the squidkid fist is modelled around a Ø 2.8 cm handle whose axis passes through HAND.hole (character-geo).
 // A grip spec { pos, handZ, handY } says where that handle axis passes (pos), which way it runs toward the thumb
 // (handZ) and which way the wrist lies (handY). Handles held by a hand are ≤ 1.5 cm in radius around that axis.
+
+// ==================== 中文导读（角色武器挂手系统） ====================
+// 【本文件职责】为鱿孩（squidkid）程序化生成所有"手持"模型：主武器（shooter/roller/charger/blaster/
+//   dualies/slosher/splatling/bucket/spinner/twins/brush）、大招持械（sp_zooka/sp_blower/sp_jetgun/sp_stamp，
+//   仅在大招持续期间手持），以及副武器左手投掷物/装置道具（bomb/sticky/burst/seeker/scan/curtain/
+//   sprinkler/mine/beacon/mist）。全部零贴图、纯几何积木搭建。
+//
+// 【武器空间约定】握把中心为原点，+Z = 枪口朝前，+Y = 朝上，角色的右手方向 = -X。建模全部在该空间进行；
+//   每个武器返回 { kind, body, ink, parts?, gripR, gripL, muzzle, twirl, … }。
+//
+// 【GEO_KIT 积木】superEllipsoid（超椭球壳体）、lathe/latheZ（车削回转体，latheZ 沿 +Z）、torus（圆环）、
+//   sweep（扫掠管）、screw（螺钉）、squidShape/decal（鱿鱼徽标薄片）等；Parts 收集器把各积木染顶点色、
+//   打 aMat 材质类标量（satin/gloss/rubber/metal/lens/led/print），最后 mergeGeometries 合并。
+//
+// 【握把孔契约（挂手数学的核心）】鱿孩拳头围绕一根直径 2.8 cm 的"虚拟手柄"建模，该手柄轴线穿过手骨上的
+//   HAND.hole 点（character-geo.js 导出）。本文件据此给出：
+//   · GRIP_HOLE_L / GRIP_HOLE_R —— 握把孔在手骨局部坐标中的位置（右手 = 左手 x 取反）；
+//   · 每个武器声明 gripR / gripL = { pos, handZ, handY }：手柄轴线在武器空间过 pos，指向拇指为 handZ，
+//     手腕朝向为 handY；
+//   · handInWeapon(grip, hole) 用格拉姆-施密特正交化（handY → handZ 去分量 → 叉乘得 handX）建出手骨
+//     基矩阵，再平移使 hole 恰好落在 pos 上，得到"手骨在武器空间的位姿 {pos, quat}"；
+//   · getWeaponDef() / getSubDef() 对该位姿取逆（compose 后 invert + decompose），得到 inHand：
+//     "武器挂在手骨下的局部位姿"。角色代码把武器 Group 挂到手骨、套用 inHand 即完成持握；握点周围
+//     半径 ≤1.5 cm 内不得有超出轴线的几何，否则会穿模。
+//
+// 【活动部件】def.parts = { 名: { geo, pivot, mat, lamp? } }：几何以其 pivot 为原点重新居中，character.js
+//   每帧驱动 animateWeapon(w, st) 让扳机、拉机柄、墨水瓶、枪管簇、鼓轮等滑动/旋转/缩放；makeLampMaterial
+//   （每实例自发光灯）与 makeCoilMaterial（按逐顶点 aSeg 阈值逐段点亮的充电线圈/蓄力表）提供发光材质。
+//
+// 【注册表】BUILDERS（kind → build 函数）+ _cache（每种武器只建一次）；kit 武器（kits/*.js）通过
+//   registerWeaponModel/registerSubModel 把自带模型与动画注册进同一张表（BUILDERS/KIT_ANIM/SUB_BUILDERS）。
+//   GEO_KIT 把整套积木与辅助函数只读导出，供 special-props.js 等其他程序化道具模块复用。
+// ========================================================================
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { superEllipsoid, lathe, smoothProfile, sweep, finalize, torus as torusG, HAND } from './character-geo.js';
@@ -35,6 +68,7 @@ const C = {
   gunmetal: '#5b616c', rubber: '#26282e', lens: '#0b0f16', red: '#ff3b30', green: '#3dff7a', amber: '#ffb000', decal: '#f7f7f5', hazard: '#ffcf33',
 };
 
+// 【几何收集器】add() 把每个积木统一成"带顶点色 + aMat 材质类标量"的标准 BufferGeometry；build() 合并。
 class Parts {
   constructor() { this.list = []; }
   add(geo, color, mat = M.satin) {
@@ -53,30 +87,41 @@ class Parts {
 }
 
 // ---------------------------------------------------------------------------------------------- helpers
+// 【建模辅助函数】latheZ/torus/at/rbox/orient/screw/decal/placeXY/squidShape 等积木定位工具，全部被武器与
+//   道具 builder 复用，并整体经 GEO_KIT 导出；详见各函数上方注释。
 /** Lathe along +Z from [r, z] profile. */
+// 【沿 Z 车削】把 [半径, 高度] 轮廓先绕 +Y 车削再翻成 +Z 轴 —— 枪管、握把等一切"沿枪口方向"的回转体。
 function latheZ(profile, seg = 16) { const g = lathe(profile, seg); g.rotateX(Math.PI / 2); return g; }
 function torus(R, r, rs = 6, ts = 16, arc = Math.PI * 2) { return torusG(R, r, rs, ts, arc); }
+// 【平移落位】把几何挪到 (x, y, z) 并返回自身，链式拼积木用。
 function at(g, x, y, z) { g.translate(x, y, z); return g; }
 /** Rounded box (w, h, d = full sizes), squareness e (smaller = boxier). */
+// 【圆角盒】超椭球逼近的圆角长方体，机匣、护木等块状件用。
 function rbox(w, h, d, e = 0.3, ws = 12, hs = 8, deform) { return superEllipsoid(w / 2, h / 2, d / 2, e, e, ws, hs, deform); }
 /** Orient geometry authored along +Y so that +Y → dir, then place at p. */
+// 【定向放置】把沿 +Y 建模的几何旋到 dir 方向后放到 p —— 螺钉、阀门、LED 等小件的通用落位法。
 function orient(g, dir, p) { g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), dir.clone().normalize())); return at(g, p.x, p.y, p.z); }
 /** Small screw head (dome with a slot) facing n at p. */
+// 【螺钉】半球头 + 一字槽的小五金件，按法向 n 落在 p，纯装饰。
 function screw(P, p, n, r = 0.0032, col = C.metal) {
   const h = lathe([[0, 0], [r, 0], [r, 0.0006], [r * 0.72, 0.0014], [0, 0.0017]], 6);
   P.add(orient(h, n, p), col, M.metal);
 }
 /** Thin extruded decal from a 2D shape (in the XY plane), placed with basis (x, y) at p. */
+// 【贴花挤出】把 2D Shape（鱿鱼徽标、箭头）挤成不到 1 mm 的薄片，再经 placeXY/wrapY 等贴到壳面。
 function decal(shape, depth = 0.0006) {
   const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 5 });
   return finalize(g);
 }
 function placeXY(g, xAxis, yAxis, p) {
+  // 【平面贴装基】把扁平件（decal、窗框）放到由 xAxis/yAxis 张成的切平面上：x 归一，y 减掉在 x 上的
+  //   投影（正交化，防歪斜），z = x×y 得外法线；再合成 4×4 基矩阵定位。贴壳徽标、侧窗都走这里。
   const x = xAxis.clone().normalize(), y = yAxis.clone().addScaledVector(x, -yAxis.dot(x)).normalize(), z = new V3().crossVectors(x, y);
   g.applyMatrix4(new THREE.Matrix4().makeBasis(x, y, z).setPosition(p));
   return g;
 }
 /** Squid glyph (mantle arrow + head + eyes cut out) as a Shape of height ~1 (scale it). */
+// 【鱿鱼徽标】品牌图形：斗蓬箭头 + 头 + 双眼镂空，做成约 1 高的 Shape 供各处缩放贴印。
 function squidShape(s = 1) {
   const sh = new THREE.Shape();
   sh.moveTo(0, 0.62 * s); sh.lineTo(0.42 * s, 0.1 * s); sh.quadraticCurveTo(0.38 * s, -0.08 * s, 0.26 * s, -0.12 * s);
@@ -88,9 +133,12 @@ function squidShape(s = 1) {
   return sh;
 }
 /** An animated sub-part built from its own Parts, authored in weapon space; re-centred on `pivot` in getWeaponDef. */
+// 【活动部件打包】先用独立 Parts 建好活动件（扳机、拉机柄等），记下它在武器空间的 pivot；
+//   finishParts() 稍后会把几何平移到以 pivot 为原点，Group 再坐回 pivot，实现"绕自身轴心运动"。
 function part(P, pivot, mat = 'body', lamp = null) { return { src: P.build(), pivot: pivot.clone(), mat, lamp }; }
 
 /** Per-instance glowing material for lamp parts (LEDs, scope lenses, hot muzzle ports). */
+// 【发光材质】每实例独立（可单独改 emissive 颜色/强度），animateWeapon 与 ledShot 驱动闪烁、低墨变红。
 export function makeLampMaterial(spec = {}) {
   const m = new THREE.MeshStandardMaterial({ color: spec.color ?? 0x222222, emissive: spec.emissive ?? spec.color ?? 0xffffff, emissiveIntensity: spec.intensity ?? 1, roughness: spec.roughness ?? 0.25, metalness: 0 });
   m.name = 'iw-lamp';
@@ -100,6 +148,8 @@ export function makeLampMaterial(spec = {}) {
 /** Charger coil: the rings light one after another as the charge passes their aSeg threshold (rear → muzzle), the ring
  *  being filled flickers hot, full charge ripples along the coil, the release flashes white. userData.u = uniforms
  *  { uCharge, uFull, uFlash, uTime }; emissive = team colour. */
+// 【充电线圈材质】Shader 注入：逐顶点 aSeg = 点亮点阈值，uCharge 越过即点亮（后 → 口顺序），当前段
+//   抖动发热，满蓄力整圈波动，松手 uFlash 白闪；充电枪线圈与加特林蓄力表共用（队色自发光）。
 export function makeCoilMaterial() {
   const m = new THREE.MeshStandardMaterial({ color: 0x1b1c22, emissive: 0xffffff, emissiveIntensity: 1, roughness: 0.3, metalness: 0.25 });
   const U = { uCharge: { value: 0 }, uFull: { value: 0 }, uFlash: { value: 0 }, uTime: { value: 0 } };
@@ -124,6 +174,7 @@ export function makeCoilMaterial() {
   return m;
 }
 
+// 【箭头纹】一排 n 个 V 形箭头（装备速度感涂装），做成 Shape 数组供 decal() 挤出。
 function chevronShape(w, h, n = 3, gap = 0.4) {
   const sh = []; const step = w / n;
   for (let i = 0; i < n; i++) {
@@ -134,6 +185,7 @@ function chevronShape(w, h, n = 3, gap = 0.4) {
   return sh;
 }
 /** Run fn(v) over every vertex of g in place, then refresh normals. */
+// 【逐顶点形变】把 fn 施加到每个顶点上并重建法线 —— 贴花弯贴曲面、液面波形、鼓轮表面起伏都靠它。
 function deformG(g, fn) {
   const p = g.attributes.position; const v = new V3();
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); fn(v); p.setXYZ(i, v.x, v.y, v.z); }
@@ -141,8 +193,10 @@ function deformG(g, fn) {
   return g;
 }
 /** Deterministic PRNG (procedural clutter such as bristles is identical on every build). */
+// 【确定性随机】LCG 伪随机：刷毛等杂乱细节每次构建完全一致（否则合并几何的顶点序会抖动）。
 function rng(seed) { let s = seed >>> 0; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296); }
 /** Surface |x| of an undeformed superEllipsoid(rx, ry, rz, e1, e2) at local (y, z), for seating screws and decals on flanks. */
+// 【超椭球侧面坐标】反解超椭球面在 (y, z) 处的半宽 |x|：把螺钉、贴花精确"坐"到壳体侧面上。
 function seX(rx, ry, rz, e1, e2, y, z) {
   const sl = Math.min(1, Math.abs(y) / ry) ** (1 / e1);
   const f = Math.sqrt(Math.max(0, 1 - sl * sl)) ** e1;
@@ -151,7 +205,11 @@ function seX(rx, ry, rz, e1, e2, y, z) {
 }
 
 // ---------------------------------------------------------------------------------------------- hands
+// 【握把孔契约】鱿孩拳头内建一根直径 2.8 cm 的虚拟手柄，轴线穿过手骨的 HAND.hole；武器声明的握把
+//   （gripR/gripL，结构见 pistolGrip 下方 GRIP_PISTOL）给出该轴线在武器空间的位置与朝向，挂手数学见
+//   handInWeapon() 与 getWeaponDef()。
 /** Grip-hole axis point relative to the hand bone (right hand = mirror of the modelled left hand). */
+// 【握把孔左右偏移】左手直接取 HAND.hole；角色模型只建了左手，右手 = 左手关于 YZ 平面的镜像（x 取反）。
 export const GRIP_HOLE_L = HAND.hole.clone();
 export const GRIP_HOLE_R = new V3(-HAND.hole.x, HAND.hole.y, HAND.hole.z);
 /** Twirl pivot: the right fist's grip axis (so spins happen around the handle the kid is holding). */
@@ -159,6 +217,8 @@ export const FIST_OFFSET = GRIP_HOLE_R.clone();
 
 /** Pistol grip around the handle axis A through the origin: rubber-paneled, finger-grooved front strap,
  *  beavertail over the web of the hand, trigger + guard for the index finger, flared base plate. */
+// 【手枪式握把（共用件）】几乎每把主武器都调它：绕 GRIP_AXIS 这根略前倾的轴建带指槽、胶皮侧板、
+//   海狸尾、扳机护圈与喇叭底板的握把；opt.T 传入独立 Parts 时扳机叶片会成为可动件（mat 标 'body'）。
 const GRIP_AXIS = new V3(0, 1, 0.25).normalize();
 function pistolGrip(P, opt = {}) {
   const A = GRIP_AXIS;
@@ -187,11 +247,16 @@ function pistolGrip(P, opt = {}) {
   const trig = superEllipsoid(0.0034, 0.0105, 0.0034, 0.7, 0.7, 6, 6, (q) => { q.z += 16 * q.y * q.y; });
   trig.rotateX(-0.25); (opt.T || P).add(at(trig, 0, 0.0215, 0.0305), C.metal, M.metal);
 }
+// 【标准手枪握把的挂手声明】pos = 武器原点（即手柄轴线过原点，正交化后以 GRIP_AXIS 为 handZ）；
+//   handY 取 (0, 0.25, -1)：手腕略向后下方。凡用 pistolGrip() 的武器 gripR 都复用这个常量。
 const GRIP_PISTOL = { pos: new V3(0, 0, 0), handZ: GRIP_AXIS.clone(), handY: new V3(0, 0.25, -1) };
 /** Trigger blade hinge (top of the blade, inside the frame): the trigger part squeezes back about +X here. */
+// 【扳机铰点】扳机叶片的转动轴（顶部、框内），所有用 pistolGrip 的武器共用，活动件动画绕 +X 扣动。
 const TRIGGER_PIVOT = new V3(0, 0.0315, 0.0282);
 
 // ---------------------------------------------------------------------------------------------- shooter
+// 【射手步枪】连射主力：奶油色机匣 + 深色下机匣 + 队色墨脊，枪口车削喷嘴，顶部笼式墨水瓶脉动，左侧
+//   状态 LED；活动件 = 扳机、拉机柄（射击循环后拉）、墨水瓶、LED；左前另有前握把给左手。
 function buildShooter() {
   const P = new Parts(), I = new Parts(), T = new Parts(), BOLT = new Parts(), CAN = new Parts(), LED = new Parts();
   pistolGrip(P, { T });
@@ -265,6 +330,8 @@ function buildShooter() {
 }
 
 // ---------------------------------------------------------------------------------------------- roller
+// 【滚筒刷】长杆两端双握位（右手在顶把、左手在中把），末端叉架托着横置鼓轮（drum 独立网格，随滚动/
+//   甩动惯性自转）；杆上危险条纹、墨水槽窗口与琥珀 LED。挂手点都在杆轴上（handZ 沿 +Z）。
 function buildRoller() {
   const P = new Parts(), I = new Parts(), LED = new Parts();
   const L = 0.84; // grip -> drum axis
@@ -327,6 +394,8 @@ function buildRoller() {
 }
 
 // ---------------------------------------------------------------------------------------------- charger
+// 【蓄力狙击】白色长机匣 +  skeletal 枪托 + 瞄准镜，枪管外四圈队色线圈（glow，aSeg 逐段点亮表示蓄力），
+//   拉机柄随蓄力后拉，枪口制退器排气口发光；左手托水平前护木。GRIP_PISTOL 复用标准手枪握把。
 function buildCharger() {
   const P = new Parts(), I = new Parts(), G = new Parts(), T = new Parts(), BOLT = new Parts(), LENS = new Parts(), EYE = new Parts(), PORTS = new Parts();
   pistolGrip(P, { T });
@@ -406,6 +475,8 @@ function buildCharger() {
 }
 
 // ---------------------------------------------------------------------------------------------- blaster
+// 【爆破枪】奶油笼架里一颗受压墨气球（bulb，受压凹陷回弹），后方 250° 表盘 + 红针指示压力，喇叭口喷
+//   嘴；泵动前握把（pump）是左手随动件——身体左手由 character.js 按 w.pump 行程骑在它上面。
 function buildBlaster() {
   const P = new Parts(), I = new Parts(), T = new Parts(), PUMP = new Parts(), NEEDLE = new Parts(), BULB = new Parts();
   pistolGrip(P, { baseCol: C.dark, T });
@@ -472,6 +543,8 @@ function buildBlaster() {
 // "Twinfin Dualies": a compact pistol per hand. Polymer frame + accessory rail, a cream slide that snaps back on every
 // shot of its own hand (team-ink dorsal fin + ink window ride on it), turned nozzle, an ink capsule slung under the
 // muzzle, rear status LED facing the player. The LEFT hand holds a second instance (def.dual: handL / inHandL below).
+// 【双枪】每只手一把紧凑手枪；套筒（slide + 队色 slideInk）在各自手射击时后坐。gripL 同样用
+//   GRIP_PISTOL，配合下方 def.dual 让左手拿到完整的第二个实例（与 twins 的镜像复制不同）。
 function buildDualies() {
   const P = new Parts(), I = new Parts(), T = new Parts(), SL = new Parts(), SLI = new Parts(), LED = new Parts();
   pistolGrip(P, { T, baseCol: C.dark });
@@ -529,6 +602,8 @@ function buildDualies() {
 // base (left hand, let go for the throw), hoops, a team-ink band, a pour lip, and the ink inside: a static fill plus a
 // free surface disc (part 'surface' — kept level against the swing, rippling, drawn down by each throw). Thumb lever on
 // the handle ('lever') trips as the ink leaves. Bucket axis = +Y; the throw goes out over the lip (+Z).
+// 【泼桶】右手握水壶式把手，左手提底座前部橡胶提梁（投掷时松开）；桶内墨水 = 静态填充 + 自由液面
+//   （surface 部件，随挥舞保持水平、每泼一次下降回涌），柄顶拇指杠杆（lever）随出墨扳动。
 function buildSlosher() {
   const P = new Parts(), I = new Parts(), SURF = new Parts(), LEV = new Parts();
   const BZ = 0.148, BY = 0.012;
@@ -587,6 +662,8 @@ function buildSlosher() {
 // "Gyre Splatling": rear pistol grip + vertical foregrip, a vented motor housing, a windowed ink drum on top with an
 // 8-segment charge meter on its back face (per-vertex aSeg → makeCoilMaterial, faces the player), and a six-barrel
 // cluster ('barrels') that spins up with the charge and screams while it streams.
+// 【旋转加特林】手枪握把 + 竖前握把，顶部窗口墨鼓，背后 8 段蓄力表（aSeg → makeCoilMaterial，面向玩家）；
+//   六根枪管簇随蓄力/射击绕 Z 加速旋转，射击时整体轻微后顿。
 function buildSplatling() {
   const P = new Parts(), I = new Parts(), T = new Parts(), BAR = new Parts(), G = new Parts();
   pistolGrip(P, { T });
@@ -655,10 +732,14 @@ function buildSplatling() {
 /** Slosh pail: a stubby cream pail tipped mouth-forward on a trigger frame. The right fist holds the pistol post of a
  *  D-frame whose top bar arches over the pail; the left fist an underslung loop handle below the front. Ink surges up
  *  the pail and spills over a wide dark pour lip under the mouth. Pail space: axis PA tilts up toward +Z, PU = its up. */
+// 【水桶（fork 变体·静态壳）】斜口奶油桶架在 D 形触发架上：右手握架柱，左手握桶底环把。桶体在"桶空间"
+//   （pail()/pp() 基变换）里建模再贴回武器空间，墨水液面随 surf() 波形涌向桶口、漫过宽倒墨唇。
 function buildBucket() {
   const P = new Parts(), I = new Parts();
   pistolGrip(P);
   const al = 0.3;
+  // 【桶空间基】PA = 桶轴（向 +Z 上扬 0.3 rad），PU = 桶的"上"，PX = 桶的横向；pail() 把桶局部几何
+  //   经 placeXY 贴回武器空间，pp() 把桶局部坐标展开成武器空间点 —— 桶体全部在这套基里 authored。
   const PX = new V3(1, 0, 0), PU = new V3(0, Math.cos(al), -Math.sin(al)), PA = new V3(0, Math.sin(al), Math.cos(al));
   const B0 = new V3(0, 0.03, 0.068);                                    // centre of the pail base
   const pail = (g) => placeXY(g, PX, PU, B0);                          // pail-local (x, up, along axis) → weapon space
@@ -748,6 +829,8 @@ function buildBucket() {
 /** Rotary ink cannon: in-line caged ink tank at the back, cream motor housing over the pistol grip, a fat fixed barrel
  *  shroud (left-hand foregrip underneath, motor pod on the right), carry handle on top. The six-barrel cluster in front
  *  is the separate `spin` mesh (authored in weapon space) turning about the axis +Z through `spinAt`. */
+// 【旋转炮（fork 变体）】加特林式转管炮：后部笼式墨罐、奶油电机壳、固定粗炮罩；前方六管星 cluster 是
+//   独立 spin 网格，character.js 经 spinAt 绕 +Z 持续旋转；罩下前握把归左手。
 function buildSpinner() {
   const P = new Parts(), I = new Parts(), S = new Parts();
   pistolGrip(P);
@@ -829,6 +912,8 @@ function buildSpinner() {
 /** One of a pair of stubby ink pistols (the character mirrors a copy into the left fist): chunky cream receiver, a caged
  *  ink drum laid across the top, fat flared barrel with a team ring, and a vertical ink vial ahead of the trigger guard
  *  that doubles as the support grip. */
+// 【孪生短枪（fork 变体·镜像双持）】只建一把，character.js 按 mirrorDual 把拷贝镜像进左拳（区别于
+//   dualies 的完整双实例）；顶部横置笼式墨鼓，扳机护圈前的立式墨瓶兼任左手支撑握把。
 function buildTwins() {
   const P = new Parts(), I = new Parts();
   pistolGrip(P);
@@ -879,6 +964,8 @@ function buildTwins() {
  *  canister clipped on the shaft feeding a hose to the head, a lockable knuckle hinge, and a wide cream head canted down
  *  so the bristles meet the ground in the roller's pose. Bristle roots are natural, the tips soaked in team ink.
  *  Head space: HX across, HY up the head toward the hinge, HN out of the broad front face. */
+// 【甲板刷（fork 变体）】握位与滚筒完全一致（gripR/gripL 相同），推地前进；杆上墨罐经软管供向刷头，
+//   指节铰链可锁定；刷毛根部本色、毛尖吸饱队色墨。刷头在 head()/hp() 的头部基（HX/HY/HN）里建模。
 function buildBrush() {
   const P = new Parts(), I = new Parts();
   const KZ = 0.724, be = 0.42;                                          // hinge on the shaft axis, head cant (rad)
@@ -966,11 +1053,16 @@ function buildBrush() {
 // ---------------------------------------------------------------------------------------------- specials (held)
 // Held only while a special runs. Same contract as the main weapons (weapon space, grips, muzzle); `spin` like the
 // spinner's cluster (plastic only, turns about weapon +Z through spinAt while firing).
+// 【中文速览】仅在大招持续期间手持；与主武器同一套契约（武器空间、握把、muzzle）；spin 部件如
+//   spinner 的转管簇，经 spinAt 绕武器 +Z 旋转。
+
 
 /** Twister Zooka: shoulder-fired vortex launcher. A fat cream tube (axis at y = 0.112) over the pistol grip, rubber
  *  shoulder pad under its tail, dark rear venturi, hazard band and a wide flared cream bell whose throat holds a
  *  vortex impeller (`spin`); a caged team-ink canister rides on top in two saddles, a reflex sight on the left, a
  *  vertical foregrip under the front for the left hand. ~0.98 m long (z −0.36 … 0.65). */
+// 【大招·涡旋火箭筒】肩射涡旋发射器：奶油粗管 + 尾部橡胶肩垫 + 后喷管，喇叭口里是可旋转的涡旋叶轮
+//   （spin）；顶部笼式队色墨罐，左侧反射瞄具，前下方竖握把归左手。
 function buildZooka() {
   const P = new Parts(), I = new Parts(), S = new Parts();
   pistolGrip(P);
@@ -1049,6 +1141,8 @@ function buildZooka() {
 /** Bubble Blower: chubby cream toy gun with a fan pod on its back; a flared team nozzle feeds a big wand ring
  *  (Ø 0.28, a soaked team-ink cord inside a cream frame, drips hanging off it) held by four spokes. An upside-down
  *  soap bottle plugs in underneath: its rubber-sleeved neck is the left hand's foregrip. Muzzle = ring centre. */
+// 【大招·泡泡吹风机】玩具枪身后背风扇舱，队色喷嘴喂向前方大魔杖环（环心即 muzzle）；底部倒插洗洁精
+//   瓶，瓶的胶套瓶颈即左手前握把。
 function buildBlower() {
   const P = new Parts(), I = new Parts();
   pistolGrip(P);
@@ -1112,6 +1206,8 @@ function buildBlower() {
  *  cooling fins on top, a gunmetal barrel ending in a flared afterburner nozzle (dark petals, team ring). A corrugated
  *  rubber hose leaves the dark rear cap and curls down behind the grip to a quick coupler (`hoseAt` = rear port,
  *  `hoseEnd` = coupler tip, where a longer hose can continue). Horizontal foregrip under the barrel (blaster pose). */
+// 【大招·墨喷射手炮】奶油压力舱两侧队色观察窗，顶部散热片，枪管末端花瓣状加力喷口；后盖引出的波纹
+//   软管垂到握把旁的快接插头（hoseAt/hoseEnd 供特效续接）；管下水平前握把归左手（爆破枪姿势）。
 function buildJetgun() {
   const P = new Parts(), I = new Parts();
   pistolGrip(P, { baseCol: C.dark });
@@ -1180,6 +1276,8 @@ function buildJetgun() {
 const STAMP_N = new V3(0, -0.58, 0.815).normalize();
 /** Subdivide an indexed geometry until no edge is longer than maxLen (per-edge midpoint splits, so neighbours agree and
  *  no T-junctions appear). For flat decals that get bent onto curved surfaces (the caps otherwise cut under the curve). */
+// 【细分工具】把索引几何逐边中点细分到边长 ≤ maxLen（邻边共享中点，无 T 缝），供平面贴花弯贴曲面时
+//  不至于切入曲面之下。
 function refine(g, maxLen, maxIter = 10) {
   const pos = Array.from(g.attributes.position.array); let idx = Array.from(g.index.array);
   const m2 = maxLen * maxLen;
@@ -1219,6 +1317,8 @@ function roundRect(w, h, r) {
   s.lineTo(-x + r, y); s.quadraticCurveTo(-x, y, -x, y - r); s.lineTo(-x, -y + r); s.quadraticCurveTo(-x, -y, -x + r, -y);
   return s;
 }
+// 【大招·超级印章】滚筒手位（握位与滚筒一致），长杆末端指节铰链挂着大印章块；块面朝向 STAMP_N
+//   （滚筒姿态下的"世界下方"），队色印垫带凸起鱿鱼印纹（镜像，像真印章）；face 供落印特效定位。
 function buildStamp() {
   const P = new Parts(), I = new Parts();
   const HX = new V3(1, 0, 0), HU = STAMP_N.clone().negate(), HT = new V3().crossVectors(HU, HX).normalize();
@@ -1286,6 +1386,8 @@ function buildStamp() {
   };
 }
 
+// 【武器注册表】BUILDERS：kind → build 函数；_cache 缓存每个 kind 的成品 def（含挂手位姿），
+//   每种武器全程只建一次。sp_ 前缀 = 大招持械。
 const _cache = new Map();
 const BUILDERS = {
   shooter: buildShooter, roller: buildRoller, charger: buildCharger, blaster: buildBlaster,
@@ -1298,13 +1400,23 @@ export const WEAPON_KINDS = Object.keys(BUILDERS).filter((k) => !k.startsWith('s
 export const SPECIAL_WEAPON_KINDS = Object.keys(BUILDERS).filter((k) => k.startsWith('sp_'));
 // Kit weapons (src/game/kits/*.js) bring their own model + part animation: build() returns the same shape as the
 // builders above ({ kind, body, ink, parts?, gripR, gripL, … }); animate(w, st) runs after the built-in part animation.
+// 【kit 武器注册】kits 目录的外置武器自带模型与动画，从这里挂进同一张注册表；
+//   registerWeaponModel() 覆盖 BUILDERS、登记 KIT_ANIM 动画、清缓存并补进 WEAPON_KINDS。
 const KIT_ANIM = {};
+// 【注册入口（kit 武器）】kind 冲突时后注册者胜；animate 缺省时走内置活动件动画。
 export function registerWeaponModel(kind, build, animate) {
   BUILDERS[kind] = build; if (animate) KIT_ANIM[kind] = animate; _cache.delete(kind);
   if (!kind.startsWith('sp_') && !WEAPON_KINDS.includes(kind)) WEAPON_KINDS.push(kind);
 }
 
 /** Hand bone frame (wrist origin) expressed in weapon space, from a grip spec and that hand's grip-hole offset. */
+// 【挂手核心：手骨在武器空间的位姿】把握把声明 {pos, handZ, handY} 变成手骨相对武器的 {pos, quat}：
+//   1) handY 归一化；
+//   2) handZ 减去在 handY 上的投影后归一（格拉姆-施密特正交化，handZ ⟂ handY）；
+//   3) handX = handY × handZ（右手系，恰好指向角色外侧）；
+//   4) 以 (X, Y, Z) 为基得旋转 quat；
+//   5) pos = grip.pos − hole·quat —— 即把手骨原点平移到"握把孔正好落在握把轴点"的位置。
+//   结果：手骨挂到武器下时，拳头内建的虚拟手柄轴与武器声明的握把轴完全重合（见 getWeaponDef 取逆）。
 function handInWeapon(grip, hole) {
   const Y = grip.handY.clone().normalize();
   const Z = grip.handZ.clone().addScaledVector(Y, -grip.handZ.dot(Y)).normalize();
@@ -1329,8 +1441,12 @@ function handInWeapon(grip, hole) {
 //          worldQuat }                              // world quaternion of the weapon (w.off) — liquid surfaces stay level
 // Writes: part transforms, lamp/coil uniforms, LOD visibility, and w.pump (0..1 blaster pump stroke — the body's left
 // hand should ride it) + w.trig (0..1 trigger squeeze — the index finger can follow).
+// 【中文速览】Arsenal 管武器怎么动，character.js 管身体；每帧每持械实例调一次 animateWeapon(w, st)，
+//   输入输出契约即上方英文注释；kit 武器在此直接转交自带的 KIT_ANIM 动画。
 const _aq = new THREE.Quaternion(), _aq2 = new THREE.Quaternion(), _av = new V3(), _av2 = new V3(), _aw = new THREE.Color(1, 1, 1);
 const _UPV = new V3(0, 1, 0);
+// 【缓动小工具】pulseE = 攻击-衰减脉冲；mjE = smootherstep 平滑阶跃；dampE = 指数趋近；
+//   sprE = 精确阻尼弹簧（任意步长稳定）—— 射击后坐、表针、液面晃动等的时间曲线。
 const pulseE = (t, atk, dec) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
 const mjE = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * t * (10 + t * (6 * t - 15)); };
 const dampE = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -1345,6 +1461,7 @@ function sprE(S, i, target, hz, zeta, dt) {   // exact damped spring (stable for
 }
 
 export function animateWeapon(w, st) {
+  // 【动画分派】kit 武器转交自带动画；其余按 kind 走下方内置分支，并先处理近远 LOD 与滚筒惯性。
   if (KIT_ANIM[w.def.kind]) { KIT_ANIM[w.def.kind](w, st); return; }   // kit weapons animate themselves
   const d = w.def, P = w.parts || {}, kind = d.kind, t = st.t, dt = Math.min(0.1, Math.max(0, st.dt || 0)), col = st.color;
   if (!w.ps) { w.ps = new Float32Array(12); w.ps[0] = 1.3; w.pump = 0; w.trig = 0; w.heat = 0; w.drumW = 0; w.drumA = 0; w.spinW = 0; w.spinA = 0; w.near = true; }
@@ -1459,6 +1576,7 @@ export function animateWeapon(w, st) {
   }
 }
 function ledShot(g, st, k, t) {
+  // 【射击灯语】低墨时红色慢闪，否则队色绿随射击脉冲增亮。
   if (!g) return;
   const m = g.userData.mesh.material;
   if ((st.lowInk || 0) > 0.5) { m.emissive.setRGB(1, 0.16, 0.1); m.emissiveIntensity = 0.4 + 2.2 * (0.5 + 0.5 * Math.sin(t * Math.PI * 6.4)); }
@@ -1468,6 +1586,7 @@ function ledShot(g, st, k, t) {
 // ---------------------------------------------------------------------------------------------- sub: splat bomb prop
 /** Hand-held splat bomb (held by its knurled cap in the LEFT fist while the sub is aimed).
  *  Bomb space: cap handle axis along +Y through the origin; ink bulb hangs below. */
+// 【副武器·溅射雷（手持态）】左手捏滚花雷帽掷出；雷帽柄轴沿 +Y 过原点，墨 bulb 悬在下方。
 function buildBomb() {
   const P = new Parts(), I = new Parts();
   P.add(lathe(smoothProfile([[0, -0.014], [0.0118, -0.014], [0.0128, -0.008], [0.0128, 0.009], [0.0104, 0.0145], [0, 0.0155]], 8), 14), C.rubber, M.rubber);
@@ -1487,40 +1606,53 @@ function buildBomb() {
 // on a surface), +Y up away from that surface, +Z forward, metres. Each returns { kind, body, ink, grip } like the bomb
 // (grip = LEFT-fist spec around a Ø ≤ 3 cm handle) plus per-kind extras. `glow` (optional) = team-ink parts meant to be
 // lit (render with an emissive team material); the body always has an opaque socket behind them.
+// 【中文速览】以下都是"落地道具"：原点在底面中心（落地/插地点），+Y 离面向上，单位米；grip 为左拳
+//   围绕直径 ≤3 cm 手柄的握持声明；glow 是需要队色发光材质的部件（壳体里必有不透明暗座垫底）。
 /** Grip frames. BOMB: as the splat bomb — the thumb runs toward prop +Y, so with the arm cocked for the throw the prop
  *  rides on top of the fist (upside down). UP: thumb toward prop -Y, the prop stays upright in the cocked fist. */
+// 【两种握持朝向】BOMB = 拇指朝道具 +Y（投掷引臂时道具倒扣在拳上，如溅射雷）；UP = 拇指朝 -Y
+//   （道具在拳中保持正立，如落地后要站住的装置）。
 const HOLD_BOMB = { handZ: new V3(0, 1, 0), handY: new V3(0.3, 0.1, -1) };
 const HOLD_UP = { handZ: new V3(0, -1, 0), handY: new V3(-0.3, -0.1, -1) };
+// 【生成握持声明】把 HOLD_* 朝向套到道具空间的具体坐标上，得 { pos, handZ, handY } 标准握把。
 const gripAt = (hold, x, y, z) => ({ pos: new V3(x, y, z), handZ: hold.handZ.clone(), handY: hold.handY.clone() });
 /** Horizontal ring (axis +Y): radius R, tube r, at height y. */
+// 【水平环】轴沿 +Y 的圆环并抬到高度 y —— 装饰圈、垫圈、发光带的通用件。
 function hring(R, r, y, rs = 5, ts = 24) { const g = torus(R, r, rs, ts); g.rotateX(Math.PI / 2); return at(g, 0, y, 0); }
 /** Wrap a flat part around the +Y axis. Authored with x = along the surface, y = up, z = outward (decals: shape in XY,
  *  extruded +Z); lands on the cylinder of radius r at azimuth az (0 = +Z, π/2 = +X), lifted by y0. */
+// 【绕 Y 柱面包卷】把平面件（x 沿面、y 向上、z 朝外）弯贴到半径 r 的圆柱面上：方位 az 处、抬高 y0。
 function wrapY(g, r, az, y0 = 0) {
   return deformG(g, (v) => { const R = r + v.z, a = az + v.x / r; v.set(R * Math.sin(a), y0 + v.y, R * Math.cos(a)); });
 }
 /** Same around the +Z axis: x runs back along -Z, y around the axis (az 0 = +X side, π/2 = top), z outward; axis at height yc. */
+// 【绕 Z 柱面包卷】同 wrapY 但包在沿 +Z 的圆柱（枪口、桶身）上：x 回卷、y 绕轴、z 朝外，轴线高 yc。
 function wrapZ(g, r, az, z0, yc) {
   return deformG(g, (v) => { const R = r + v.z, a = az + v.y / r; v.set(R * Math.cos(a), yc + R * Math.sin(a), z0 - v.x); });
 }
 /** Radius of a lathe profile [[r, h], ...] at height h (first profile segment spanning h, linear). */
+// 【轮廓反查】车削轮廓 [[半径, 高度], …] 在高度 h 处的半径（线性内插），wrapLathe 贴墙时逐行取半径。
 function profR(prof, h) {
   for (let i = 1; i < prof.length; i++) { const [r0, h0] = prof[i - 1], [r1, h1] = prof[i]; if (h1 !== h0 && (h - h0) * (h - h1) <= 0) return r0 + (r1 - r0) * (h - h0) / (h1 - h0); }
   return prof[h < prof[0][1] ? 0 : prof.length - 1][0];
 }
 /** wrapY onto a lathe wall of profile prof: the part's inner face follows the wall, `lift` off it. */
+// 【沿车削壁包卷】wrapY 的进阶版：半径随 profR 逐行变化，贴花/窗框贴着回转壳体的真实轮廓走。
 function wrapLathe(g, prof, az, y0, lift = 0.0003) {
   const r0 = profR(prof, y0);
   return deformG(g, (v) => { const R = profR(prof, y0 + v.y) + lift + v.z, a = az + v.x / r0; v.set(R * Math.sin(a), y0 + v.y, R * Math.cos(a)); });
 }
 /** Bend a flat decal placed on the tangent plane at c + n·R onto that sphere (each vertex keeps its height off the plane). */
+// 【球面贴花】把切平面上的薄片弯贴到球面：每顶点保持"离切平面的高度"，沿径向重投影到 R + h。
 function onSphere(g, c, n, R) {
   const p0 = c.clone().addScaledVector(n, R), d = new V3();
   return deformG(g, (v) => { const h = d.subVectors(v, p0).dot(n); d.subVectors(v, c).normalize(); v.copy(c).addScaledVector(d, R + h); });
 }
 /** Unit direction at azimuth az (0 = +Z) and elevation el on a sphere. */
+// 【球面方向】方位 az（0 = +Z）、仰角 el 的单位向量 —— 在球面上给观察窗、LED、贴花找位置。
 const sphDir = (az, el) => new V3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
 /** Sphere-zone lathe profile between elevations e0 < e1 (closed to the axis at both ends). */
+// 【球带轮廓】仰角 e0…e1 之间的球面车削轮廓（两端收拢到轴）—— 球壳道具按纬度分带建模。
 function sphZone(R, yc, e0, e1, n = 8) {
   const pr = [[0, yc + R * Math.sin(e0)]];
   for (let i = 0; i <= n; i++) { const e = e0 + (e1 - e0) * i / n; pr.push([R * Math.cos(e), yc + R * Math.sin(e)]); }
@@ -1528,6 +1660,7 @@ function sphZone(R, yc, e0, e1, n = 8) {
   return pr;
 }
 /** Swirl arms (comma-shaped Shapes) of radius ~r about the origin. */
+// 【旋涡纹】逗号形旋臂 Shape（泡泡机、烟雾弹上的涡流涂装）。
 function swirlShapes(r, arms = 2, turns = 0.62) {
   const out = [];
   for (let k = 0; k < arms; k++) {
@@ -1542,19 +1675,24 @@ function swirlShapes(r, arms = 2, turns = 0.62) {
   return out;
 }
 /** Chevrons centred on the origin, pointing along +x, or +y when up. */
+// 【箭头贴花组】chevronShape → 居中、可转向的挤出薄片数组，供 wrap 系列包到曲面上。
 function chevrons(w, h, n, up = false, gap = 0.45) {
   return chevronShape(w, h, n, gap).map((s) => { const g = decal(s); g.translate(-w / 2 - h * 0.25, -h / 2, 0); if (up) g.rotateZ(Math.PI / 2); return g; });
 }
 /** Knurled rubber knob / grip sleeve along +Y from y0 to y1 (radius ≈ 1.25 cm). */
+// 【滚花握套】沿 +Y 的滚花橡胶套（道具的"拳头手柄"，半径约 1.25 cm，落在握把孔契约的 ≤1.5 cm 内）。
 function gripSleeve(y0, y1, r = 0.0126) {
   const L = y1 - y0;
   return lathe(smoothProfile([[0, y0], [r - 0.0014, y0 + 0.0006], [r, y0 + 0.005], [r - 0.0004, y0 + L * 0.5], [r, y1 - 0.005], [r - 0.0014, y1 - 0.0006], [0, y1]], 10), 14);
 }
 /** Small LED dome facing n at p. */
+// 【LED 小灯】朝 n 方向的小灯罩，副武器道具上的状态灯。
 function led(P, p, n, col, r = 0.0034) { P.add(orient(superEllipsoid(r, r * 0.55, r, 1, 1, 8, 5), n, p), col, M.led); }
 
 /** Cling Charge: a squat cream charge on a big soft rubber suction pad, team goo squeezed out around the rim; ink windows
  *  on both flanks, knurled knob on top (the fist's handle) capped by the red fuse light. ~0.21 wide, 0.16 tall. */
+// 【副武器·贴贴炸弹（吸盘爆雷）】矮胖雷体坐在大软胶吸盘上、边缘挤出队色粘液，两侧墨窗；顶部滚花旋钮
+//   即拳柄，顶端红保险灯。
 function buildSticky() {
   const P = new Parts(), I = new Parts();
   // suction pad + adhesive goo (lumpy, flattened where it meets the surface at y = 0)
@@ -1592,6 +1730,8 @@ function buildSticky() {
 
 /** Pop Pellet: a stubby capsule lying along Z — cream shells, a caged band of team ink core, a rubber contact-trigger
  *  nub with a metal plunger on the nose (+Z), swept tail fins and a knurled tail stub (the fist's handle). ~0.15 long. */
+// 【副武器·弹跳弹珠】卧式短胶囊：奶油壳、笼式队色墨芯，鼻部橡胶触发头 + 金属撞针，尾部尾翼与滚花尾
+//   柄（拳柄）。
 function buildBurst() {
   const P = new Parts(), I = new Parts();
   const yc = 0.0345, Z = (g) => at(g, 0, yc, 0);                     // capsule axis height (the gaskets touch the ground)
@@ -1627,6 +1767,8 @@ function buildBurst() {
 /** Skitter Bomb: a little ground-runner facing +Z — a bulbous team-ink shell on a dark chassis, four chunky lugged wheels
  *  under cream fenders, a cream bumper and a cyclops sensor eye (red pupil) up front, a wind-up key on the roof and a tow
  *  handle on the tail (the fist's handle). ~0.31 long incl. the handle, 0.155 tall; the wheels touch y = 0. */
+// 【副武器·疾走炸弹（寻地小车）】贴地小爬虫：深色底盘 + 四轮奶油挡泥板，前独眼传感器，车顶发条钥匙，
+//   尾部拖钩握把（拳柄），轮底恰落在 y = 0。
 function buildSeeker() {
   const P = new Parts(), I = new Parts();
   const wr = 0.032, wx = 0.071, wz = 0.088;
@@ -1681,6 +1823,8 @@ function buildSeeker() {
 
 /** Echo Orb: a white sphere with a glowing team band round its equator (dark gaskets, dark socket behind), sonar rings
  *  and a team ring on the crown, a rubber foot, and a short antenna whose knurled base is the fist's handle. Ø 0.18. */
+// 【副武器·回声球（声呐侦察球）】白球赤道一圈发光队色带（下有暗座），顶部声呐纹与队色环，底部胶脚；
+//   短天线滚花座即拳柄，glow 部件由队色发光材质点亮。
 function buildScan() {
   const P = new Parts(), I = new Parts(), L = new Parts();
   const R = 0.09, yc = 0.09, bh = 0.0088;                              // sphere radius / centre height, band half-height
@@ -1711,6 +1855,8 @@ function buildScan() {
  *  window on the front, and a dark manifold with team feed lines along the top carrying seven metal nozzles (ink welling
  *  in each, tips at y ≈ 0.10) that the curtain rises from. The back has a squid decal, team up-chevrons and a D-handle
  *  (the fist's handle). ~0.42 × 0.1 × 0.12 (handle included: 0.14 deep); returns `width`. */
+// 【副武器·滴墨帷幕发射器】低矮横轨：危险纹端盖、正面长队色墨窗，顶部歧管七只金属喷嘴（嘴内积墨，
+//   墨幕自此升起）；背面鱿鱼贴花 + D 形提把（拳柄）。
 function buildCurtain() {
   const P = new Parts(), I = new Parts();
   P.add(at(rbox(0.392, 0.012, 0.084, 0.3, 16, 4), 0, 0.006, 0), C.rubber, M.rubber);
@@ -1750,6 +1896,8 @@ function buildCurtain() {
 /** Twirl Sprinkler: a cream mounting base (rubber foot, team ring, three bolted lugs) with a riser whose knurled sleeve is
  *  the fist's handle. The head — hub, team-ink dome, three hooked arms with nozzles — is the separate `spin` mesh
  *  (+ `spinInk`), authored in prop space, turning about the +Y axis through `spinAt`. Base Ø 0.16, arms Ø ~0.17. */
+// 【副武器·旋转洒水器】奶油底座（胶脚、队色环、三只螺栓耳）+ 立管滚花握套（拳柄）；喷头（毂、队色
+//   穹顶、三只钩臂喷嘴）是独立 spin/spinInk 网格，绕 spinAt 的 +Y 轴旋转。
 function buildSprinkler() {
   const P = new Parts(), I = new Parts(), S = new Parts(), SI = new Parts();
   P.add(lathe([[0, 0], [0.0765, 0], [0.0802, 0.003], [0.0795, 0.0085], [0, 0.0085]], 32), C.rubber, M.rubber);
@@ -1793,6 +1941,8 @@ function buildSprinkler() {
 /** Lurk Mine: a flat dark disc on a rubber foot, cream deck, a metal pressure plate (rubber gasket, red LED) in the middle,
  *  team-ink seams (radial + rings) and ink slots round the rim; a small rim lug at the back is the fist's handle.
  *  Ø 0.3 (lug to 0.18 behind), 0.06 tall — sits flush in ink. */
+// 【副武器·潜伏地雷】扁圆暗盘贴墨面潜伏：奶油甲板 + 中央金属压发板（胶垫、红 LED），队色墨缝与缘部
+//   墨槽；背后小凸耳握把（拳柄）。
 function buildMine() {
   const P = new Parts(), I = new Parts();
   P.add(lathe([[0, 0], [0.1365, 0], [0.1412, 0.003], [0.1395, 0.0075], [0, 0.0075]], 40), C.rubber, M.rubber);
@@ -1833,6 +1983,8 @@ function buildMine() {
 /** Hop Beacon: a weighted base (rubber foot, cream band with squid + team up-chevrons, dark dome, team ring), a metal mast
  *  with a knurled grip (the fist's handle) and a hop spring, and a cream dish crowned with team-tipped prongs around a
  *  glowing team light (`glow`, dark socket behind it). ~0.15 wide, 0.28 tall. */
+// 【副武器·弹跳信标】配重底座 + 金属立杆（滚花握把即拳柄、跳跃弹簧），顶部奶油碟冠一圈队色尖齿环绕
+//   发光队色灯（glow，后有暗插座）。
 function buildBeacon() {
   const P = new Parts(), I = new Parts(), L = new Parts();
   P.add(lathe([[0, 0], [0.0705, 0], [0.0745, 0.0032], [0.0735, 0.0092], [0, 0.0092]], 30), C.rubber, M.rubber);
@@ -1866,6 +2018,8 @@ function buildBeacon() {
 /** Murk Bomb: a round dark bomb with a proud cream vent collar (team ink glinting in its eight slots), three murky team
  *  portholes with dark swirls round its belly (metal bezels), a squid decal and a knurled cap on top like the splat
  *  bomb's (the fist's handle), sitting on a rubber foot. Ø ~0.2, 0.235 tall. */
+// 【副武器·烟雾墨雷】浑圆暗雷 + 高口奶油排气环（八槽内队色墨隐现），腹部三个浑浊队色舷窗带暗旋纹；
+//   顶部滚花雷帽同溅射雷（拳柄）。
 function buildMist() {
   const P = new Parts(), I = new Parts();
   const R = 0.094, yc = 0.1, C0 = new V3(0, yc, 0);
@@ -1906,21 +2060,27 @@ function buildMist() {
   return { kind: 'mist', body: P.build(), ink: I.build(), grip: gripAt(HOLD_BOMB, 0, 0.2115, 0) };
 }
 
+// 【副武器注册表】SUB_BUILDERS：kind → build；_subCache 每种只建一次；kit 副武器经 registerSubModel
+//   挂进同一张表（同武器注册表一个套路）。
 const SUB_BUILDERS = {
   bomb: buildBomb, sticky: buildSticky, burst: buildBurst, seeker: buildSeeker, scan: buildScan,
   curtain: buildCurtain, sprinkler: buildSprinkler, mine: buildMine, beacon: buildBeacon, mist: buildMist,
 };
 export const SUB_KINDS = Object.keys(SUB_BUILDERS);
 /** Kit subs (src/game/kits/*.js): build() returns { kind, body, ink, glow?, grip, … } like the builders above. */
+// 【注册入口（kit 副武器）】与 registerWeaponModel 同理：覆盖 builder、清缓存、补进 SUB_KINDS。
 export function registerSubModel(kind, build) { SUB_BUILDERS[kind] = build; _subCache.delete(kind); if (!SUB_KINDS.includes(kind)) SUB_KINDS.push(kind); }
 const _subCache = new Map();
 /** Sub-weapon prop for the LEFT hand: { body, ink, handL:{pos,quat} (hand in prop space), inHandL:{pos,quat} (prop in hand space) }
  *  plus the kind's extras (see the builders). Attach like a weapon: prop group under handL at inHandL (plastic body + team
  *  ink material). Unknown kinds fall back to the splat bomb. */
+// 【副武器定式】取副武器 def 并算好左右挂手位姿：handL = handInWeapon(grip, GRIP_HOLE_L)（手在道具空间），
+//   再 compose→invert→decompose 得 inHandL（道具在手骨下的局部位姿）。未知 kind 回退溅射雷。
 export function getSubDef(kind = 'bomb') {
   if (!_subCache.has(kind)) {
     const d = (SUB_BUILDERS[kind] || buildBomb)();
     d.handL = handInWeapon(d.grip, GRIP_HOLE_L);
+    // 【取逆】把"手在道具空间"的位姿求逆：compose 成矩阵再 invert，decompose 出"道具在手空间"的 pos/quat。
     const inv = new THREE.Matrix4().compose(d.handL.pos, d.handL.quat, new V3(1, 1, 1)).invert();
     d.inHandL = { pos: new V3(), quat: new THREE.Quaternion() };
     inv.decompose(d.inHandL.pos, d.inHandL.quat, new V3());
@@ -1931,6 +2091,8 @@ export function getSubDef(kind = 'bomb') {
 
 /** Split a builder's output: bodyStatic/inkStatic (never move), parts re-centred on their pivots, and body/ink = the
  *  complete weapon at rest (static + parts merged in place) for tools that render it whole. */
+// 【收尾拆分】把 builder 的产出整理成最终 def：bodyStatic/inkStatic 永不动的部分；各活动件几何平移到
+//   以自身 pivot 为原点（Group 坐回 pivot 后即可绕轴心运动）；body/ink 再并回"静止全貌"供整枪渲染的工具用。
 function finishParts(d) {
   d.bodyStatic = d.body; d.inkStatic = d.ink;
   const body = [d.body], ink = [d.ink];
@@ -1948,12 +2110,16 @@ function finishParts(d) {
   return d;
 }
 
+// 【武器定式（挂手入口）】每个 kind 只构建一次并缓存：先 finishParts 整理活动件，再对右/左握把分别跑
+//   handInWeapon 得 handR/handL（手骨在武器空间的位姿），最后对 handR 取逆得 inHand —— 角色把武器 Group
+//   挂到右手骨、套用 inHand 即完成持握；dual 武器再对 handL 取逆补出左手的 inHandL（完整第二实例）。
 export function getWeaponDef(kind) {
   if (!_cache.has(kind)) {
     const d = finishParts((BUILDERS[kind] || buildShooter)());
     d.handR = handInWeapon(d.gripR, GRIP_HOLE_R);
     d.handL = handInWeapon(d.gripL, GRIP_HOLE_L);
     // weapon relative to right hand bone
+    // 【右手取逆】handR 的逆 = 武器在右手骨下的局部位姿（缩放恒 1）。
     const inv = new THREE.Matrix4().compose(d.handR.pos, d.handR.quat, new V3(1, 1, 1)).invert();
     d.inHand = { pos: new V3(), quat: new THREE.Quaternion() };
     inv.decompose(d.inHand.pos, d.inHand.quat, new V3());
@@ -1971,6 +2137,8 @@ export function getWeaponDef(kind) {
 
 /** Shared modelling kit (Parts merger, palette, surface classes and shape helpers) for other procedural prop modules
  *  (special-props.js). Read-only use. */
+// 【积木工具箱导出】把 Parts、调色板 C、材质类 M 与全部形状/贴装辅助只读导出，供 special-props.js 等
+//   其他程序化道具模块直接复用同一套积木语言。
 export const GEO_KIT = {
   Parts, C, M, latheZ, torus, at, rbox, orient, screw, decal, placeXY, squidShape, chevronShape, chevrons, deformG, rng, seX,
   hring, wrapY, wrapZ, profR, wrapLathe, onSphere, sphDir, sphZone, swirlShapes, gripSleeve, led, roundRect, refine,

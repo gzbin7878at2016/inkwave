@@ -24,11 +24,32 @@
 // drawn full-frame. .fullFrame (getter) is true while it covers the whole screen: main.js then neither draws nor
 // simulates the world (render() clears and draws the frame itself); it is false during the set's ~0.45 s
 // cross-dissolves, which need the live world underneath. Audits: .debugCam = { pos, target, fov } overrides its camera.
+// ================================================================================================
+// 【中文导读】showcase.js —— 菜单展示台(Showcase Stage)
+// 【职责】一个「摄影棚式」的叠加场景,画在实时竞技场画面之上:
+//   · 装备界面(loadout)与更衣室(locker):一只乌贼小孩站在浸墨的旋转展台上;
+//   · 结算界面(results):己方队伍站上分层墨台,胜放彩带墨花、败则冷雨凄凄;
+//   · 联机界面(hub 大厅 + lobby 房间):后台预载并交给 LobbySet 后巷场景全屏呈现。
+// 【与 boot 的关系】boot 阶段创建 this.showcase(见 docs BOOT.zh-CN.md 第 7 节);它复用 Character 类
+//   生成预览角色,换装时在离屏先 warm 若干帧驱动骨骼与弹簧,防止新角色以 T-pose 亮相。
+// 【渲染管线】场景画进 MSAA HDR 目标,再用合成 pass 以与直绘画布完全相同的色调映射 + sRGB 输出
+//   叠加到成品帧(等价数学,但抗锯齿);目标尽量借用后处理合成器的 ping-pong 缓冲,省一份显存。
+// 【相机】全屏投影 + 镜头偏移(setViewOffset),把主体放进 UI 空白区;空白区从真实 DOM 量取,
+//   并带样式公式兜底,任何视口边缘都不会切到主体。
+// 【配套阅读】docs BOOT.zh-CN.md 第 7 节(启动与加载流程)、docs ASSETS-CHARACTER.zh-CN.md 第 4 节(角色资源)。
+// 【约定】所有特效均为池化/实例化,逐帧零分配;render() 结束后渲染器状态(目标、清屏色、autoClear)
+//   与进入时完全一致。
+// ================================================================================================
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G, damp, lerp, rng } from '../core/ctx.js';
 import { WEAPONS } from '../config.js';
 
+// ================================================================================================
+// 【数学工具】缓动、平滑、摆动等纯函数集合(全部无副作用,供全文件复用)
+// 【要点】c01 夹取到 [0,1];sstep 平滑台阶;eOut3 三次出缓;eInOut 五次入出缓;backOut 回弹出缓;
+//   smin 平滑最小值(圆角并集);wobble 冲击后的阻尼余振;punch 快攻慢放的脉冲(峰值约 0.75);
+//   wrapA 角度包裹到 ±π;dampAngle 角度阻尼插值(走最短弧)。
 // ================================================================================================ helpers
 const TAU = Math.PI * 2;
 const c01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -45,9 +66,13 @@ const UPV = new THREE.Vector3(0, 1, 0);
 const wrapA = (a) => { a %= TAU; return a > Math.PI ? a - TAU : a < -Math.PI ? a + TAU : a; };
 const dampAngle = (a, b, l, dt) => a + wrapA(b - a) * (1 - Math.exp(-l * dt));
 
+// 【展台尺寸】装备展台(pedestal)与结算鼓座(drum)的轮廓参数,单位米;
+// y = 0 是涂墨层之前的台面;ink 是墨衣厚度。groove 是嵌灯管的环形灯槽,flange 是外翻的裙边。
 // Loadout pedestal and results podium dimensions (metres; y = 0 is the pedestal/drum top before the ink coat).
 const PED = { R: 0.64, bevel: 0.09, groove: { y: -0.235, h: 0.021, d: 0.022 }, flange: { y: -0.5, out: 0.075, b: 0.04 }, bottom: -3.0, ink: 0.014 };
 const DRUM = { bevel: 0.09, groove: { y: -0.2, h: 0.019, d: 0.02 }, flange: { y: -0.44, out: 0.065, b: 0.035 }, bottom: -3.2, ink: 0.013 };
+// 【结果台位】四名队员的站位表(0 号是本地玩家,站中央最高层);x/z 是平面位置,R 是鼓半径,
+// top 是台面高度,yaw 是身体朝向(微外八,显得自然)。
 // results slots, styles order (0 = local player on the centre top tier)
 const SLOTS = [
   { x: 0, z: 0, R: 0.7, top: 0.72, yaw: 0 },
@@ -55,20 +80,29 @@ const SLOTS = [
   { x: 1.34, z: -0.14, R: 0.63, top: 0.46, yaw: -0.2 },
   { x: 2.55, z: -0.36, R: 0.56, top: 0.22, yaw: -0.34 },
 ];
+// 【常量注】CHAR_H 角色含发高的身高(取景比例用);LOAD_FOCUS_Y 装备模式焦点高度;
+// PEDESTAL 单角色展台模式集合;OVERLAY 叠加在实时世界上的摄影棚模式集合。
 const CHAR_H = 1.62; // squidkid height incl. hair
 const LOAD_FOCUS_Y = 0.76; // camera aims here on the loadout character (feet at 0)
 const PEDESTAL = new Set(['loadout', 'locker']); // modes that stand one squidkid on the ink pedestal
 const OVERLAY = new Set(['loadout', 'locker', 'results']); // studio modes drawn over the live world
 // Online hub + room: staged in the LobbySet (src/game/lobbySet.js), drawn full-frame (see the lobby set section).
+// 【联机模式】hub(大厅)与 lobby(房间)由 LobbySet 场景全屏呈现(见下文「lobby set」区段)。
 const SET_MODES = new Set(['hub', 'lobby']);
+// 【常量注】SET_FADE 场景淡入淡出时长;GLIDE 大厅⇄房间运镜时长;
+// HUB_ID 未进房时你自己的占位成员 id;PLATE_H 名牌锚点(脚上方 1.64 m,略高于头顶)。
 const SET_FADE = 0.45;        // set ⇄ world / pedestal / podium cross-dissolve (s)
 const GLIDE = 1.7;            // hub ⇄ room camera glide (s)
 const HUB_ID = '__hub';       // your kid while you are not in a room
 const PLATE_H = 1.64;         // nameplate anchor above the feet (m): just over a kid's head
+// 【乌贼游动参数】巡航速度、加减速、贴地抬升(游动姿态会沉入墨中,故需一点抬升)、
+// 尾迹墨滴间距,以及跃上站位的抛物线(跨度、时长、高度)。
+// 跃起在地面保持 3 m/s 以上,角色会按海豚弧飞跃(沿路径 mantle)。
 // squid travel: cruise speed, acceleration, braking, root lift over the asphalt (the swim pose sinks into the ink),
 // trail blob spacing, and the leap onto the mark (span, time, height)
 // (the leap keeps > 3 m/s across the ground so the character flies it as a dolphin arc, mantle along the path)
 const SWIM = { v: 10, acc: 26, brake: 13, lift: 0.1, gap: 0.07, leap: 2.3, T: 0.5, H: 0.62 };
+// 【大厅表情】联机表情 → 角色舞蹈;v 强制舞蹈变体,t0 从舞蹈中段起播,hop 是附加小跳,trig 附带触发器。
 // lobby emotes → character dances (danceVar forces the variant; t0 starts mid-dance)
 const LOB_EMOTES = {
   booyah: { dance: 'victory', v: 0, dur: 2.9, hop: 0.32 },
@@ -83,7 +117,12 @@ const sameStyle = (a, b) => {
   return true;
 };
 
+// ================================================================================================
+// 【几何区】展台鼓身与墨衣的全部程序化几何:旋转体轮廓、墨衣 SDF 网格、溅斑、纸屑。
+// 全部在首次展示前构建一次,之后只做显隐,不逐帧重建。
 // ================================================================================================ geometry
+// 【墨滴轮廓条带】把多条 [半径, 高度] 折线转成车削体顶点行 {r, y, 法线};
+// 同一条带内法线平滑过渡,带与带之间硬边(法线不共享)→ 一条轮廓线既能出圆角又能出棱线。
 // Lathe outline strips of [r, y] → rows {r, y, nr, ny}: normals smooth inside a strip, hard between strips.
 function stripRows(strips) {
   const rows = [];
@@ -101,6 +140,8 @@ function arcPts(out, cx, cy, rad, a0, a1, n, skipFirst) {
   for (let i = skipFirst ? 1 : 0; i <= n; i++) { const a = a0 + (a1 - a0) * (i / n); out.push([cx + Math.cos(a) * rad, cy + Math.sin(a) * rad]); }
 }
 
+// 【鼓座轮廓】矮胖的展示鼓:平顶 → 大圆角 → 带圆灯槽的侧壁 → 外翻裙边台阶 → 长长的裙摆
+// (裙摆一直延伸到屏幕外/扎进 UI 遮罩,舞台上永远看不到悬空的底边)。
 // Chunky drum outline: flat top → big rounded bevel → side with a rounded light groove → hard step out onto a bevelled
 // flange → long skirt (runs off-screen / into the UI scrim, so the stage never shows a floating bottom edge).
 function drumOutline(R, P) {
@@ -118,6 +159,9 @@ function drumOutline(R, P) {
   return stripRows([top, ledge]);
 }
 
+// 【车削网格】把轮廓行旋转成网格,并写入两项逐顶点数据:
+// 【顶点色】纵向明暗渐变(顶部全亮、裙摆沉入深影、倒角下缘略亮模拟墨面反光);
+// 【aGlow 属性】灯槽周围的光晕权重,供 bodyMat 的 onBeforeCompile 变成自发光。
 // Lathe mesh with a vertical shade gradient (vertex colour) and a glow-spill attribute around the groove light.
 function latheGeometry(rows, segs, groove) {
   const nR = rows.length, nV = nR * segs;
@@ -152,6 +196,8 @@ function latheGeometry(rows, segs, groove) {
   return g;
 }
 
+// 【鼓身合一】鼓体 + 嵌在灯槽里的灯管合并成一个几何(一次 draw call):
+// 灯管是近黑漫反射 + 满值 aGlow,点亮时整条灯槽发光。
 // Drum body + the light tube sitting in its groove, merged (one draw call: the tube is black diffuse + full glow).
 function drumGeometry(R, P, segs) {
   const body = latheGeometry(drumOutline(R, P), segs, P.groove);
@@ -167,6 +213,8 @@ function drumGeometry(R, P, segs) {
   return g;
 }
 
+// 【墨衣轮廓】涂装墨衣用的纵剖面(无灯槽与裙边——墨滴会直接跨过灯槽),
+// 并沿剖面累计弧长 s,后续按弧长参数化生成网格,保证墨滴在任何曲率处粗细一致。
 // Ink coat profile (no groove/flange: drips bridge over the groove) with arclength s.
 function inkProfile(R, b, depth) {
   const st = [];
@@ -191,6 +239,10 @@ function profAt(P, s, o) {
   return o;
 }
 
+// 【光泽墨衣】覆盖台面、翻过圆角、顺侧壁流成带圆头墨滴的涂层。建在
+// (u = 周向弧长, s = 剖面弧长)参数平面上:【涂层区域 = 波浪唇边 ∪ 每滴墨滴的胶囊体(有符号距离)的平滑并集】,
+// 网格每一列都精确终止在该轮廓线上;厚度在轮廓附近以四分之一圆过渡到零(每条边都读得出液珠感)。
+// 【列划分】整周粗分,每滴墨滴附近细分,再按最小间距去重;【每列深度】在 sdf 上二分求出。
 // Glossy ink coat: covers the top, rolls over the bevel and runs down the side as drips with round, beaded tips.
 // Built on the (u = arclength around, s = arclength down the profile) plane: the coat region is the smooth union of a
 // wavy lip and one capsule per drip (signed distance), each column of the grid ends exactly on that outline, and the
@@ -286,6 +338,7 @@ function inkCoatGeometry(R, b, drips, o) {
   return g;
 }
 
+// 【墨滴布局】黄金角散布 + 抖动;front 参数把墨滴限制在朝向相机的半圈(结算台用,省面数)。
 // Drip layout: golden-angle spread with jitter; `front` limits them to the camera-facing half.
 function makeDrips(seed, n, o) {
   const rnd = rng(seed);
@@ -300,6 +353,8 @@ function makeDrips(seed, n, o) {
   return out;
 }
 
+// 【墨溅贴片】扁平的墨渍贴花(拱顶中心 + 波浪边缘 + 五颗卫星小滴),半径约 1、拱高约 0.16;
+// 实例化复用,用作墨滴落地斑、水花。
 // Flat ink splat decal (domed centre, wavy rim, satellite droplets). Radius ≈ 1, dome height ≈ 0.16.
 function splatGeometry() {
   const rnd = rng(77);
@@ -331,6 +386,7 @@ function splatGeometry() {
   return g;
 }
 
+// 【纸屑几何】带轻微卷曲的纸带(穿过灯光翻飞时读得出「纸」的质感),实例化复用。
 // Paper strip with a slight curl (reads as paper when it tumbles through the light).
 function confettiGeometry() {
   const g = new THREE.PlaneGeometry(1, 1, 1, 4);
@@ -341,11 +397,19 @@ function confettiGeometry() {
   return g;
 }
 
+// ================================================================================================
+// 【特效区(池化)】四个实例化特效池 + 共享临时对象。
+// 【要点】共享矩阵/四元数/向量(_m4 等)避免逐帧分配;ZERO_M 是零缩放矩阵(隐藏一个实例的惯用法);
+//   Q_FLAT 是「平躺」旋转(纸屑落地时把纸带压平)。
 // ================================================================================================ effects (pooled)
 const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _v = new THREE.Vector3(), _s = new THREE.Vector3(), _d = new THREE.Vector3();
 const ZERO_M = new THREE.Matrix4().makeScale(0, 0, 0);
 const Q_FLAT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 
+// 【墨特效池】墨滴(飞溅小滴 / 抛物墨弹 / 细雨 / 上浮气泡)+ 落地溅斑 + 涟漪环,全部实例化。
+// 【要点】mesh 是 150 个墨滴实例(K 记录种类:0 空闲 1 墨滴 2 墨弹 3 气泡 4 细雨);
+//   splats 56 个溅斑、rings 10 个涟漪环,各用环形下标复用槽位;
+//   每帧只把 count 覆盖到最后一个存活实例,死槽位保持零矩阵。
 // Ink blobs (splash droplets, arcing ink bombs, drizzle, floating bubbles) + landing splats + ripple rings.
 class InkFX {
   constructor(root, mat, rand) {
@@ -423,6 +487,8 @@ class InkFX {
       }
     }
   }
+  // 【主更新】墨滴按种类模拟:气泡上浮带摇摆、快爆时膨胀;其余受重力,按速度拉伸成梭形;
+  // 穿越甲板面(decks,圆形判定,zs 支持椭圆台)即落地转成溅斑/涟漪;落出 y<-3.5 或超时即回收。
   update(dt, decks) {
     const P = this.P, V = this.V;
     let top = -1;
@@ -514,6 +580,9 @@ class InkFX {
   _span(A, L, n, top) { for (let j = n - 1; j > top; j--) if (A[j] < L[j]) return j + 1; return top + 1; }
 }
 
+// 【彩带池】纸 + 金属箔两种彩带:礼炮齐射与飘落雨;翻飞时扑翼摆动,落在鼓面上停留后消融。
+// 【要点】paper 280 张、foil 72 张(金属箔更窄长、高 metalness);状态 0 空闲 1 飞行 2 落定;
+//   颜色按队伍调色板逐实例设置(setColorAt)。
 // Paper + foil confetti: cannon bursts and a falling rain; tumbles with flutter and settles on the podium tops.
 class Confetti {
   constructor(scene, rand) {
@@ -635,6 +704,8 @@ class Confetti {
   }
 }
 
+// 【闪光池】相机朝向的星芒闪点(亮核 + 四条射线),用于点睛、换装庆祝;
+// 尺寸随生命周期包络起伏,轻微上飘。实例 36 个,环形复用。
 // Twinkling star glints (camera-facing, bright core + 4 rays).
 class Sparkles {
   constructor(root, mat, rand) {
@@ -674,6 +745,9 @@ class Sparkles {
   }
 }
 
+// 【湿墨尾迹】游动乌贼身后的湿痕:沿路径每隔几厘米铺一个低拱顶,实例 520 个,
+// 按队伍色逐实例上色,交叠成一条连续湿痕;先鼓起、随后「渗入沥青」(变窄变薄)数秒后消失。
+// 【要点】clearcoat 只开 0.55——掠射角下全清漆只会镜像天空显得发白。
 // Wet ink trail behind a swimming squid: low glossy domes laid every few cm along its path (one instanced draw, the
 // swimmer's team colour per instance), overlapping into one streak. Each swells in behind the squid, then soaks into
 // the asphalt (narrower, thinner) and is gone after a few seconds.
@@ -720,6 +794,9 @@ class InkTrail {
   dispose() { this.mesh.geometry.dispose(); this.mat.dispose(); this.mesh.removeFromParent(); }
 }
 
+// 【游动路径】把场景给的折线变成弧长参数表。平面形状:点列的向心 Catmull-Rom,每约 8 cm 重采样;
+// 高度直接取自折线本身,所以一段楼梯保持为匀速斜坡,游动者把它当作一次跳跃(climbs[])飞跃。
+// pathAt() → 弧长 s 处的地面点 + 平面方向,以及该处应叠加的跳跃高度。
 // Swim paths (set polylines → arc-length tables). Plan shape: centripetal Catmull-Rom through the points in xz,
 // resampled every ~8 cm; heights come from the polyline itself, so a flight of stairs stays a straight rise, which the
 // swimmer takes as one hop (climbs[]). pathAt() → the ground point + plan direction at arc length s, and the hop.
@@ -733,6 +810,8 @@ function polyY(pts, q) {
   }
   return y;
 }
+// 【避障】路径中段若贴近站着的角色(avoid,含高度差判定)就把采样点外推,三遍平滑;
+// 两端各留 0.5 m / 1.3 m 不动——那正是出发与落点。
 function makePath(raw, avoid) {
   const pts = [raw[0].clone()];
   for (const p of raw) if (p.distanceTo(pts[pts.length - 1]) > 0.03) pts.push(p.clone());
@@ -783,6 +862,8 @@ function makePath(raw, avoid) {
   P.climbs = hops;
   return P;
 }
+// 【弧长取样】→ 把弧长 s 处的地面点写入 out(dir 给平面方向);
+// 若 s 落在爬升段内,返回离地面线的跳跃高度(out.y 此时是两端的直线连线),否则返回 null。
 // → the ground point at arc length s in `out` (and the plan direction in `dir`); returns the hop height above the
 // ground line when s is inside a climb (out.y is then the straight line between the climb's ends), else null
 function pathAt(P, s, out, dir) {
@@ -807,7 +888,12 @@ function pathAt(P, s, out, dir) {
   return null;
 }
 
+// ================================================================================================
+// 【材质区】展台鼓身、接触阴影、星芒、合成 pass 四种自定义材质。
 // ================================================================================================ materials
+// 【鼓身材质】深紫清漆塑料(roughness 0.36 + clearcoat 0.85);onBeforeCompile 注入 aGlow 属性:
+// 顶点把灯槽光晕权重传成 varying,片元把 uGlow(队伍色)按权重加进自发光——灯槽随队色点亮。
+// customProgramCacheKey 固定,防止 three 因源码相同而缓存错程序。
 function makeBodyMaterial(glowUniform) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0x38306a, roughness: 0.36, metalness: 0, clearcoat: 0.85, clearcoatRoughness: 0.16, vertexColors: true });
   m.onBeforeCompile = (sh) => {
@@ -823,6 +909,7 @@ function makeBodyMaterial(glowUniform) {
   return m;
 }
 
+// 【实例透明度顶点着色器】通用模板:把 instanceColor.r 借作逐实例透明度(接触阴影的 alpha)。
 const INSTANCE_ALPHA_VS = /* glsl */`
   varying vec2 vUv; varying float vA;
   void main() {
@@ -833,6 +920,8 @@ const INSTANCE_ALPHA_VS = /* glsl */`
     gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
   }`;
 
+// 【接触阴影材质】脚底软阴影:UV 径向衰减的暗色圆片,借 instanceColor.r 作逐实例 alpha,
+// polygonOffset 防与地面闪面;不写入深度。
 function makeContactMaterial() {
   return new THREE.ShaderMaterial({
     uniforms: { uColor: { value: new THREE.Color(0.018, 0.012, 0.04) } },
@@ -851,6 +940,8 @@ function makeContactMaterial() {
   });
 }
 
+// 【星芒材质】广告牌式闪光片:顶点阶段只取实例矩阵的平移(相机朝向)与 X 轴长度(尺寸),
+// 片元拼出亮核 + 十字射线 + 微光晕;instanceColor 给颜色。
 function makeSparkMaterial() {
   return new THREE.ShaderMaterial({
     vertexShader: /* glsl */`
@@ -882,6 +973,9 @@ function makeSparkMaterial() {
   });
 }
 
+// 【合成材质】把 MSAA 解析后的 HDR 舞台帧反预乘 → 色调映射 + sRGB 编码(与直绘画布同一套数学,
+// three 会往默认帧缓冲注入 toneMapping 与 linearToOutputTexel)→ 轻微增饱和 → 抖动去色带 →
+// 预乘后叠到成品帧(混合:src*1 + dst*(1-a))。uOpacity 控制整体淡入淡出。
 // Composite: un-premultiply the MSAA-resolved HDR stage, tone map + sRGB encode exactly like a direct canvas draw
 // (three injects toneMapping()/linearToOutputTexel for the default framebuffer), then premultiplied-over the frame.
 function makeCompositeMaterial() {
@@ -911,6 +1005,9 @@ function makeCompositeMaterial() {
   });
 }
 
+// 【灯光预设】三种摄影棚布光(loadout 装备 / win 胜 / lose 败):
+// key 主光、rimA/B 双轮廓光、fill 补光、hemi 半球光、env 环境强度、glow 灯槽光晕强度。
+// 方向相对舞台焦点,相机坐在 +Z。(联机后巷由 LobbySet 自带灯光,这些照不到它。)
 // Studio light rigs per overlay mood. Directions are relative to the stage focus; the camera sits on +Z. (The lobby set
 // is lit by its own lights in a scene of its own: none of these reach it.)
 const MOODS = {
@@ -919,8 +1016,16 @@ const MOODS = {
   lose: { key: 1.85, keyCol: 0xd9e2ff, rimA: 1.7, rimB: 2.5, fill: 0.36, hemi: 0.62, sky: 0xbfd0f4, ground: 0x1d1a30, env: 0.46, glow: 1.2 },
 };
 
+// ================================================================================================
+// 【展示台主类】单例,由 boot 创建(this.showcase)。
+// 【状态机】mode ∈ loadout | locker | results | hub | lobby | null;大厅/房间模式是 LobbySet 场景,
+//   其余三种是叠加摄影棚模式。phase 记录单角色展台上的演出阶段
+//   (emerge 破墨而出 → pose 站定 → hop 换武器跳 / dip 潜入换装)。
+// 【要点】展台/奖台几何惰性构建(首次 show 时才建);_rt 是私有 MSAA HDR 目标(借不到合成器缓冲时用)。
 // ================================================================================================ Showcase
 export class Showcase {
+  // 【构造】搭场景、相机、灯光、四个特效池、接触阴影实例、合成 pass 三角形;
+  // stageL(装备展台)与 stageR(结算奖台)留空惰性构建;监听 resize 重置 UI 量取。
   constructor(renderer, CharacterClass) {
     this.r = renderer;
     this.CharacterClass = CharacterClass;
@@ -975,6 +1080,8 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- setup
+  // 【布光】五灯摄影棚:key 主光(唯一投影光,2048 阴影贴图,大半径软边)、rimA/B 双轮廓光、
+  // fill 补光、hemi 半球天光。方向光的 target 一并入场景,朝向才有意义。
   _buildLights() {
     const s = this.scene;
     const key = (this.key = new THREE.DirectionalLight(0xfff0de, 2.7));
@@ -989,6 +1096,8 @@ export class Showcase {
     s.add(this.hemi);
   }
 
+  // 【指向布光】按心情预设(MOODS)把五盏灯对准焦点 focus;spread 缩放主光距离与阴影范围
+  // (结果台比展台大,需要更大的阴影相机)。投影范围随 spread 扩 1.25 倍,深度覆盖 16×spread。
   _aimLights(focus, spread, mood) {
     const M = MOODS[mood];
     const f = focus;
@@ -1006,6 +1115,8 @@ export class Showcase {
     this._tintLights();
   }
 
+  // 【队色染光】rimA 轮廓光与灯槽光晕(uGlow)跟着墨色走:
+  // 颜色先按最大通道归一化再向白拉 18%(保持色相不烧),灯槽光晕更淡、按 glow 强度缩放。
   // team-coloured rim + groove glow follow the ink colour
   _tintLights() {
     const M = this.mood || MOODS.loadout;
@@ -1016,6 +1127,7 @@ export class Showcase {
     this.glowU.value.copy(this.color).multiplyScalar(1 / mx).lerp(this._c.setRGB(1, 1, 1), 0.3).multiplyScalar(M.glow);
   }
 
+  // 【换色】更新墨材质颜色与 sheen、彩带调色板,并联动染灯光。
   _setColor(color) {
     this.color.copy(color);
     this.inkMat.color.copy(color);
@@ -1024,6 +1136,7 @@ export class Showcase {
     this._tintLights();
   }
 
+  // 【装备展台】单鼓 + 墨衣(14 滴墨、随机种子固定),默认隐藏,show 时才亮起。
   _buildLoadoutStage() {
     const group = new THREE.Group();
     const body = new THREE.Mesh(drumGeometry(PED.R, PED, 144), this.bodyMat);
@@ -1037,6 +1150,8 @@ export class Showcase {
     return { group, parts: [body, ink] };
   }
 
+  // 【结算奖台】四个鼓座按 SLOTS 站位排开(中央最高),每座带自己的墨衣;
+  // 墨滴只布置在朝相机的半圈(front 参数),看不见的一面省掉。
   _buildResultsStage() {
     const group = new THREE.Group();
     const drums = SLOTS.map((S, i) => {
@@ -1056,6 +1171,8 @@ export class Showcase {
     return { group, drums };
   }
 
+  // 【拖拽旋转】展台模式(loadout/locker)下按住指针左右拖 = 转台;松手带惯性衰减,
+  // 停稳 2.4 秒后慢慢转回正面最近的整圈。只在 UI 面板左侧区域起拖,不抢面板的点击。
   _bindDrag() {
     const el = document.getElementById('app');
     if (!el) return;
@@ -1077,6 +1194,7 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- lifecycle
+  // 【清场】移除并销毁全部角色、清空四个特效池与接触阴影、藏起两套舞台、复位弹出缩放与甲板表。
   _clear() {
     for (const c of this.chars) { this.scene.remove(c.root); c.dispose?.(); }
     if (this._warmChar) { this.scene.remove(this._warmChar.root); this._warmChar.dispose?.(); this._warmChar = null; }
@@ -1091,21 +1209,28 @@ export class Showcase {
     this._out = 0;
   }
 
+  // 【假动画输入】给预览角色喂的合成用输入状态:站定、着地、满墨、无敌。
+  // 角色 update 只读它,以为「这就是一帧正常游戏」。
   _anim() {
     return { time: 0, speed: 0, localMove: { x: 0, z: 0 }, grounded: true, vy: 0, aimPitch: 0, firing: false, charge: 0, rolling: false, form: 'kid', wallNormal: new THREE.Vector3(0, 0, 1), ink: 1, lowInk: false, special: 0, invuln: false };
   }
 
   /** The saved player look (main.js keeps the profile; menus save to it) — the default for pedestal kids. */
+  // 【存档外观】main.js 保管的玩家档案,展台角色的默认造型(无存档时给默认发型肤色)。
   _profileStyle() {
     const st = G.game?.profile?.style;
     return st && typeof st === 'object' ? { ...st } : { hair: 0, skin: 1 };
   }
 
+  // 【三个入口】装备 / 更衣室 / 联机大厅,都是「单角色上台」模式,共用 _showPedestal。
+  // 武器缺省时依次回落:当前武器 → 存档武器 → 射手。
   showLoadout(weapon, color, style) { this._showPedestal('loadout', weapon, color, style); }
   showLocker(style, color, weapon) { this._showPedestal('locker', weapon || this.weapon || G.game?.profile?.weapon || 'shooter', color, style); }
   /** Online hub (menus.js 'online'): your kid on the pedestal right of the create / join cards. */
   showHub(style, color, weapon) { this._showPedestal('hub', weapon || this.weapon || G.game?.profile?.weapon || 'shooter', color, style); }
 
+  // 【上台状态机】三种开场:fresh(清场重建,角色从台底升起)、onStage(同一角色换模式,
+  //   只融运镜)、resume(淡出中途又回来,取消淡出)。换装/换武器的差异留给后续 diff 触发小演出。
   _showPedestal(mode, weapon, color, style) {
     if (!color || !color.isColor) color = new THREE.Color(color || this.color);
     const look = style ? { ...style } : this._profileStyle();
@@ -1156,6 +1281,9 @@ export class Showcase {
   }
 
   /** Change the pedestal kid's look with a reaction. cause: 'hair' | 'eyes' | 'skin' | 'outfit' | 'preset' | 'random'. */
+  // 【换装请求】cause 决定演出:发色/眼睛/肤色/衣服 → pop(蹲缩 → 满蹲瞬间换 → 拉伸跳+旋转);
+  //   预设/随机 → dip(跳起变乌贼扎进墨里,新造型破墨而出)。
+  // 【排队】进行中未过换装点的请求直接改目标;进行中已过点、或正在别的演出时,挂到 lookNext 队列。
   setStyle(style, cause = 'swap') {
     const look = { ...style };
     if (!PEDESTAL.has(this.mode) || !this.chars.length) { this.style = look; return; }
@@ -1169,6 +1297,7 @@ export class Showcase {
     this._startLook(look, cause, kind);
   }
 
+  // 【开演】旋转量只取整圈(起点即终点,无需回卷):衣服正转、头发反转,其余不转。
   _startLook(style, cause, kind) {
     // full turns only (they end where they started, so nothing has to unwind): outfit spins one way, hair the other
     const spin = cause === 'outfit' ? TAU : cause === 'hair' ? -TAU : 0;
@@ -1177,6 +1306,9 @@ export class Showcase {
     if (kind === 'dip') { this.phase = 'dip'; this.chars[0].trigger('jump'); }
   }
 
+  // 【离屏热身——防 T-pose 的关键】新角色先进场景、继承旧角色的位置/姿态/舞蹈,
+  // 然后离屏连跑 warm/n 帧(默认 0.8 s、16 帧)把骨骼、弹簧与舞蹈相位推进到「已经在动」,
+  // 再替换上台——观众看到的第一帧就是动态姿势,而不是绑定的 T-pose。
   /** Replace the pedestal kid with one wearing `style` (pre-warmed off-screen so it appears mid-pose, not T-posed). */
   _swapChar(style, dance = 'lobby_pose') {
     const old = this.chars[0];
@@ -1198,6 +1330,9 @@ export class Showcase {
     return c;
   }
 
+  // 【结算上台】清场 → 亮奖台 → 按 SLOTS 摆人(最多 4 个):
+  // 胜方按 0.46+0.13i 的节拍从 3 m 高空依次砸落(落地水花 + 胜利舞 + 余振);
+  // 败方随鼓座升起,已是 slump(颓废舞),并预先错开相位免得四人同步摆动。
   showResults(team, won, color, styles) {
     this._clear();
     if (!this.stageR) this.stageR = this._buildResultsStage();
@@ -1231,6 +1366,7 @@ export class Showcase {
     this.ui.next = 0;
   }
 
+  // 【隐藏】摄影棚叠加模式:先 0.2 s 淡出再清场;联机后巷自己会在 _updateSet 里溶解,不用管。
   hide() {
     if (!this.mode) return;
     // studio overlays: a quick fade-out, then _clear(); the lobby set dissolves away on its own (_updateSet)
@@ -1238,6 +1374,7 @@ export class Showcase {
     this.mode = null;
   }
 
+  // 【销毁】整台拆除:清场、释放两套舞台几何、释放联机后巷、销毁私有渲染目标。
   dispose() {
     this.mode = null; this._clear();
     for (const st of [this.stageL, this.stageR]) {
@@ -1251,6 +1388,8 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- update
+  // 【主更新】每帧先跑联机后巷,再按模式分发:展台模式走 _updateLoadout,结算走 _updateResults;
+  // 淡出中(_out>0)沿用上一模式继续演。dt 封顶 0.1 s,防卡顿后跳变。
   update(dt) {
     dt = Math.min(dt || 0, 0.1);
     this._ffFrame = this.fullFrame;   // what main.js saw at the top of this frame (it didn't draw the world if true)
@@ -1282,6 +1421,8 @@ export class Showcase {
     if (this.contact.count < i + 1) this.contact.count = i + 1;
   }
 
+  // 【展台演出】每帧推进:展台升起(回弹出缓)→ 转台(拖拽/手柄 + 惯性 + 慢摇摆回正)→
+  // 角色编排(下方按 phase 状态机)→ 特效与接触阴影。甲板表 decks[0] 是台面圆(供墨滴落地判定)。
   _updateLoadout(dt) {
     const t = this.t, st = this.stageL, rnd = this.rand;
     // pedestal rises in
@@ -1306,6 +1447,12 @@ export class Showcase {
     const dk = this.decks[0] || (this.decks[0] = { x: 0, z: 0, r: 0, y: 0 });
     dk.x = 0; dk.z = 0; dk.r = PED.R - 0.035; dk.y = PED.ink;
 
+    // 【角色编排】phase 状态机,四种阶段:
+    // · dip    换装(预设/随机):预蹲 → 抛物下潜变乌贼扎进墨中 → _swapChar 换新 → 转 emerge
+    // · emerge 破墨而出:从台内弹道跃起,拉伸上行、落地压扁回弹,落定进 pose
+    // · hop    换武器:小跳 + 整周转,新武器在跳到 12% 时凭空弹出(pop 缩放),落地带水花
+    // · pose   站定:余振衰减;pop 类换装(发色等)在满蹲瞬间换人,接拉伸跳与整圈旋转
+    // 所有跳跃共用「挤压-拉伸」语言:上行拉 sy>1、下落压 sy<1、落地 wobble 余振。
     // character choreography
     let c = this.chars[0];
     let y = 0, sy = 1, twirl = 0, air = false, vy = 0;
@@ -1465,6 +1612,9 @@ export class Showcase {
     }
   }
 
+  // 【结算演出】鼓座从 UI 横带下升起(中央先行,每台错 0.04 s);
+  // 胜:礼炮两连 + 彩带雨(30→5 渐稀)+ 场外墨弹按计划表抛物落台 + 金白闪点;
+  // 败:慢速墨雨敲台。两种情况鼓面都冒气泡。
   _updateResults(dt) {
     const t = this.t, rnd = this.rand, won = this.won;
     const slots = this.slots;
@@ -1552,6 +1702,13 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- lobby set (hub + room)
+  // 【联机后巷(hub + room)】两套联机界面都在 LobbySet(lobbySet.js,蓝调时刻的一条后巷)里上演:
+  // 它有自己的场景、灯光与相机,全屏绘制——fullFrame 为 true 时 main.js 既不画也不模拟世界;
+  // 淡入淡出(SET_FADE 0.45 s)期间需要底下的实时世界,故 fullFrame 为 false。
+  // 【成员行为】每人一个 member;新成员沿 set.lanes 低姿游入(湿墨尾迹), rivals 要上码头台阶,
+  // 到点后海豚弧跃出变人、砸落转向镜头;离开则转身潜入墨中游向 set.exitPath;换队即 mark→mark 游过去。
+  // 【进出房间】开房:你在 hub 位潜入墨中、从站位的水洼破墨而出,镜头后拉成整队(已在房的人跟着冒出);
+  // 回房(更衣室/比赛归来):全员已站好;离房:其他人潜走,你游回 hub 位。
   // showHub(style, color, weapon) · showLobby(players, colors[, opts]) · updateLobby(players, colors) · lobbyEmote(id,
   // name) · lobbyGetSet() · lobbyLaunch() → seconds · lobbyAnchor(id, out) · lobbySlotAnchor(row, i, out) · leaveLobby().
   // players = G.net.lobby.players (docs/NET.md), colors = [team 0, team 1] (hex / THREE.Color).
@@ -1565,6 +1722,8 @@ export class Showcase {
   // swims mark → mark. Opening the room you duck into the ink at the hub spot and burst out of a puddle on your mark
   // while the camera pulls back to the line-up (whoever is already in the room surfaces right after you). Coming back to
   // the room (locker, a match) finds everyone standing there. Leaving it, the others duck away and you swim home.
+  // 【全屏判定】后巷就绪、淡入完成且当前是联机模式时,main.js 可跳过世界绘制与模拟;
+  // 淡入淡出期间返回 false——底下的活世界要露出来供溶解。
   /** True while the lobby set covers the whole frame: main.js may skip drawing (and simulating) the world. It is false
    *  during the set's cross-dissolves, which need the live world underneath (render() handles either case). */
   get fullFrame() {
@@ -1572,10 +1731,14 @@ export class Showcase {
     return !!(L && L.ready && L.k >= 1 && SET_MODES.has(this.mode));
   }
 
+  // 【后台预载】主菜单空闲时(boot 之后)提前构建并编译后巷场景与着色器,
+  // 让首次进入联机大厅直接落在后巷,而不是一边加载一边看竞技场。首次展示后该标记失效。
   // Build and compile the alley ahead of time (main.js calls this once the main menu is idle), so the first visit to
   // the online hub opens straight onto the set instead of the arena while it loads. Kept until it's first shown.
   preloadLobby() { if (!this.lob) this._lobEnsure().preload = true; }
 
+  // 【后巷容器】惰性创建联机场景:两套墨材质(两支队伍)、十个接触阴影、
+  // 两组墨特效(每队一组,颜色分开)、闪光、湿痕、成员表 members、淡入系数 k、镜头状态等。
   _lobEnsure() {
     if (this.lob) return this.lob;
     const scene = new THREE.Scene();
@@ -1599,6 +1762,9 @@ export class Showcase {
     return L;
   }
 
+  // 【异步装载】lobbySet.js 动态 import,拿到场景后:按画质建 LobbySet → 等 ready →
+  // 建甲板、染队色、放一个「暖场角色」(人形+乌贼形都在灯光下 update 一次)→
+  // compileAsync 离线编译全部着色器 → 标记 ready。整条链路都在关键路径之外,首帧零卡顿。
   // The set module loads lazily; everything it will draw (the alley, a squidkid in both forms under its lights, the FX)
   // is compiled off the critical path before it may dissolve in, so its first frame never hitches.
   _lobLoad(L) {
@@ -1628,6 +1794,7 @@ export class Showcase {
     }).catch((e) => { console.error('[showcase] lobby set', e); L.failed = true; });
   }
 
+  // 【环境接管】后巷自带的环境贴图/雾/背景色,缺省时回退到全局 G.env。
   _lobEnv(L) {
     const S = L.set;
     L.scene.environment = (S && S.environment) || G.env?.envMap || null;
@@ -1637,6 +1804,7 @@ export class Showcase {
   }
 
   // droplets land on the dock (a disc over the rivals' marks) or the asphalt
+  // 【甲板表】墨滴的落地面: rivals 的站位在码头圆盘上(一个大盘),其余是沥青大地面(zs=1 的圆≈无限)。
   _lobDecks(L) {
     const sp = L.set.spots, F = sp.slice(0, 4), B = sp.slice(4, 8);
     const avg = (a, k) => a.reduce((s, p) => s + p.pos[k], 0) / a.length;
@@ -1647,6 +1815,7 @@ export class Showcase {
     L.decks = [{ x: bx, z: bz, r: br + 1.0, y: avg(B, 'y') + 0.002 }, { x: 0, z: 0, r: 1e4, y: L.groundY + 0.002 }];
   }
 
+  // 【彻底释放】联机界面永久退出后调用:销毁全部成员、后巷场景、特效几何与墨材质(含 GPU 资源)。
   // release the whole set (GPU resources included) — the online screens were left for good
   _lobRelease() {
     const L = this.lob;
@@ -1662,12 +1831,15 @@ export class Showcase {
     L.scene.clear();
   }
 
+  // 【进入联机模式】若当前是摄影棚叠加模式(展台/奖台),先让它按 SET_FADE 溶解掉,而不是硬切。
   _enterSetMode(mode) {
     // a studio overlay on screen (pedestal / podium) dissolves away over the set instead of cutting
     if (OVERLAY.has(this.mode) && this.chars.length) { this._lastMode = this.mode; this._out = this._outDur = SET_FADE; }
     this.mode = mode;
   }
 
+  // 【运镜切换】hub ⇄ room 两档取景。已在屏上:GLIDE 秒平滑过渡;不在屏上:直接切
+  // (后巷溶解进来时就是目标取景)。
   _lobShot(kind) {
     const L = this.lob;
     if (L.shot === kind) return;
@@ -1676,6 +1848,8 @@ export class Showcase {
     L.shot = kind;
   }
 
+  // 【联机大厅(hub)】你的小孩站在后巷 hub 位,取景在创建/加入卡片的右侧。
+  // 首次:破墨而出('pop');从房间返回:站在原位的成员改回 HUB_ID,走回 hub 位。
   /** Online hub (menus.js 'online'): your kid on the set's hub spot, framed right of the create / join cards. */
   showHub(style, color, weapon) {
     const L = this._lobEnsure();
@@ -1713,6 +1887,8 @@ export class Showcase {
 
   /** opts.reduced: prefers-reduced-motion (no camera drift or glides). opts.quick is accepted for compatibility: coming
    *  back to a room whose line-up is parked here (locker, a match) always finds everyone already standing. */
+  // 【房间上线】切到 room 运镜;已进过房(从更衣室/比赛回来)则全员直接站好。
+  // L.initial 标记「本帧是首进房」,供 updateLobby 决定新成员是破墨还是直接站。
   showLobby(players, colors, opts = {}) {
     const L = this._lobEnsure();
     L.reduced = !!opts.reduced;
@@ -1736,6 +1912,9 @@ export class Showcase {
     L.initial = false;
   }
 
+  // 【房间同步】对照 G.net.lobby.players 增删改成员:
+  // 新 id → _lobNew(入场方式由 _lobSlots 决定);消失 id → _lobLeave;换装/换武器/准备态 → _lobChange。
+  // 换边(flip)时全队列重排,每人潜泳换 mark。结束时按需要染队色并重排站位。
   updateLobby(players, colors) {
     const L = this.lob;
     if (!L || !L.room) return;
@@ -1783,6 +1962,8 @@ export class Showcase {
 
   // weapon / look / ready changes: a reaction on a kid standing on its mark; silent (already on at its entrance)
   // while it's off stage; queued (played once it lands) while it's travelling
+  // 【变更分发】武器换→小跳(hop);外观换→pop(墨爆换人);准备态换→准备/取消动作。
+  // 台上立刻演;台下静默生效(入场时已是新样);移动中排队,落地补演。
   _lobChange(M, weapon, style, ready, skey = styleKey(style)) {
     const onStage = this._lobStanding(M) && this.lob.k > 0.05;
     const hidden = !M.c || !M.c.root.visible || M.phase === 'wait' || M.phase === 'off' || M.phase === 'launched' || this.lob.k <= 0.05;
@@ -1802,6 +1983,10 @@ export class Showcase {
     }
   }
 
+  // 【成员工厂】member 是一大包逐人状态:身份、mark/dest(站位)、phase(阶段)、
+  // 路径(path/s/v)、动画输入 a、pose 量(y/sy)、一次性动作 act 与队列 q、
+  // 闲暇变化(idleT 换舞蹈、gT 扫视)、头部扫视弹簧(gY/gV/gTarget)。
+  // danceIdle 按序号在 menu_idle / locker_idle 间交替,免得全队同步。
   _lobNew(p, skey) {
     const L = this.lob;
     return {
@@ -1815,6 +2000,8 @@ export class Showcase {
     };
   }
 
+  // 【小工具】mark→场景站位;成员行色(我方永远显示为前排色,换边时翻转的是世界不是队色);
+  // 「在台上」=有实体、可见且处于 idle/land。
   _lobSpot(mark) {
     const S = this.lob && this.lob.set;
     if (!S || mark == null) return null;
@@ -1839,6 +2026,8 @@ export class Showcase {
     if (kids) for (const M of L.members.values()) if (M.c && !M.dead) M.c.setColor(this._lobRowColor(M.team));
   }
 
+  // 【角色构建】按成员的队伍色/武器/外观建 Character(复用游戏内的角色类),
+  // rotation.order='YXZ'(先偏航后俯仰,摆姿势需要);就绪舞蹈按准备态选择;先藏,入场上台。
   _lobChar(M) {
     const kind = weaponKind(M.weapon);
     const c = new this.CharacterClass({ color: this._lobRowColor(M.team).clone(), weapon: kind, style: { ...M.style }, name: M.name || 'Squidkid', isLocal: false });
@@ -1850,6 +2039,8 @@ export class Showcase {
     return c;
   }
 
+  // 【站位分配】你 = 前排中央(mark 0);队伍不变就保原位;新人由中间向外填空位
+  // (场景站位顺序:前排 0..3,对手 4..7)。mark 编码:行号 = mark>>2,列 = mark&3。
   // slots: you = front centre (mark 0); everyone keeps their mark while their team is unchanged; newcomers fill
   // centre-out (the set orders its spots front 0..3, rivals 4..7)
   _lobSlots(flip) {
@@ -1876,6 +2067,9 @@ export class Showcase {
     }
   }
 
+  // 【移动指令】按成员当前状态决定移动方式:
+  // 新成员→入场(真实房间:游入,彼此间隔 0.62 s;首进房:你 pop、队友跟着冒;其余:直接站);
+  // 已在位:换边→潜水(duck)、同层换位→游过去(switch);台下/移动中→落地后再处理(见 _lobStep 'land')。
   _lobMove(M, mark, flip, k) {
     const L = this.lob;
     const first = M.fresh;
@@ -1904,6 +2098,8 @@ export class Showcase {
     // travelling (swim / leap / pop / dive): it finishes the trip, then heads for the new mark (see _lobStep 'land')
   }
 
+  // 【登记入场】置 phase='wait',记下入场方式与延迟;后巷就绪且非 'stand' 时等 k≥0.6 才开场
+  // (保证观众看得到过程);'stand' 则立刻站好(藏着的也算数)。
   _lobArrive(M, how, delay) {
     M.phase = 'wait'; M.enter = how; M.delay = delay; M.act = null; M.q.length = 0; M.vis = 0; M.path = null;
     if (M.c) M.c.root.visible = false;
@@ -1912,6 +2108,8 @@ export class Showcase {
 
   _lobHide(M) { M.phase = 'off'; M.vis = 0; M.path = null; if (M.c) M.c.root.visible = false; }
 
+  // 【离场】去程游入途中折返:沿来路倒游出巷;已站好:潜入墨中游出;
+  // 其余状态(跃出/破墨/潜水中):落地后再走(_lobIdle 里处理)。
   _lobLeave(M) {
     M.leaving = true;
     const L = this.lob;
@@ -1929,12 +2127,16 @@ export class Showcase {
     // leaping / popping / diving: it leaves as soon as it has landed (see _lobIdle)
   }
 
+  // 【强制退场】直接销毁成员并移出成员表(离房且不可见、或离开联机时)。
   _lobDispose(M) {
     M.dead = true;
     if (M.c) { this.lob.kids.remove(M.c.root); M.c.dispose?.(); M.c = null; }
     if (this.lob.members.get(M.id) === M) this.lob.members.delete(M.id);
   }
 
+  // 【出发】站着的成员转身朝目的地 → 小跳 → 在空中变乌贼钻进自己的墨里;
+  // 后续由 _lobAfterDive 接:leave 游出巷子 / switch 游向新 mark / duck 直接在原地新 mark 冒出。
+  // 'vanish':房间正在你周围溶解,潜下即消失。
   // A standing kid sets off: turns toward where it's going, hops and dives into its own ink, then (see _lobAfterDive)
   // swims the route ('leave' → out of the alley · 'switch' → to its new mark) or surfaces on its new mark ('duck').
   // 'vanish': the room dissolving around you as you leave it (dives and is gone).
@@ -1956,6 +2158,9 @@ export class Showcase {
 
   // mark → mark along the set's own corridors: out along the old mark's exit path until it meets the new mark's lane
   // (same level: the dock is only climbed by its stairs), then in along that lane
+  // 【走廊寻路】mark→mark 走场景自己的通道:先沿旧 mark 的 exitPath 出,找到与去新 mark 的
+  // lane 相遇的交会点(代价 = 已走路程 + 1.7×直线距 + 剩余lane;只接受同高度的点,
+  // 码头只有楼梯能上),再沿 lane 进去。路径点加密到 0.5 m 供代价计算。
   _lobRoute(from, to) {
     const S = this.lob.set;
     if (typeof from !== 'number') return [this._lobSpot(from)?.pos.clone() || new THREE.Vector3(), S.spots[to].pos.clone()];
@@ -1983,6 +2188,7 @@ export class Showcase {
   }
 
   // kids standing on their marks, for swimmers to steer round
+  // 【避让集合】站上 mark 的其他人,游动者绕行用。
   _lobAvoid(M) {
     const out = [];
     for (const N of this.lob.members.values()) if (N !== M && !N.dead && this._lobStanding(N)) out.push(N.pos);
@@ -1990,12 +2196,15 @@ export class Showcase {
   }
 
   /** Queue a one-shot on a member (weapon hop, look pop, ready flourish, emote, launch). `now` pre-empts. */
+  // 【动作入队】一次性演出(换武器跳/换装 pop/准备/表情/发射)。同类动作去重;
+  // now=true 清空当前与队列(倒计时这种「立刻肃立」的场合)。
   _lobAct(M, act, now = false) {
     if (act.kind === 'hop' || act.kind === 'pop') { const i = M.q.findIndex((a) => a.kind === act.kind); if (i >= 0) M.q.splice(i, 1); }
     if (now) { M.q.length = 0; M.act = null; }
     M.q.push(act);
   }
 
+  // 【表情】查表 LOB_EMOTES,排队替换旧表情(同一人只演一个),正在演的直接收尾。
   lobbyEmote(id, name) {
     const M = this.lob && this.lob.members.get(id);
     if (!M || M.dead || M.leaving || !LOB_EMOTES[name] || !this._lobStanding(M)) return;
@@ -2006,6 +2215,7 @@ export class Showcase {
   }
 
   /** Countdown started: everyone drops what they're doing and squares up in the ready stance; the camera leans in. */
+  // 【倒计时】全员清空动作与队列、肃立 lobby_pose,镜头随后缓缓推近(见 _lobCamera 的 setT)。
   lobbyGetSet() {
     const L = this.lob;
     if (!L || this.mode !== 'lobby') return;
@@ -2021,6 +2231,8 @@ export class Showcase {
   }
 
   /** Match start: every kid super-jumps out, front centre first. Returns the seconds until the alley is empty. */
+  // 【开赛】每个站着的成员按 mark 顺序 super-jump 出画(中央先行,每人错 0.07 s);
+  // 返回「巷子清空所需秒数」,供调用方决定何时切换画面。
   lobbyLaunch() {
     const L = this.lob;
     if (!L || this.mode !== 'lobby') return 0;
@@ -2033,6 +2245,8 @@ export class Showcase {
   }
 
   /** The room was left: the others duck away into the ink; your kid stays and heads back to the hub spot (showHub). */
+  // 【离房】其他成员逐个 'vanish' 潜走(不在台上的直接销毁);你的成员改回 HUB_ID、
+  // 恢复闲逛舞蹈,等 showHub 叫它走回 hub 位。
   leaveLobby() {
     const L = this.lob;
     if (!L) return;
@@ -2053,6 +2267,8 @@ export class Showcase {
     if (this.mode === 'lobby') this.hide();
   }
 
+  // 【名牌锚点】成员的屏幕投影(脚下 + 身高×缩放处),供 DOM 名牌跟随;
+  // 离场/隐藏成员返回 null。
   lobbyAnchor(id, out = {}) {
     const L = this.lob;
     if (!L || !L.ready || L.k <= 0.02 || this.mode !== 'lobby') return null;
@@ -2062,6 +2278,8 @@ export class Showcase {
     return this._lobProject(_v, out, M.vis, M.team, typeof M.mark === 'number' ? M.mark & 3 : 0);
   }
 
+  // 【空位锚点】某排某列空站位的名牌投影(组队时显示「+ 邀请」位);
+  // 有成员占用或正在开赛(launchT≥0)时隐藏。
   lobbySlotAnchor(row, i, out = {}) {
     const L = this.lob;
     if (!L || !L.ready || L.k <= 0.02 || this.mode !== 'lobby' || !L.room) return null;
@@ -2074,6 +2292,8 @@ export class Showcase {
   }
 
   // screen point for a DOM plate; hidden when it would sit under a UI panel (swimmers pass behind them in the distance)
+  // 【投影】世界点 → 屏幕像素 + 缩放基准(s = 相对前排水准的每米像素比,名牌按它缩放);
+  // 落在 UI 面板之下时 vis 清零(游动者从远处面板后路过,名牌不该冒出来)。
   _lobProject(p, out, vis, row, slot) {
     const cam = this.lob.cam, W = innerWidth, H = innerHeight;
     _s.copy(p);
@@ -2090,6 +2310,8 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- lobby set: update
+  // 【后巷更新】淡入系数 k 按 SET_FADE 增减;完全退出后并不立刻释放——只要还在联机流程里
+  // (在线、在房里、预载标记、菜单栈含 online/lobby)就先驻留,彻底离开 1.5 s 后才 _lobRelease 省显存。
   _updateSet(dt) {
     const L = this.lob;
     if (!L) return;
@@ -2141,6 +2363,9 @@ export class Showcase {
   }
 
   // start an entrance ('stand' · 'pop' out of a puddle · 'swim' in from the alley mouth)
+  // 【入场开场】三种方式:
+  // 'swim' 沿 lane 游入(初速 0.8 巡航,名牌压低到 0.55 m);'pop' 从水洼破墨(先藏好);
+  // 'stand' 直接站定触发 spawn。三种都会先 _lobWarm 离屏热身,首帧即活。
   _lobBegin(M) {
     const L = this.lob, S = this._lobSpot(M.mark);
     if (!S) return;
@@ -2176,6 +2401,8 @@ export class Showcase {
   }
 
   // settle a (re)placed kid's springs / feet / squid pose off-screen so its first visible frame is already alive
+  // 【离屏热身】把(重)放置的成员先藏到目标点、连跑 10 帧 30 fps 模拟:
+  // 弹簧、脚步、乌贼姿态全部进入自然相位,再亮出——杜绝 T-pose / 弹簧僵直。
   _lobWarm(M, y) {
     const c = M.c, a = M.a;
     c.root.position.set(M.pos.x, M.pos.y + y, M.pos.z);
@@ -2185,6 +2412,9 @@ export class Showcase {
     c.root.visible = true;
   }
 
+  // 【成员推进】phase 状态机,每帧一步:
+  // wait 等开场 → swim 低姿游动(避人、上台阶、铺湿痕、甩尾水花)→ leap 海豚弧跃出变人 →
+  // pop 水洼破墨 → dive 转身潜墨 → land 落地余振 → idle 站定(闲暇变化与一次性动作)。
   _lobStep(M, dt) {
     const L = this.lob, t = L.t;
     if (M.dead || M.phase === 'off' || M.phase === 'launched') return;
@@ -2319,8 +2549,11 @@ export class Showcase {
   }
 
   // hold the last pose for the frame a phase handed over mid-step (keeps the kid drawn where it was)
+  // 【保持上一帧姿态】阶段在中途交出控制(如 dive→swim)时,让小孩停在原地再画一帧。
   _lobPoseKeep(M, dt) { if (M.c && M.c.root.visible) this._lobPose(M, M.y, M.sy, 0, 0, true, 0, dt); }
 
+  // 【游动收尾】按 onEnd 分流:leap → 起跳弧跃向 mark(留 SWIM.leap 作为助跑距离,
+  // 起跳点水花+音效);pop → 在原地转入破墨;'gone' → 出巷:离场者销毁、折返者重新游入。
   _lobSwimEnd(M, fx) {
     const L = this.lob;
     if (M.onEnd === 'leap') {
@@ -2344,6 +2577,9 @@ export class Showcase {
     }
   }
 
+  // 【潜墨之后】换队在入墨一刻生效:乌贼带着新队色从水花里出来。
+  // vanish/无路可游的 leave → 销毁;duck → 近就直接原地 pop、远就游过去再 pop;
+  // 其余(leave/switch)→ 沿路径游出巷子或游向新 mark。
   _lobAfterDive(M, fx) {
     const L = this.lob, how = M.after;
     // a team change shows as it hits the ink: the squid comes out of the splash in its new colour
@@ -2369,6 +2605,8 @@ export class Showcase {
     M.dest = how === 'leave' ? null : M.mark;
   }
 
+  // 【落定】进 land 阶段:记入 mark、触 land(振幅决定水花大小)、换舞蹈、
+  // 大水花时加涟漪与闪点并出声,最后 _lobNotice 让队友扭头看。
   _lobLanded(M, fx, amp) {
     const L = this.lob, c = M.c;
     M.phase = 'land'; M.t0 = L.t; M.at = M.dest = M.mark; M.vis = 1; M.leap = null; M.path = null; M.popAnt = 0.3;
@@ -2381,6 +2619,7 @@ export class Showcase {
     this._lobNotice(M);
   }
 
+  // 【闲时一瞥】其他 idle 且没在忙的成员,75% 概率扭头看向落地者 1.2~2 s(头部弹簧驱动)。
   // a kid lands: the others glance over at it
   _lobNotice(M) {
     for (const N of this.lob.members.values()) {
@@ -2405,6 +2644,9 @@ export class Showcase {
     }
   }
 
+  // 【闲暇与一次性动作】无事时:到点换闲逛舞蹈、随机扫视邻居;
+  // 有 queued 动作依次演出:hop 换武器 / pop 换装 / ready·unready / emote 表情 / jumpout 开赛跳。
+  // 返回本帧的姿态偏移(y/sy/twirl/pitch/air/vy)。
   // idle life + one-shots (hop / pop / ready / unready / emote / jumpout); returns the pose offsets
   _lobIdle(M, t, dt, fx) {
     const c = M.c, a = M.a, P = M.pos;
@@ -2508,6 +2750,7 @@ export class Showcase {
   }
 
   // yaw (kid space) toward the nearest neighbour (the other team counts a little further away)
+  // 【扫视目标】最近的可见邻居(对手加权 0.8 m 距离 + 随机抖动),没有就随便看看。
   _lobGlance(M) {
     let best = null, bd = 1e9;
     for (const N of this.lob.members.values()) {
@@ -2518,6 +2761,10 @@ export class Showcase {
     return best ? this._lobYawTo(M, best.pos) : (this.rand() - 0.5) * 0.9;
   }
 
+  // 【姿态落地】把本帧算好的 y/sy/twirl/pitch/air/vy 写进角色:
+  // 位置/缩放(挤压拉伸用 xz 补偿,体积感守恒)/旋转,然后 update 角色;
+  // 乌贼形强制显示眼睛(玩法里远程游动者的眼睛藏在墨下,这里要露出来);
+  // 头部扫视弹簧(gY/gV)以临界阻尼叠加在 dance 姿态之上。
   _lobPose(M, y, sy, twirl, pitch, air, vy, dt) {
     const c = M.c, a = M.a;
     if (!c) return;          // released during this step (left / re-dressed / hidden): nothing left to pose
@@ -2546,6 +2793,8 @@ export class Showcase {
   }
 
   // a new look: rebuild the kid mid-squash (pre-warmed so it never shows a rest pose)
+  // 【墨中换人】pop 类换装:在最扁的瞬间重建角色——继承舞蹈、变体、位置、旋转、缩放,
+  // 离屏热身 12 帧再上台;pop 武器缩放归零防旧武器闪现。
   _lobSwap(M) {
     const old = M.c;
     const c = new this.CharacterClass({ color: this._lobRowColor(M.team).clone(), weapon: weaponKind(M.weapon), style: { ...M.style }, name: M.name || 'Squidkid', isLocal: false });
@@ -2572,10 +2821,16 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- lobby set: camera
+  // 【后巷运镜】场景自带两台机位(room 的 camera 与 hubCamera),机身永不移动(场景保证机位不撞墙):
+  // 取景 = 变焦(fov)+ 镜头偏移(setViewOffset),把主体放进 UI 面板之间的空白区。
+  // room:全队八站位加名牌空间;hub:你的小孩在卡片右侧。hub⇄room 按 GLIDE 滑移,其上叠一层手持微晃。
   // The set's own cameras (camera = the room, hubCamera = the hub), never moved off their positions (the set keeps
   // them clear of its walls): the fit is a zoom (fov) plus a lens shift that puts the subject inside the free area
   // between the UI panels — all eight marks with nameplate room for the room, your kid right of the cards for the hub.
   // Hub ⇄ room glides between the two; a slow handheld drift on top.
+  // 【每帧运镜】debugCam 审计可整体覆盖。取目标帧(_lobFrame)→ 滑翔混合 →
+  // 布局迟变用指数平滑接住 → 手持漂移(多频正弦 + 微变焦;reduced 时全关)→
+  // 倒计时推近(setT)、开赛后抬头追跳走的人(launchT)。
   _lobCamera(W, H) {
     const L = this.lob, t = L.t;
     const D = this.debugCam;   // audits: { pos, target, fov } overrides the framing
@@ -2609,6 +2864,8 @@ export class Showcase {
     this._placeLook(L.cam, A.pos, A.tgt, fov, cs.sx, cs.sy, W, H);
   }
 
+  // 【摆机位】fov + 位置 + 看向目标 + setViewOffset(把 (sx,sy) 这一像素挪到画面中心),
+  // 近远裁剪沿用场景相机的设定。
   _placeLook(cam, pos, tgt, fov, sx, sy, W, H) {
     const C = this.lob && this.lob.set && this.lob.set.camera;
     cam.fov = fov;
@@ -2621,6 +2878,9 @@ export class Showcase {
   }
 
   // framing for 'lobby' | 'hub' → o { pos, tgt, fov, sx, sy } (cached per layout)
+  // 【取景求解】对 hub/lobby 各解一次并缓存(键含视口与 UI 四边):
+  // 先按场景原始机位投影出主体的包围盒,再解缩放 z(主体放进空白区, clamp 0.55~2.6)、
+  // 换算成 fov 与镜头偏移 sx/sy。lobby 还顺手量出前排每米像素数 kFront(DOM 名牌的缩放基准)。
   _lobFrame(kind, W, H, o) {
     const L = this.lob, S = L.set, C = kind === 'hub' ? S.hubCamera : S.camera;
     const U = kind === 'hub' ? this._measureHub(W, H) : this._measureLobby(W, H);
@@ -2674,6 +2934,8 @@ export class Showcase {
     return o;
   }
 
+  // 【量空白区·房间】从 DOM 量联机大厅界面的左(侧栏右缘)/右/上(顶栏与状态条)/下(底栏)边界,
+  // 量不到就用样式公式兜底(u 为 vw/vh 换算单位)。1.5 s 轮询一次,resize 立即重量。
   _measureLobby(W, H) {
     const U = this.ui, L = this.lob;
     const u = Math.min(W * 0.01, H * 0.017778);
@@ -2693,6 +2955,7 @@ export class Showcase {
     return R;
   }
 
+  // 【量空白区·大厅】hub 的空白区:卡片右缘以右、名牌下方、装备/外观 chips 上方。
   _measureHub(W, H) {
     const U = this.ui, L = this.lob;
     const u = Math.min(W * 0.01, H * 0.017778);
@@ -2713,6 +2976,9 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- framing
+  // 【UI 量取(摄影棚模式)】与后巷同款思路:从活 DOM 量面板右缘/标题右缘与下缘/分数带顶,
+  // 带样式公式兜底;刚开场量得密(0.1/0.35/0.2 s),9 s 后停量。测量值经指数缓动逼近,
+  // 迟到的布局变化不会硬拽相机。
   // Free screen areas come from the live DOM (layout boxes, transform-free) with stylesheet-formula fallbacks.
   _measureUI(W, H) {
     const U = this.ui;
@@ -2754,6 +3020,8 @@ export class Showcase {
   }
 
   // Orbit the focus point, aim at it, then lens-shift so the focus lands on screen pixel (sx, sy).
+  // 【摆机位·摄影棚版】绕焦点轨道(偏航/俯仰/距离),看向焦点,镜头偏移把焦点投到屏幕 (sx, sy);
+  // 可选滚转。近远裁剪按距离自适应。
   _place(focus, yaw, pitch, dist, fov, sx, sy, W, H, roll = 0) {
     const cam = this.camera, cp = Math.cos(pitch);
     cam.fov = fov;
@@ -2768,6 +3036,9 @@ export class Showcase {
 
   // Pedestal framing for a mode → o { fy, yaw, pitch, dist, fov, sx, sy, roll }. Loadout: whole kid + pedestal in the free
   // area right of the panel. Locker: closer, a touch lower angle, the kid fills more of the frame (the look is the point).
+  // 【展台取景】loadout:全身+展台放进面板右侧空白;locker:更近、视角更低(展示服装);
+  // hub:人与台比例介于两者之间。入场 1.45 s 内从侧后方缓转到正面,之后叠慢速呼吸摆动;
+  // 换武器跳触发镜头 punch(急推+回弹),换装 pop 轻微一推。
   _pedestalShot(mode, W, H, U, o) {
     const t = this.t, locker = mode === 'locker', hub = mode === 'hub';
     const fov = locker ? 23 : 25, tanH = Math.tan((fov * Math.PI) / 360);
@@ -2790,6 +3061,7 @@ export class Showcase {
     return o;
   }
 
+  // 【展台相机】loadout ⇄ locker 互切时,同一角色留在台上,相机按 0.75 s 在两档取景间滑移。
   _cameraPedestal(mode, W, H) {
     const U = this._measureUI(W, H);
     const A = this._pedestalShot(mode, W, H, U, this._shotA);
@@ -2802,6 +3074,8 @@ export class Showcase {
     this._place(this._tgt.set(0, A.fy, 0), A.yaw, A.pitch, A.dist, A.fov, A.sx, A.sy, W, H, A.roll);
   }
 
+  // 【奖台取景】竖直:全队(含 0 号头顶空间)夹进顶部 5% 与分数带之间;水平:避开标题块、
+  // 最多 8 次迭代收敛(必要时缩小)。入场 2.5 s 缓缓转正、13 s 后轻微前推(聚焦掌声)。
   _cameraResults(W, H) {
     const U = this._measureUI(W, H), t = this.t, won = this.won;
     const fov = 22, tanH = Math.tan((fov * Math.PI) / 360);
@@ -2837,9 +3111,14 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- portraits
+  // 【菜单头像】给菜单磁贴出摄影棚小像:就在本场景同一套灯光下摆姿势(角色着色器已编译,
+  // 且色调与展台一致),渲进小型 MSAA HDR 目标,经解析 pass 做色调映射 + sRGB(直出 alpha),
+  // 读回 2D 画布。每帧最多一张,结果按请求键缓存(96 张上限)。
   // Studio portraits for menu tiles: the kid is posed in this same scene (same lights → the character shaders are already
   // compiled, and portraits match the pedestal look), rendered into a small MSAA HDR target, tone mapped + sRGB encoded
   // by a resolve pass (straight alpha, transparent background) and read back into a 2D canvas. One per frame; cached.
+  // 【取像入口】缓存命中直接回调副本;否则入队(同键合并回调)。
+  // 返回句柄带 cancel()——没人等的请求会被跳过,绝不白渲。
   portrait(req, cb) {
     const key = [req.kind || 'head', req.size | 0 || 128, '#' + this._c2.set(req.color || this.color).getHexString(), req.weapon || '',
       ...Object.keys(req.style || {}).sort().map((k) => `${k}:${req.style[k]}`)].join('|');
@@ -2851,6 +3130,8 @@ export class Showcase {
     return { cancel: () => { const i = q.cbs.indexOf(cb); if (i >= 0) q.cbs.splice(i, 1); } };
   }
 
+  // 【每帧一张】奖台模式(灯光被结果舞台占着)与热身未完成时让路;并发读回最多 2 张。
+  // 渲染失败也走 finish(null),回调总能等到答复。
   _portraitStep() {
     // the podium lights are aimed at the results stage; portraits wait until it's gone. Shaders first (see _warmup).
     if (this.mode === 'results' || (!OVERLAY.has(this.mode) && this._out > 0 && this._lastMode === 'results')) return;
@@ -2878,6 +3159,8 @@ export class Showcase {
     return this._renderPortraitRun(req, S, kind, r);
   }
 
+  // 【头像目标与解析 pass】HDR 目标(4×MSAA HalfFloat)+ LDR 中转;解析材质内联了
+  // three 的 NeutralToneMapping 与 sRGB 公式,保证头像与主画面同一条调色管线。
   _renderPortraitSetup(S) {
     if (!this._prt || this._prt.width !== S) {
       this._prt?.dispose(); this._prt8?.dispose();
@@ -2919,6 +3202,10 @@ export class Showcase {
     }
   }
 
+  // 【渲染流程】藏起场景里所有非灯光对象 → 空闲时把灯光指向展台位并染请求色 →
+  // 建预览角色、摆舞蹈、热身 14 帧 → 小相机取景(四分之三侧面,主体略偏上给磁贴标签留位)→
+  // 渲染到 HDR 目标 → 解析 pass 输出 sRGB+alpha → 异步读回(PBO+fence,不卡管线)→
+  // 恢复渲染器与场景状态、角色销毁。行序读回翻转为图像行序后画进画布。
   _renderPortraitRun(req, S, kind, r) {
     const hidden = [];
     for (const o of this.scene.children) if (o.visible && !o.isLight) { o.visible = false; hidden.push(o); }
@@ -2994,6 +3281,8 @@ export class Showcase {
 
   // Compile every showcase shader (pedestal, ink, FX pools, a squidkid under these lights, the portrait resolve)
   // asynchronously once, right after boot, so the first loadout / locker / portrait never hitches on a compile.
+  // 【着色器热身】boot 后一旦有环境贴图就异步编译展示台全部着色器:
+  // 展台+墨衣+特效池+灯光下的角色+头像解析 pass。之后首次 loadout/locker/头像都不会卡在编译上。
   _warmup() {
     if (this._warmState) return;
     this._warmState = 'busy';
@@ -3020,6 +3309,8 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- render
+  // 【渲染目标】优先借后处理合成器的 writeBuffer(帧输出后它已闲置,白捡);兼容条件:
+  // 带深度、MSAA 样本够、HDR 格式、尺寸一致。借不到就用自己的 4×MSAA HalfFloat 目标。
   // MSAA HDR target: the composer's spare ping-pong buffer when it matches the canvas, else a private one.
   _target() {
     const r = this.r;
@@ -3042,6 +3333,10 @@ export class Showcase {
   // Two layers, each rendered into the MSAA HDR target and composited: the lobby set (its own scene + camera; opaque,
   // dissolving with whatever is under it — or, while it covers the frame, drawn over a cleared canvas because main.js
   // skipped the world), then the studio overlay (pedestal / podium, premultiplied over the frame).
+  // 【主渲染】两层各自渲进 HDR 目标再用合成 pass 叠加:
+  // ① 后巷(自己的场景+相机;盖住全帧时底下的世界被跳过,直接清屏画它,否则按 k 溶解);
+  // ② 摄影棚叠加(展台/奖台,按 fadeIn/_out 决定透明度,预乘叠加)。
+  // 全程保存并还原渲染器状态(目标、清屏色、autoClear)。
   render() {
     if (this._pq.length) this._portraitStep();
     const r = this.r, W = innerWidth, H = innerHeight;
@@ -3090,6 +3385,8 @@ export class Showcase {
   }
 }
 const _c1 = new THREE.Color();
+// 【DOM 量框】取选择器最后一个匹配元素的布局盒(沿 offsetParent 累加,不含 transform——
+// 动画中的面板量到的是它最终要落的位置)。供 UI 空白区测量。
 // a live layout box (offset chain: transform-free, so mid-animation panels measure where they will rest)
 function domBox(sel) {
   const list = document.querySelectorAll(sel);
@@ -3099,8 +3396,11 @@ function domBox(sel) {
   for (let e = el; e; e = e.offsetParent) { x += e.offsetLeft; y += e.offsetTop; }
   return { l: x, t: y, r: x + el.offsetWidth, b: y + el.offsetHeight };
 }
+// 【外观指纹】style 对象排序序列化,用于快速比较两次换装是否同款。
 const styleKey = (st) => (st && typeof st === 'object' ? Object.keys(st).sort().map((k) => `${k}:${st[k]}`).join('|') : '');
+// 【武器归类】WEAPONS 表查武器大类(如 shooter/roller),查不到就用原 id 兜底。
 const weaponKind = (id) => (WEAPONS[id] && WEAPONS[id].kind) || id || 'shooter';
+// 【画布深拷贝】缓存的头像只发副本,调用方随便改。
 function copyCanvas(src) {
   const d = document.createElement('canvas');
   d.width = src.width; d.height = src.height;

@@ -28,6 +28,21 @@
 //   percents            accepted as 0..100 or 0..1.
 // Boss mode (docs/BOSS.md): src/ui/hud-boss.js (hud.boss) adds the boss bar / title card / callouts / damage numbers and
 // the endings; the roster slots show the 8-kid squad in squad ink. It switches on match.mode === 'boss' or boss:spawn.
+
+// ==================================================================== 中文导读
+// 【职责】战斗 HUD：对局内整套界面（顶栏队伍徽章+计时器、墨量条、小地图、准星、击杀卡、横幅、
+//   大招槽、区域控制计数、裁判演出等）。构造函数签名为 new HUD(rootEl [, { playSound }])，
+//   与 docs/CONTRACTS.md 第 3 节约定一致。
+// 【生命周期】在 boot 阶段创建（挂到 G.hud，初始隐藏于主菜单背后），主循环每帧调用
+//   hud.update(dt, frame) 喂入一个"数据帧"（frame 由 main.js 组装，见各 _upd* 的取字段注释）。
+//   另有事件驱动系统：_bindBus 订阅核心总线（turf/hit/splatted/zones:* 等），
+//   以及 _addFx 自驱动的特效时钟（暂停时也能跑的 rAF 循环，见文末 effects loop 一节）。
+// 【更新策略】全文件统一"脏检查 + 仅写变化值"：每个 _upd* 先拼一个 key 字符串与上次对比
+//   （缓存在 this._L 上），不同才改 DOM/CSS 变量；每帧路径只用 transform/opacity（合成层），
+//   避免触发布局重排；DOM 元素全部池化（小地图圆点、击杀卡、死亡标记等），运行期不新建。
+// 【结构索引】build（_build 搭 DOM）→ public（update/banner/feed/...）→ bus（事件系统）
+//   → per-frame pieces（各 _upd* 小件）→ effects loop（自驱动特效）。
+
 import { h, clamp, colorVars, toHex, fmtTime, fmtInt, splatSVG, splatShape, pct, shade, lerp, easeOutBack, easeOutCubic, restartAnim, prefersReducedMotion, msgText, msgKey } from './ui-util.js';
 import { SQUID, SPLAT_ICON, DEATH_ICON, GLYPHS, SUB_ICONS, WEAPON_ICONS, richText, keycap, specialIcon, weaponIcon } from './ui-icons.js';
 import { WEAPONS, SPECIALS, TEAM_NAMES, SUB, PLAYER, MATCH, ZONES } from '../config.js';
@@ -39,8 +54,10 @@ import { bossEmblem, BOSS_NAME, BOSS_EPITHET } from './boss-art.js';
 import { t } from '../i18n/strings.js';
 
 let HUD_ID = 0;
+// 【共享动画参数】通用"回弹"曲线（BUMP）：UI 小件的 pop/抖动用，全局复用避免重复分配对象
 const BUMP = { duration: 320, easing: 'cubic-bezier(.34,1.8,.64,1)' };
 // dualies: the ring of the pistol that just fired jabs outward (SVG → Web Animations; the reflow restart trick needs HTML)
+// 【双枪后坐】开火的单侧手枪准星圈向外猛戳一下（SVG 元素用 Web Animations API 做，不触发重排）
 const TWIN_KICK = [{ transform: 'scale(1.55)', strokeWidth: '2.6px' }, { transform: 'scale(1)', strokeWidth: '1.8px' }];
 const TWIN_KICK_T = { duration: 130, easing: 'cubic-bezier(.2,.8,.3,1)' };
 // Sponge Mitts: each glove bracket jabs outward on its own punch ([right, left])
@@ -50,6 +67,7 @@ const TAU = Math.PI * 2;
 const STREAKS = { 2: 'DOUBLE SPLAT!', 3: 'TRIPLE SPLAT!', 4: 'QUAD SPLAT!' };
 const kindOf = (w) => (WEAPONS[w] && WEAPONS[w].kind) || w || 'shooter';
 // super-jump map slots: 3 teammates, base, then up to 6 team jump beacons (keys 1–9, 0)
+// 【超级跳槽位共 10 个】编号 0-2 队友、3 己方出生点、4-9 队伍跳跃信标；键位 1-9、0
 const NB = 10;
 const slotKey = (i) => String((i + 1) % 10);
 // reticle family for weapons that share another kind's crosshair: our twins / spinner / bucket wear upstream's dualies /
@@ -57,6 +75,8 @@ const slotKey = (i) => String((i + 1) % 10);
 const RETICLE_OF = { bucket: 'slosher', spinner: 'splatling', twins: 'dualies', brush: 'roller' };
 
 // ------------------------------------------------------------------ HUD-only art
+// 【HUD 专属美术资产】纯内联 SVG 字符串 + 少量路径常量：出生点、墨滴、区域图标、死亡鱿鱼骷髅、
+//   超级跳符号、落海死因图标等。全部用 currentColor 染色，白描边保证在任何墨水上可读。
 const K = '#15121c';
 const SPAWN_ICON = `<svg viewBox="0 0 64 64" aria-hidden="true"><ellipse cx="32" cy="48" rx="24" ry="9" fill="none" stroke="${K}" stroke-width="8"/><ellipse cx="32" cy="48" rx="24" ry="9" fill="none" stroke="currentColor" stroke-width="4"/><path d="M32 6 L32 36 M20 25 L32 38 L44 25" fill="none" stroke="${K}" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 6 L32 36 M20 25 L32 38 L44 25" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const DROP_ICON = `<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 5 C32 5 51 28 51 41 C51 52 42.5 59 32 59 C21.5 59 13 52 13 41 C13 28 32 5 32 5 Z" fill="currentColor" stroke="${K}" stroke-width="4"/><path d="M24 37 Q24 30 29 26" stroke="#fff" stroke-opacity=".7" stroke-width="4" fill="none" stroke-linecap="round"/></svg>`;
@@ -84,6 +104,8 @@ const ENV_CAUSES = { water: 'Fell in the sea', sea: 'Fell in the sea', fall: 'Fe
  * or nothing, and a kit weapon that reuses a built-in firing path (the charger beam passes 'charger') is still the
  * attacker's own weapon.
  */
+// 【死因解析】把 'splatted' 事件的 cause 字段（终结一击的武器 id 或 'water'）翻译成阵亡画面要展示的
+//   { kind: 主武器/副武器/大招/环境, id, 名称, 徽标, 图标 }；查不出任何信息时返回 null（不显示武器行）。
 export function splatCause(cause, attacker) {
   const c = typeof cause === 'string' ? cause : null;
   if (c && ENV_CAUSES[c]) return { kind: 'env', id: c, name: attacker ? 'Knocked into the sea' : ENV_CAUSES[c], tag: '', icon: SEA_ICON };
@@ -94,6 +116,8 @@ export function splatCause(cause, attacker) {
   return null;
 }
 // "Can't use" (a kit sub refused the throw, e.g. one already out): a soft, low two-note bonk — quieter than ui_error's buzz
+// 【"无法用"提示音】副武器拒绝投掷（如已有一颗鱼雷在外）时的柔和两音"bonk"，
+//   比 ui_error 的蜂鸣轻；此处就地注册进 SFX 表（若尚未存在）
 if (!SFX.sub_cantuse) SFX.sub_cantuse = {
   gain: 0.24, max: 1, jitter: 0, reverb: 0.03, minGap: 0.18,
   build(v, p) {
@@ -104,7 +128,10 @@ if (!SFX.sub_cantuse) SFX.sub_cantuse = {
   },
 };
 // squid-head badge silhouette (roster)
+// 【队徽鱿鱼头剪影】顶栏每格徽章的外形路径；f 版填充、g 版是高光弧线
 const BADGE_PATH = 'M32 2.5 C35.5 2.5 43 9 47.5 14.5 C50 14 55 15.5 57 18.5 C58.6 21 57.4 23.6 55.2 24.8 A24.5 24.5 0 1 1 8.8 24.8 C6.6 23.6 5.4 21 7 18.5 C9 15.5 14 14 16.5 14.5 C21 9 28.5 2.5 32 2.5 Z';
+// 【受击方向弧路径】生成一个带箭头的圆弧扇环 SVG path（内径 r0 / 外径 r1，halfDeg 半张角，
+//   tip 箭头长度），供伤害方向指示器复用
 function arcPath(r0, r1, halfDeg, tip) {
   const a = (halfDeg * Math.PI) / 180;
   const P = (r, t) => `${(Math.sin(t) * r).toFixed(2)} ${(-Math.cos(t) * r).toFixed(2)}`;
@@ -113,6 +140,8 @@ function arcPath(r0, r1, halfDeg, tip) {
 const DD_PATH = arcPath(80, 89, 26, 12);
 
 export class HUD {
+  // 【构造函数】搭好全部 DOM（_build）、注册 resize 监听与总线订阅（_bindBus），
+  //   并挂接 BossHud（boss 模式扩展）与 boss 音频。初始 this._visible = false。
   constructor(rootEl, opts = {}) {
     this.root = rootEl || document.body;
     this.playSound = opts.playSound || null;
@@ -144,6 +173,8 @@ export class HUD {
   }
 
   // ================================================================ build
+  // 【DOM 搭建】一次性创建全部界面元素（之后运行期只改属性/类，不再新建结构）；
+  //   元素引用存为实例字段，供各 _upd* 直接取用
   _build() {
     const el = this.el = h('div', { class: 'iw-hud is-hidden', 'aria-hidden': 'true' });
     colorVars(el, 'self', '#ff8a14');
@@ -154,6 +185,8 @@ export class HUD {
     this.ctx = this.canvas.getContext('2d');
 
     // ---- top bar: roster + timer
+    // 【顶栏】两侧各 4 格队伍徽章（武器图标、阵亡 X、复活倒计时环、大招就绪闪光、
+    //   "你"的小箭头、状态弹出），中间计时器；区域控制开启时计时器两侧挂计数器
     const squad = (side) => h('div', { class: `iw-squad iw-squad--${side}` }, Array.from({ length: 4 }, () => {
       const ring = h('i', { class: 'iw-sq__ring', html: '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29" pathLength="100"/></svg>' });
       return h('span', { class: 'iw-sq' },
@@ -189,6 +222,8 @@ export class HUD {
     this.top = h('div', { class: 'iw-hud__top' }, this.squads[0], this.zc[0], this.timer, this.zc[1], this.squads[1]);
 
     // ---- special gauge (liquid orb) + turf total
+    // 【大招槽 + 涂地总分】中央液面球体：clipPath 裁出的墨水面随百分比升降（双波浪路径错位
+    //   制造流动感），气泡、光泽、蓄能光环、就绪光芒（12 条射线）；旁侧为涂地分数小药丸与击杀信息流
     const sid = `iwsp${this.id}`;
     const blob = 'M50 6 C72 5 93 20 94 45 C95 70 80 94 52 95 C25 96 6 78 6 51 C6 25 26 7 50 6 Z';
     let wave = 'M-100 0';
@@ -229,6 +264,8 @@ export class HUD {
     this.sbFg = this.subBadge.querySelector('.fg');
 
     // ---- crosshair cluster
+    // 【准星簇】中央一坨层叠元素：出生护盾环、按武器重建的准星（_buildReticle）、
+    //   命中刻度、击杀 X、墨量条画布、副武器瞄准消耗芯片、"无法用"提示、涂地弹出
     this.ret = h('div', { class: 'iw-ret' });
     this.hitEl = h('div', { class: 'iw-hit' }, h('i'), h('i'), h('i'), h('i'));
     this.killEl = h('div', { class: 'iw-kill' }, h('span', { class: 'iw-kill__ring' }), h('span', { class: 'iw-kill__splat', html: SPLAT_ICON }), h('i'), h('i'), h('i'), h('i'));
@@ -248,6 +285,8 @@ export class HUD {
     this.ddLayer = h('div', { class: 'iw-dds' });
 
     // ---- minimap + super-jump beacons
+    // 【小地图 + 超级跳】地图画布由 main.js 提供（m.canvas），HUD 只负责外框、8 个玩家圆点池、
+    //   12 个死亡标记池、10 个跳跃信标（含键盘提示、悬浮/点击）与展开时的图例列表
     this.mapSlot = h('div', { class: 'iw-map__slot' });
     const arrow = '<svg class="iw-mdot__arrow" viewBox="-13 -15 26 30" aria-hidden="true"><path class="o" d="M0 -11 L9 11 L0 5.5 L-9 11 Z"/><path class="i" d="M0 -11 L9 11 L0 5.5 L-9 11 Z"/></svg>';
     this.mapDots = Array.from({ length: 8 }, () => h('i', { class: 'iw-mdot', html: '<b></b>' + arrow }));
@@ -292,6 +331,9 @@ export class HUD {
     this.markers = Array.from({ length: 8 }, () => h('div', { class: 'iw-mk' }, h('span', { class: 'iw-mk__tag' }, h('i', { class: 'iw-mk__w' }), h('b')), h('i', { class: 'iw-mk__arrow' })));
     this.markerLayer = h('div', { class: 'iw-mks' }, this.markers);
     // "Yeah!" cheers: speech bubbles over whoever signalled
+    // 【场外队友标记 / "耶!"气泡 / 死亡标记】三块屏外指示层：箭头指向屏幕外盟友并带
+    //   武器图标与名字；喝彩气泡浮在发信号者头顶；世界视图的鱿鱼骷髅固定池（每格缓存
+    //   name 引用与 id，配合 frame.deaths 复用，绝不每帧新建）
     this.cheerEls = Array.from({ length: 8 }, () => h('div', { class: 'iw-cheer' }, 'YEAH!'));
     this.cheerLayer = h('div', { class: 'iw-cheers' }, this.cheerEls);
     // death markers in the world view: a fixed pool, one per record of frame.deaths
@@ -310,6 +352,7 @@ export class HUD {
     this.kcards = h('div', { class: 'iw-kcards' });
     this.callouts = h('div', { class: 'iw-callouts' });
     this.zcalls = h('div', { class: 'iw-zcalls' });
+    // 【一次性挂载】所有子层按视觉叠序 append 进根节点（暗角与墨渍画布在最底，阵亡卡片等在最上）
 
     el.append(this.vig, this.canvas, this.dmLayer, this.markerLayer, this.cheerLayer, this.ddLayer, this.top, this.sp, this.subBadge, this.turfEl, this.feedEl, this.xh,
       this.kcards, this.callouts, this.zcalls, this.promptEl, this.mapDim, this.map, this.fpsEl, this.countLayer, this.bannerLayer, this.splatLayer, this.jnote, this.poisonVig, this.statusEl);
@@ -324,6 +367,7 @@ export class HUD {
   }
 
   // ================================================================ public
+  // 【公开 API】boot/main 层调用的入口：显隐、每帧 update、横幅、提示流、受击、阵亡画面、裁判
   setVisible(v) {
     v = !!v;
     if (v === this._visible) return;
@@ -333,6 +377,7 @@ export class HUD {
   }
 
   /** Practice sessions: no clock (the timer reads PRACTICE) and no team rosters. */
+  // 【练习模式】计时器显示 PRACTICE、队伍徽章隐藏；切换时重置计时器相关脏检查缓存
   setPractice(on) {
     on = !!on;
     if (this._practice === on) return;
@@ -344,12 +389,16 @@ export class HUD {
   }
 
   /** ScreenFX takes over the lens-ink damage smears, the low-HP vignette and the splatted desaturation. */
+  // 【接挂 ScreenFX】src/fx/screenfx.js 接管损伤墨渍、低血量暗角与阵亡去色后，
+  //   HUD 关闭对应旧路径（damage() 直接返回、_updHp 跳过暗角），仅保留方向弧
   attachScreenFX(fx) {
     this.fx = fx || null;
     this.el.classList.toggle('iw-hud--fx', !!fx);
     this.overLayer.classList.toggle('iw-hud--fx', !!fx);
   }
 
+  // 【每帧主入口】由 main.js 的 _updateHud 调用：先同步队伍颜色 CSS 变量与观战态，
+  //   再按序分发给所有 _upd* 小件；各小件内部自带脏检查，frame 缺字段时安全跳过
   update(dt, f) {
     if (!f) return;
     this._t += dt;
@@ -383,6 +432,8 @@ export class HUD {
     this.boss.update(dt);
   }
 
+  // 【中央横幅】READY/GO/最后一分钟/TIME'S UP/大招/自定义；按组（side/low/center）清旧迎新，
+  //   动画结束或 4 s 后自删；GO 与 TIME'S UP 还切换根节点的 is-live 类（控制计时器呼吸等）
   banner(kind = 'custom', text) {
     if (kind === 'timesup' && this.boss.timesUp()) { this.el.classList.remove('is-live'); return; }
     const k = ['ready', 'go', 'one_minute', 'timesup', 'special', 'custom'].includes(kind) ? kind : 'custom';
@@ -422,6 +473,7 @@ export class HUD {
     if (k === 'timesup') this.el.classList.remove('is-live');
   }
 
+  // 【开场倒数】n ≤ 3 时高亮；旧数字标 is-old 淡出，1.6 s 后自删
   countdown(n) {
     if (n == null || n < 0) return;
     this.countLayer.querySelectorAll('.iw-count').forEach((c) => c.classList.add('is-old'));
@@ -431,6 +483,8 @@ export class HUD {
     this.countLayer.appendChild(el);
   }
 
+  // 【命中刻度】'hit' 事件后由 bus 间接触发（或直接调用）：刻度数随连击递增、尺寸随伤害
+  //   缩放、重击变粗；'kill' 时叠加击杀 X 与准星闪白（_restart 重启动画 trick 需先 reflow）
   hitMarker(kind = 'hit') {
     this.hitEl.classList.remove('is-weak');
     const dmg = this._lastHitDmg || 36;
@@ -447,6 +501,8 @@ export class HUD {
     else { this._restart(this.hitEl, 'is-on'); this._restart(this.ret, 'is-hitflash'); }
   }
 
+  // 【信息流】右上角小药丸（击杀/阵亡/盟友/通用）；自己造成的击杀不在此重复（已有击杀卡）。
+  //   最多留 5 条，超时 4.2 s 后右侧滑出收起
   feed({ text = '', color = '#ffffff', kind = 'info' } = {}) {
     // your own splats get the big kill card (below the crosshair) — don't repeat them as a feed pill
     if (kind === 'kill' && this._live() && !this.lab) return;
@@ -463,6 +519,8 @@ export class HUD {
 
   // angle (optional): screen-space direction toward the attacker (0 = right, +clockwise, y down). Without ScreenFX the
   // smears land on that edge; with ScreenFX the lens ink does the smear and the HUD only draws direction arcs.
+  // 【受伤墨渍】自身受击时在屏幕边缘甩出随机墨渍（伤害越大越多）；已挂 ScreenFX 则整段跳过。
+  //   墨渍是预渲染到小画布上的位图（_spawnSmear），每帧只 drawImage + 拉伸墨滴，成本极低
   damage(amount = 0.3, color = '#2f5bff', angle = null) {
     if (this.fx) return;
     amount = clamp(+amount || 0);
@@ -475,6 +533,9 @@ export class HUD {
 
   // attacker / cause (optional, from the 'splatted' event): what splatted you — the attacker's main weapon, or the sub /
   // special / sea that did it (splatCause). Without them: the last killer the HUD saw and their main weapon.
+  // 【阵亡画面】全屏卡片：死因武器图标（splatCause）、击杀者名字、复活倒计时环（SVG 环
+  //   animation-duration 即复活秒数）；倒数最后 3 秒有滴答音。复活倒计时走自驱动特效时钟
+  //   （_addFx），不依赖帧数据
   showSplatted({ by = null, byColor = '#2f5bff', respawn = 5, attacker, cause } = {}) {
     this.hideSplatted(true);
     const C = 2 * Math.PI * 44;
@@ -514,6 +575,7 @@ export class HUD {
     });
   }
 
+  // 【隐藏阵亡画面】instant 用于立刻替换旧卡片（再阵亡时）；否则淡出后移除
   hideSplatted(instant = false) {
     const st = this._splatted;
     if (!st) return;
@@ -523,11 +585,15 @@ export class HUD {
     setTimeout(() => { st.el.remove(); st.tint.remove(); }, 380);
   }
 
+  // 【裁判入口】按 mode 分派：turf（涂地百分比，_judgeTurf）或 zones（区域控制终局，_judgeZones）；
+  //   均返回 Promise，动画播完才 resolve
   judge(opts = {}) {
     if (opts && opts.mode === 'zones') return this._judgeZones(opts);
     return this._judgeTurf(opts);
   }
 
+  // 【涂地裁判演出】两段式：鼓点期双条同步滚动 + 数字疯狂跳动（>2.3 s 后打问号藏结果），
+  //   然后揭示期回弹到真实占比、计数到真实百分比、盖章胜者。全程走 _addFx 特效时钟
   _judgeTurf({ colors = ['#ff8a14', '#2f5bff'], percents = [50, 50], names = TEAM_NAMES } = {}) {
     return new Promise((resolve) => {
       const [pa, pb] = pct(percents[0], percents[1]);
@@ -613,6 +679,7 @@ export class HUD {
     });
   }
 
+  // 【销毁】退订 resize / rAF / 总线，交还 boss 子模块，移除两个根节点
   dispose() {
     removeEventListener('resize', this._onResize);
     cancelAnimationFrame(this._rafId);
@@ -622,6 +689,8 @@ export class HUD {
   }
 
   // ================================================================ bus: event-driven systems
+  // 【总线事件系统】HUD 的另一条数据通路：不依赖每帧 frame，而是由核心事件直接驱动
+  //   （击杀/受击/涂地/区域控制等）；_bindBus 返回退订函数列表存入 this._unsubs
   _snd(name, o) { try { this.playSound && this.playSound(name, o); } catch (e) { /* optional */ } }
   _live() { if (this.lab) return true; const m = G.match; return !!(m && !m.attract && G.mode === 'match'); }
   _local() { return this.lab ? this.lab.local : G.match?.local || null; }
@@ -629,6 +698,10 @@ export class HUD {
   _now() { return this._fxTime; }
   _specialId() { const a = this._local(); if (a && a.specialId) return a.specialId; const w = a && WEAPONS[a.weaponId]; return w ? w.special : 'slam'; }
 
+  // 【总线订阅清单】逐条对照：turf（累计涂地分）、hit/damage（命中反馈+受击方向）、
+  //   splatted（击杀卡/连杀播报/复仇等）、recoil（准星扩散+墨条晃动）、lowink/special:ready
+  //   （墨条空态/大招就绪闪光）、superjump/sub:cantuse、zones:*（区域控制各阶段）、
+  //   match:state（开局 lineup、is-live、清状态）
   _bindBus() {
     this._unsubs = [
       on('turf', ({ actor, area }) => { if (area > 0 && actor && actor === this._local() && this._live()) { this._turfAcc += area * (MATCH.pointsPerM2 || 1); this._turfTotal += area * (MATCH.pointsPerM2 || 1); } }),
@@ -669,6 +742,8 @@ export class HUD {
     ];
   }
 
+  // 【对局开始重置】match:state  intro 时清掉上一局的涂地计数、击杀簿、方向弧、卡片层、
+  //   区域控制状态，并按模式切 boss HUD，最后播开场队伍 lineup
   _startMatchHud(match) {
     this._turfAcc = 0; this._turfTotal = 0; this._turfShown = 0; this._turfT = 0;
     this._kills = { times: [], streak: 0, first: false, lastKiller: null, dealt: new Map(), perActor: new Map() };
@@ -684,6 +759,10 @@ export class HUD {
     this._lineup(match);
   }
 
+  // 【击杀簿核心】所有 splatted 事件在此分流：自己阵亡（记仇+清方向弧）、自己击杀
+  //   （连杀时间窗 4.2 s 内的 multi 数决定 DOUBLE/TRIPLE/QUAD 播报，另有团灭/首杀/复仇/终结
+  //   连杀/连杀里程碑）、队友击杀但我有助攻（4 s 内造成伤害 → ASSIST 卡）。
+  //   perActor 记录每人当前连杀数，供 SHUTDOWN/复仇判断
   _onSplatted({ victim, attacker }) {
     if (!this._live() || !victim) return;
     const me = this._local();
@@ -726,6 +805,8 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- kill / assist cards + callouts
+  // 【击杀卡 + 播报】准星下方的小卡：受害者名+其武器图标，卡面随机墨花；最多 2 张，
+  //   旧的提前退场。中央 callout 是 WIPEOUT/FIRST SPLAT 等丝带大字
   _killCard(victim, kind) {
     const col = toHex(G.teamHex?.[victim.team], kind === 'assist' ? '#ffffff' : (this._L.cb || '#2f5bff'));
     const card = h('div', { class: `iw-kcard iw-kcard--${kind}` },
@@ -762,6 +843,8 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- intro lineup
+  // 【开场队伍 lineup】overLayer（不可隐藏层）上的 VS 阵容卡：普通模式我方 vs 敌方，
+  //   boss 模式 8 人小队 vs HULLBREAKER；逐张卡片配入场音效，约 3 s 后退场
   _lineup(match) {
     this.overLayer.querySelectorAll('.iw-lineup').forEach((e) => e.remove());
     const actors = (match && match.actors) || this._actors();
@@ -808,6 +891,8 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- damage direction arcs
+  // 【受击方向弧】谁在打你：按攻击者去重最多 6 条弧，复活/超时清除；
+  //   _updDamageDirs 每帧只更新 rotate/opacity（合成层变换，无重排），角度由相机基向量推算
   _addDamageDir(attacker) {
     let d = this._dd.find((x) => x.a === attacker);
     if (!d) {
@@ -847,6 +932,9 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- death markers
+  // 【死亡标记】frame.deaths 是 main.js 的对象池记录（长度固定），第 i 条记录固定对应
+  //   池中第 i 个元素：只更新、不创建。世界视图：鱿鱼骷髅浮在阵亡点上随距离缩小，
+  //   队友名下短暂显示名字；小地图版本见 _updMapDeaths
   // frame.deaths = main.js's pooled records { on, id, team, name, ally, k (fade 1 → 0), vis, sx, sy, sc, mx, my };
   // record i ↔ pool element i, so nothing is created per frame. World view: a squid-skull in the victim's ink floating
   // over the spot, smaller with distance; teammates' names under theirs for the first moments.
@@ -889,6 +977,8 @@ export class HUD {
   _teamHex(t) { return toHex(G.teamHex?.[t], t ? (this._L.cb || '#2f5bff') : (this._L.ca || '#ff8a14')); }
 
   // ---------------------------------------------------------------- Super Jump planned while splatted
+  // 【阵亡时规划超级跳】阵亡卡片底行：未规划时提示"按住 TAB 规划"，在 TAB 大地图上选好
+  //   目标后改为"SUPER JUMP → 名字 — 复活即跳"（frame.jumpQueue = 玩家控制器的计划）
   // The splat screen's line under the card: "Hold TAB to plan a Super Jump" until a target is picked on the TAB map,
   // then "SUPER JUMP → Name — on respawn" (frame.jumpQueue = the player controller's plan, main.js).
   _updSplatJump(q) {
@@ -912,6 +1002,7 @@ export class HUD {
   }
 
   /** A short note over the lower screen — e.g. a Super Jump planned while splatted that had to be called off. */
+  // 【跳跃备注】屏幕下方一条短提示（如已规划的超级跳被取消），2.8 s 自动消失
   jumpNote(text) {
     const el = this.jnote;
     el.textContent = '';
@@ -922,6 +1013,8 @@ export class HUD {
   }
 
   // ================================================================ Zone Control (frame.zones + zones:* events)
+  // 【区域控制】两套数据：帧数据（frame.zones = ZoneControl.state() + viewer，驱动计数器/目标芯片）
+  //   + zones:* 事件（驱动播报与音效）。本节末的 _judgeZones 是终局计数揭晓演出
   // frame.zones = ZoneControl.state() + { viewer } (main.js). Counters: team 0 on the left (self colours), team 1 on the
   // right, each showing its count (ceil'd; the score), a "+N" penalty badge and a bar that fills toward the timer as the
   // count closes on 0 (the striped block ahead of it = penalty to count off before the count moves again). The chip under the timer names the operational
@@ -932,6 +1025,8 @@ export class HUD {
   _zHex(t) { return t === 0 || t === 1 ? toHex(G.teamHex?.[t], t ? '#2f5bff' : '#ff8a14') : '#ffffff'; }
   _zLabel(id, me) { return id === 'center' ? ZONE_LABEL.center : (id === 'sideA' ? 0 : 1) === me ? ZONE_LABEL.home : ZONE_LABEL.away; }
 
+  // 【区域控制每帧更新】开关整组、双侧计数器（分数+罚分徽章+进度条，脏检查 key 含
+  //   分数/罚分/持有态）、目标芯片（分区图标按持有方着色、墨水占比刻度、轮换提示/加时徽标）
   _updZones(z, dt) {
     const L = this._L;
     const on = !!z;
@@ -1020,6 +1115,7 @@ export class HUD {
   }
 
   // transient zone call-outs (stacked under the kill call-outs; newest on top, at most two)
+  // 【区域播报】击杀播报下方的小一号丝带：控制得失/罚分/轮换等；最多 2 条，最新在顶
   _zCall(text, { team = -1, sub = null, kind = '', small = false } = {}) {
     const el = h('div', { class: 'iw-zcall' + (small ? ' is-small' : '') + (kind ? ` is-${kind}` : '') + (team < 0 ? ' is-neutral' : '') },
       h('span', { class: 'iw-zcall__ribbon' }),
@@ -1032,6 +1128,7 @@ export class HUD {
     setTimeout(() => el.remove(), 3200);
     this.zcalls.prepend(el);
   }
+  // 【区域横幅】加时等全场级横幅复用中央 TIME'S UP 版式（双色墨花）
   _zBanner(text) {
     this.bannerLayer.querySelectorAll('.iw-bn[data-g="center"]').forEach((b) => b.remove());
     const el = h('div', { class: 'iw-bn iw-bn--timesup iw-bn--ot' },
@@ -1044,6 +1141,8 @@ export class HUD {
     this.bannerLayer.appendChild(el);
   }
 
+  // 【控制得失播报】zones:control：四种情形各配一句呼喊 + 一条音效（我方取得/对方取得/
+  //   我方失守/对方失守）；轮换瞬间的控制变化由 ZONE SHIFTED 统一播报，这里跳过
   _zControl({ owner, prev, objective }) {
     if (!this._zLive()) return;
     if (this._zObj && objective && objective !== this._zObj) return;   // a rotation resets control: ZONE SHIFTED says it
@@ -1054,12 +1153,15 @@ export class HUD {
     else if (prev === me) { this._zCall('WE LOST CONTROL!', { team: them, kind: 'bad' }); this._snd('zone_lost'); }
     else if (prev === them) { this._zCall('THEY LOST CONTROL!', { team: me, small: true }); this._snd('zone_broken'); }
   }
+  // 【罚分播报】zones:penalty：被计入罚分的一方弹出"+N"小播报；我方音量大音调低（坏消息）
   _zPenalty({ team, penalty }) {
     if (!this._zLive() || !(penalty > 0) || (team !== 0 && team !== 1)) return;
     const me = this._zMe();
     this._zCall(t('PENALTY +{n}', { n: Math.round(penalty) }), { team, sub: team === me ? 'WE COUNT IT OFF FIRST' : 'THEY COUNT IT OFF FIRST', small: true, kind: 'pen' });
     this._snd('zone_penalty', { volume: team === me ? 0.9 : 0.65, pitch: team === me ? 0.94 : 1.06 });
   }
+  // 【目标激活/轮换】zones:active：最后 30 秒锁定中央（FINAL 30 横幅）；目标真的移动时
+  //   播 ZONE SHIFTED 播报、音效并让芯片抖动一下（moved === false 只是刷新数据）
   _zActive({ objective, final, moved }) {
     if (!this._zLive()) return;
     this._zObj = objective;
@@ -1070,16 +1172,20 @@ export class HUD {
     if (!final) this._snd('zone_shift');
     this._restart(this.zo, 'is-moved');
   }
+  // 【加时开始】全场横幅 + 音乐切加时主题
   _zOvertime() {
     if (!this._zLive()) return;
     this._zBanner('OVERTIME!');
     this._snd('zone_overtime');
     G.music?.setOvertime?.(true);
   }
+  // 【区域模式结束】音乐恢复；KO（一队数到 0）记下时间戳，随后 4 秒内 TIME'S UP 横幅改读 KNOCKOUT!
   _zEnd({ reason }) {
     G.music?.setOvertime?.(false);
     if (reason === 'knockout' && this._zLive()) this._zKO = performance.now();
   }
+  // 【单个分区换手】zones:zone：芯片上对应分区图标翻个面；双分区中心每次换手给一声轻滴答
+  //   （整个目标完成时的正式播报由 zones:control 负责）
   _zZone({ zone, owner }) {
     if (!this._zLive() || !zone || !G.match?.zones) return;
     const zs = G.match.zones.active.zones, i = zs.indexOf(zone);
@@ -1094,6 +1200,8 @@ export class HUD {
   //   { mode: 'zones', colors, names, counts: [a, b], penalty: [a, b], winner, reason, overtime }
   //   counts are the scores (ZoneControl.state().count / match.result.counts); penalty is what each team still had to
   //   count off, shown apart (a hatched block ahead of the bar) — it isn't part of the score
+  // 【区域终局揭晓】FINAL COUNT：双方数字从 100 同步滚到终值（滚动期配滴答音），
+  //   然后盖章胜者；KO 局额外盖 KNOCKOUT! 章。罚分以斜纹块单独画在条前，不计入分数。约 3.8 s 后 resolve
   _judgeZones({ colors = ['#ff8a14', '#2f5bff'], names = TEAM_NAMES, counts = [100, 100], penalty = [0, 0], winner = null, reason = null, overtime = false } = {}) {
     return new Promise((resolve) => {
       const ca = toHex(colors[0], '#ff8a14'), cb = toHex(colors[1], '#2f5bff');
@@ -1164,6 +1272,10 @@ export class HUD {
   }
 
   // ================================================================ per-frame pieces
+  // 【每帧小件】update() 依次调用的子更新函数；每个都以 this._L 做脏检查缓存，frame 里
+  //   没有对应字段时尽量早退，保证 HUD 不是帧耗时大户
+  // 【计时器】文本按秒变化才重写（fmtTime）；最后 60 s 变"最后一分钟"态、最后 10 s 变
+  //   "终盘"态并伴随弹跳动画
   _updTimer(time) {
     if (time == null) return;
     const L = this._L;
@@ -1179,6 +1291,7 @@ export class HUD {
     if (last !== L.lastMin) { L.lastMin = last; this.timer.classList.toggle('is-last', last); }
   }
 
+  // 【喝彩气泡】"Yeah!" 信号的气泡池（8 个）：升起 + 渐隐 + 弹出缩放，纯 transform/opacity
   _updCheers(list) {
     const els = this.cheerEls;
     for (let i = 0; i < els.length; i++) {
@@ -1193,6 +1306,7 @@ export class HUD {
   }
 
   // world → NDC without three.js (camera matrices are plain arrays); used by the boss HUD's markers (hud-boss.js)
+  // 【世界坐标投影】不引 three.js，直接拿相机矩阵数组做视图×投影乘法（boss HUD 的标记在用）
   _project(cam, x, y, z) {
     const v = cam.matrixWorldInverse.elements, p = cam.projectionMatrix.elements;
     const ex = v[0] * x + v[4] * y + v[8] * z + v[12], ey = v[1] * x + v[5] * y + v[9] * z + v[13], ez = v[2] * x + v[6] * y + v[10] * z + v[14];
@@ -1202,6 +1316,8 @@ export class HUD {
   }
 
   // online you can be on Bravo: the HUD is drawn from your side (your squad left, your colour as "self")
+  // 【以我为准】在线模式你可能在 Bravo 队：HUD 一律按"我方在左、我方色 = self"绘制，
+  //   _actorFor 用异或把 UI 侧换算成真实队伍号
   _myTeam() { return G.local && G.local.team === 1 ? 1 : 0; }
   _actorFor(side, i) {
     const team = side ^ this._myTeam();
@@ -1209,6 +1325,9 @@ export class HUD {
     return list[i] || null;
   }
 
+  // 【顶栏队伍徽章】每格 key = 存活|复活秒|大招就绪|是自己|武器；变了才更新类与文案。
+  //   阵亡时播翻转动画并把复活秒数写进 SVG 环的 animation-duration（环转一圈 = 复活时间）；
+  //   复活/就绪各有独立的小弹出动画
   _updSquads(teams) {
     const L = this._L;
     for (let t = 0; t < 2; t++) {
@@ -1246,6 +1365,10 @@ export class HUD {
     }
   }
 
+  // 【准星重建】换武器（或 kind 映射后）才整体重写 innerHTML：每种武器族一套 SVG
+  //   （蓄力环/爆裂圈/滚筒括号/双枪双圈/水桶抛物线/旋转枪蓄能格/弓双环+扇形箭/
+  //   拳套括弧+跳跃蓄能条/伞面血条+发射弧/双枪双体/刀锋月牙+斩击弧），默认小圈+四刻度。
+  //   注意 kit 武器借穿别族的准星（见 RETICLE_OF）。重建后清空相关脏检查缓存
   _buildReticle(kind) {
     const r = this.ret;
     r.className = `iw-ret iw-ret--${kind}`;
@@ -1336,6 +1459,10 @@ export class HUD {
     this._L.planted = null; this._L.lock = null; this._L.roll = null; this._L.streaming = null; this._L.bk = null; this._L.charging = null;
   }
 
+  // 【准星每帧更新】武器切换时重建；扩散 = 引擎上报的散布 + 后坐事件叠加的 bloom/单发 kick
+  //   （阈值 0.25px 才写 CSS 变量，避免每帧改样式）；各 kind 的蓄能/锁定/状态类只做翻转；
+  //   伞与拳套直接读本地武器 runner 的 kit 状态。其余：大招图标、目标命中态、超射程态、
+  //   出生护盾、副武器瞄准芯片（含墨量充足与否的着色）
   _updCrosshair(f, dt) {
     const L = this._L;
     const w = f.weapon || 'shooter';
@@ -1474,6 +1601,9 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- ink tank (canvas, sloshing liquid)
+  // 【墨量条】驱动量：低墨/不够副武器两个类、满墨静置 1.4 s 后隐藏（省绘制）；
+  //   摇晃由"视角角速度 + 本地玩家侧向加速度"驱动一个弹簧振子（kS/cS 刚度阻尼）；
+  //   回墨时冒气泡；液位本身做指数平滑。只有状态非静止时才真正重绘（_drawTank）
   _updTank(f, dt) {
     const L = this._L, T = this._tank;
     const ink = clamp(f.ink == null ? 1 : +f.ink);
@@ -1513,6 +1643,9 @@ export class HUD {
     this._drawTank(dt, sub, low, nosub);
   }
 
+  // 【墨条重绘】canvas 2D：DPR 上限 2；玻璃瓶身 Path2D 与横向渐变只在尺寸/颜色变化时重建
+  //   （_tankCache），液面是 10 段折线近似正弦波 + 摇晃倾角，副武器消耗画一条白/红线，
+  //   低墨时外框红闪。整张画布极小（约 18×74 CSS px），绘制成本可忽略
   _drawTank(dt, sub, low, nosub) {
     const T = this._tank, c = this.tankCtx, cv = this.tankCanvas;
     const dpr = Math.min(2, devicePixelRatio || 1);
@@ -1584,6 +1717,8 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- special gauge
+  // 【大招槽】液面球 translateY 随百分比升降（阈值 0.002 防抖）；突然涨一截时播 is-gain 脉冲；
+  //   就绪时弹大一下 + 光芒射线（is-flare）；激活中切 is-active（液面特效由 CSS 接管）
   _updSpecial(f, dt) {
     const L = this._L;
     const s = clamp(+f.special || 0);
@@ -1613,6 +1748,8 @@ export class HUD {
 
   // ---------------------------------------------------------------- sub badge (on the special orb) + "Can't use"
   // frame.subKind (Bomb Barrage: its bomb), frame.subCost (0..1 of the tank; 0 = free during a barrage), frame.ink
+  // 【副武器徽章】叠在大招球左下的小圆盘：图标随副武器切换，外圈按"当前墨量/消耗"填充，
+  //   墨不够时压暗（攒够会 pop 一下），轰炸期间消耗为 0 显示免费态；瞄准时高亮
   _updSubBadge(f) {
     const L = this._L, B = this.subBadge;
     const kind = f.subKind || 'bomb';
@@ -1642,6 +1779,8 @@ export class HUD {
 
   // a sub refused the throw (sub:cantuse — e.g. a Torpedo or Boomerang already out): a callout where the aim chip was,
   // the badge shakes, a soft deny bonk
+  // 【"无法用"提示】副武器被拒（如场上已有同款）：瞄准位弹出 CALL 提示 + 徽章抖动 + 柔和报错音；
+  //   140 ms 去抖避免连按刷屏
   _cantUse(kind) {
     const now = performance.now();
     if (now - (this._denyT || -1e9) < 140) return;
@@ -1654,6 +1793,8 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- turf ticker
+  // 【涂地计数】事件累计的分数攒批弹出（0.4 s 或攒够 40p 就弹 "+Np" 小泡，最多 4 个）；
+  //   右上角总分以指数追赶真实值，文本变化才写 DOM
   _updTurf(dt) {
     this._turfT += dt;
     if (this._turfAcc > 0 && (this._turfT > 0.4 || this._turfAcc > 40)) {
@@ -1681,6 +1822,8 @@ export class HUD {
     this._restart(this.turfEl, 'is-tick');
   }
 
+  // 【低血量暗角】血低于 0.42 开始显暗角、低于 0.2 进入危急红脉动；
+  //   挂了 ScreenFX 则全跳过（由 fx 接管）
   _updHp(hp) {
     const L = this._L;
     const v = clamp(hp == null ? 1 : +hp);
@@ -1691,6 +1834,9 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- minimap + super jump
+  // 【小地图每帧更新】展开态由帧数据 m.expanded + 对局状态决定；尺寸/位置走一个弹簧
+  //   （_mapT/_mapV 阻尼插值），只有变化才写 transform/宽高（避免每帧重排）；
+  //   8 个玩家圆点池 + 死亡标记 + 信标。TAB 大地图仅在 playing 状态真正打开
   _updMap(m, dt) {
     const L = this._L, M = this._map;
     const show = !!(m && m.canvas);
@@ -1770,6 +1916,9 @@ export class HUD {
   }
 
   // beacon targets: allies in actor order (same numbering as the player controller), then the base spawn pad
+  // 【信标目标表】10 个槽：3 名队友（actor 顺序与玩家控制器编号一致）+ 出生点 + 至多 6 个
+  //   队伍跳跃信标（按投放先后，与数字键一致）；每个目标带画布归一化坐标、可跳与否、
+  //   复活倒计时等。lab 模式直接取测试桩
   _beaconTargets() {
     const me = this._local();
     const out = new Array(NB).fill(null);
@@ -1795,6 +1944,9 @@ export class HUD {
     return out;
   }
 
+  // 【信标每帧更新】只在地图展开过程中可见；指针锁定时用鼠标增量驱动虚拟光标并磁吸到
+  //   最近信标（点击/数字键即跳，按键闪烁反馈）；重叠信标做 6 轮松弛推开（圆盘摆开、
+  //   茎线指向真实位置）；悬停时画一条到己方的虚线跳跃弧线。每个元素 key 变化才写样式
   _updBeacons(bw, bh, dt, u = 16) {
     const M = this._map, L = this._L;
     const vis = this._mapT > 0.02;
@@ -1870,6 +2022,7 @@ export class HUD {
     }
   }
 
+  // 【图例行】大地图左侧图例：键帽、武器图标、名字、状态（READY/复活秒数/BUSY），同样 key 去重
   _updLegendRow(i, b, canJump) {
     const row = this.legendRows[i], M = this._map;
     const key = b ? `${b.name}|${b.weapon || ''}|${b.ok ? 1 : 0}|${b.respawn || 0}|${M.hover === i ? 1 : 0}|${canJump ? 1 : 0}` : 'x';
@@ -1885,6 +2038,8 @@ export class HUD {
     row.classList.toggle('is-hover', M.hover === i && b.ok && canJump);
   }
 
+  // 【执行跳跃】信标点击/数字键/光标确认统一入口：目标不可跳或控制器拒绝时播报错音；
+  //   lab 模式回调测试桩
   _jumpTo(i) {
     const tg = this._beaconTargets()[i];
     if (!tg || !tg.ok) { this._snd('ui_error', { volume: 0.5 }); return; }
@@ -1896,6 +2051,9 @@ export class HUD {
     if (!ok) this._snd('ui_error', { volume: 0.5 });
   }
 
+  // 【屏外盟友标记】8 个标记池：按 frame.markers 放置；名字→actor 的映射只在演员表
+  //   变化时重建；在屏内显示标签、屏外显示指向箭头（角度由 frame 提供）；特殊状态
+  //   （大招就绪/被追踪）各有角标。key 串含位置/名字/颜色/状态，变了才写 DOM
   _updMarkers(ms) {
     const L = this._L;
     ms = ms || [];
@@ -1935,6 +2093,8 @@ export class HUD {
     }
   }
 
+  // 【交互提示条】屏幕中下部的"按 E 做某事"：frame.prompt 每帧是新建的描述对象，
+  //   所以按内容 key（msgKey）比对而不是引用；变化时重写并播入场动画
   _updPrompt(p) {
     const L = this._L;
     const v = p || null;
@@ -1947,6 +2107,7 @@ export class HUD {
     this.promptEl.animate([{ transform: 'translateX(-50%) translateY(12px) scale(.85)', opacity: 0 }, { transform: 'translateX(-50%) translateY(0) scale(1)', opacity: 1 }], { duration: 380, easing: 'cubic-bezier(.34,1.56,.64,1)' });
   }
 
+  // 【FPS 计数】0.25 s 刷新一次文本，低于 45 标红
   _updFps(fps, dt) {
     const L = this._L;
     const has = fps != null && isFinite(fps);
@@ -1960,6 +2121,9 @@ export class HUD {
   }
 
   // ================================================================ effects loop (self-driven so it works while paused / after the match)
+  // 【自驱动特效时钟】独立 rAF 循环：主循环暂停（暂停菜单/裁判时）或对局结束后，
+  //   阵亡倒计时、裁判演出、墨渍这些"自愈特效"仍能走。timeScale 供调试慢放；
+  //   特效函数返回 false 即注销，空表时停掉循环省电
   _addFx(name, fn) {
     this._fxMap = this._fxMap || new Map();
     this._fxMap.set(name, fn);
@@ -1974,11 +2138,15 @@ export class HUD {
     for (const [name, fn] of this._fxMap) { let keep = true; try { keep = fn(dt) !== false; } catch (e) { console.error('[hud]', e); keep = false; } if (!keep) this._fxMap.delete(name); }
     this._rafId = this._fxMap.size ? requestAnimationFrame(this._fxLoop) : 0;
   }
+  // 【重启动画 trick】先强制 reflow（读 offsetWidth）再换类，让 CSS 动画从头播；
+  //   这是文件里少数故意同步读布局的地方，只发生在事件瞬间而非每帧
   _restart(el, cls) {
     el.classList.remove(cls);
     void el.offsetWidth; // eslint-disable-line no-void
     el.classList.add(cls);
   }
+  // 【信息流退场】滑出后高度收拢为 0（先记录 offsetHeight 让 Web Animations 能过渡 height），
+  //   动画结束移除节点
   _expireFeed(el, fast) {
     if (el._out) return;
     el._out = true;
@@ -1994,12 +2162,16 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- damage smears (fallback when ScreenFX is absent)
+  // 【墨渍画布】全屏 0.6 倍分辨率画布：受伤时把程序化墨花（splatShape）预渲染成小位图
+  //   （带阴影偏移、高光渐变与滴点），每帧只画拉伸的墨滴 + 位图，最后 0.65 s 淡出
   _resizeCanvas() {
     const s = 0.6;
     const w = Math.max(2, Math.round(innerWidth * s)), hh = Math.max(2, Math.round(innerHeight * s));
     if (this.canvas.width !== w || this.canvas.height !== hh) { this.canvas.width = w; this.canvas.height = hh; }
     this._cs = s;
   }
+  // 【生成单个墨渍】有攻击方向时甩向屏幕对应边缘（避开准星下方区域），否则随机四边；
+  //   每滴带 1-3 条下坠墨滴，生命 1.35 s 起
   _spawnSmear(amount, hex, angle = null) {
     const W = this.canvas.width, H = this.canvas.height, m = Math.min(W, H);
     const r = m * (0.06 + Math.random() * 0.045) * (0.7 + amount * 0.75);
@@ -2042,6 +2214,8 @@ export class HUD {
     for (let i = 0; i < nd; i++) drips.push({ dx: (Math.random() - 0.5) * r * 1.1, len: 0, max: r * (0.6 + Math.random() * 1.4), sp: r * (0.35 + Math.random() * 0.6), w: r * (0.09 + Math.random() * 0.08) });
     this._smears.push({ x, y, r, img: oc, S, hex, drips, age: 0, life: 1.35 + amount * 0.6 + Math.random() * 0.3, rot: 0 });
   }
+  // 【墨渍每帧绘制】清屏 → 逐个画滴落（长度按速度增长、顶端圆头）→ 弹出缩放画位图；
+  //   全部死光后返回 false 注销本特效并最后清一次屏
   _tickSmears(dt) {
     const c = this.ctx, W = this.canvas.width, H = this.canvas.height;
     c.clearRect(0, 0, W, H);
@@ -2072,4 +2246,5 @@ export class HUD {
 }
 
 // reduced motion: the CSS handles most of it; expose for callers that want to skip heavy one-shots
+// 【无障碍】系统开了"减弱动态效果"时导出 true，调用方可跳过重型一次性动画（CSS 部分已由样式表处理）
 export const hudReducedMotion = prefersReducedMotion;

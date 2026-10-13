@@ -1,3 +1,27 @@
+// ====================================================================================================
+// 中文导读 —— 码头船只道具外挂包(props-marina-vessels.js)
+//
+// 【这是什么】"Halyard Marina" 码头关卡(HALYARD)的船只/码头大件道具库。与主 props.js 同源同规约
+//   (米制、Y 轴向上、海面 y = -1.6),但单独成文件,避免主文件膨胀。两种"外挂包"合作方式:
+//   1) 类型注册:registerMarinaVessels(D, H) 向 PropKit 的类型表 D 注入 30+ 种类型
+//      (ferry_* 渡轮四件套、tug_* 拖船三件、houseboat_dress 船屋、yacht_sail / yacht_motor /
+//      boat_fishing / boat_rib 四种水中小船、marina_pontoon 浮桥、marina_gate 码头大门、
+//      dinghy_trailer 拖车小艇等);
+//   2) 点位导出:文件底部的 HALYARD_VESSELS 数组以 dressing.js 同款格式导出全部摆放,
+//      由注册方合并进舞台装饰(stage dressing)。
+//
+// 【注册与回滚】registerMarinaVessels 是 props.js 的普通函数调用,不是 import 副作用:
+//   若注册流程中途失败,已注入的 D.* 键随类型表一起被丢弃,天然支持安全重试/回滚。
+//
+// 【与主 props.js 的分工】主 props.js 管"码头陆域"通用道具(箱子、脚手架、桌椅等);
+//   本包只管"船"和"船边大件",且大量知识写在注释里:每张可玩墙的碰撞盒、rail 碰撞条
+//   (挡小孩不挡子弹/墨水/鱿鱼)的贴面距离、以及"面/碰撞采样避开甲板"的避让逻辑。
+//   关键工程约定:可玩墙面上的细节件离面 ≤ 0.12 m、永不盖住地面;碰撞只出现在
+//   docs/HALYARD.md 列出的 cover 件上,或真正实心且不在通道上的道具上。
+//
+// 【镜像约定】HALYARD_VESSELS 里每个点位都会被地图的 180° 旋转镜像(除非 mirror: false),
+//   所以 ferry_hull / ferry_cabin 这类"半边"道具只装修一侧长边 + 一端,镜像副本补另一侧。
+// ====================================================================================================
 // Halyard Marina — vessel prop pack (owner: vessels stream). Detail meshes that dress the playable vessel blocks of
 // the HALYARD layout (ferry, tug on blocks, houseboat, dinghy) plus the non-playable moored boats around the arena.
 // Registered into the PropKit by props.js; placements are exported below and merged into the stage dressing.
@@ -12,6 +36,7 @@ export function registerMarinaVessels(D, H) {
   const { THREE, PI, TAU, HP, P3, col, shade, mixc, extrudeGeo, TIRE, LIFERING } = H;
 
   // ================================================================================================ palette
+  // 【调色板】沉旧船用油漆色系;只在地标处(渡轮烟囱、拖船、船名)用大胆撞色。
   // Muted, weathered marine paints; bold accents only on landmarks (ferry funnel, tug, lettering).
   const C = {
     hull: '#3f5372', hullDk: '#34455f', hullLt: '#4b6182', boot: '#b04a3f', bootDk: '#8e3a31',
@@ -24,6 +49,8 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ================================================================================================ geometry kit
+  // 【几何工具箱】本地模板缓存(CPU 侧几何,像 props.js 模板一样由 kit 合并)。纯代码建模的根基:
+  // 小平面细节用廉价图元(12 三角的盒子、低分段圆柱),复杂曲面用 MB/gridSurface/sweep 手搓。
   // Local template cache (CPU-side geometry, merged by the kit like props.js templates).
   const CACHE = new Map();
   const cached = (key, fn) => { let g = CACHE.get(key); if (!g) { g = fn(); CACHE.set(key, g); } return g; };
@@ -36,6 +63,7 @@ export function registerMarinaVessels(D, H) {
   const ucylO = (seg) => cached('ucylO|' + seg, () => new THREE.CylinderGeometry(1, 1, 1, seg, 1, true));
   const post = (B, mat, c, r, h, x, y, z, o = {}) => B.add(mat, ucylO(o.seg ?? 6), c, x, y, z, { ...o, sx: r, sy: h, sz: r });
 
+  // 【救生圈】珊瑚红/白四象限顶点色直接烘进几何,朝 +Z。约 290 三角。
   // Ring buoy (coral/white quarters baked in vertex colour), faces +Z. ≈ 290 tris.
   const RINGBUOY = (() => {
     const g = new THREE.TorusGeometry(0.28, 0.068, 6, 24), P = g.attributes.position, cl = new Float32Array(P.count * 3);
@@ -49,6 +77,8 @@ export function registerMarinaVessels(D, H) {
     for (let k = 0; k < 4; k++) { const a = PI / 4 + (k / 4) * TAU; B.tor('rubber', C.cream, 0.075 * s, 0.011, x + Math.cos(a) * 0.28 * s, y + Math.sin(a) * 0.28 * s, z, { rz: a, ry: HP, rs: 3, ts: 8 }); }
   }
 
+  // 【阴影预算】细节件、细线、小五金和场外全部物件进 kit 的"无阴影桶"
+  // (H.noShadow(mat) → 'mat~ns':同材质、永不投影),省阴影 pass 开销;kit 不支持时回退普通桶。
   // Shadow-pass budget: flush detail, thin lines, small fittings and everything outside the arena go into the kit's
   // no-shadow buckets (H.noShadow(mat) → 'mat~ns': same material, never casts). Falls back to the plain bucket.
   const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
@@ -59,6 +89,8 @@ export function registerMarinaVessels(D, H) {
     try { fn(); } finally { if (own) B.add = prev; else delete B.add; }
   }
 
+  // 【MB:逐顶点着色的网格构建器】三角形绕向自动与给定法线对齐(同 props.js 的 GB)。
+  // 三角自动翻面保证法线朝外,是本包所有"手搓曲面"(船体、烟囱、帆布)的基础。
   // Mesh builder with per-vertex colour; triangles auto-orient to agree with the supplied normals (like props.js GB).
   class MB {
     constructor() { this.p = []; this.n = []; this.c = []; this.i = []; }
@@ -90,6 +122,8 @@ export function registerMarinaVessels(D, H) {
     }
   }
 
+  // 【网格曲面】由点行构造网格面(rows[i][j] = [x,y,z]);法线取网格平滑值,
+  // 并用 ref(i,j)(返回实体内部一点的函数)统一翻向朝外;可选逐顶点配色函数。
   // Grid surface from rows of points (rows[i][j] = [x,y,z]); smooth normals from the grid, oriented away from `ref(i,j)`
   // (a function returning a point inside the solid). Optional per-vertex colour fn(x,y,z,i,j) → THREE.Color.
   function gridSurface(mb, rows, ref, colorFn, closedJ = false) {
@@ -115,6 +149,7 @@ export function registerMarinaVessels(D, H) {
     return ids;
   }
 
+  // 【平面多边形】凸或简单多边形铺在一个平面上:pts [[x,y,z]],法线 n。先投影到主平面上三角化。
   // Flat polygon (convex or simple) in a plane: pts [[x,y,z]], normal n.
   function polyFan(mb, pts, n, c) {
     const ids = pts.map((p) => mb.v(p[0], p[1], p[2], n[0], n[1], n[2], c));
@@ -126,6 +161,8 @@ export function registerMarinaVessels(D, H) {
     for (const t of tris) mb.tri(ids[t[0]], ids[t[1]], ids[t[2]]);
   }
 
+  // 【扫掠 sweep】把闭合 2D 截面(在路径法平面内:[u = 侧向, v = 向上])沿 3D 折线
+  // 平行移动标架扫出实体;两端封口;截面急转角处产生硬折边(船用扶手、护舷的通用件)。
   // Sweep a closed 2D profile (in the path's normal plane: [u = side, v = up]) along a 3D polyline with parallel-transport
   // frames; `up` seeds the frame. Caps the ends flat. Creases where the profile turns sharply.
   function sweep(profile, path, up = [0, 1, 0], caps = true) {
@@ -172,6 +209,7 @@ export function registerMarinaVessels(D, H) {
     }
     return mb.geo();
   }
+  // 圆角矩形截面(u 半宽, v 半高, 圆角半径),以 0 为中心
   // rounded-rectangle profile (u half-width, v half-height, radius) centred on 0
   function rrectProf(hw, hh, r, k = 3) {
     r = Math.min(r, hw * 0.98, hh * 0.98);
@@ -179,6 +217,8 @@ export function registerMarinaVessels(D, H) {
     for (const [cx, cy, a0] of cs) for (let i = 0; i <= k; i++) { const a = a0 + (i / k) * HP; out.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
     return out;
   }
+  // 【D 形护舷截面】平底贴在 u = 0、朝 -u 一面,鼓包朝 +u 伸出 d,总高 h(v 从 -h/2 到 h/2)。
+  // 渡轮舷侧黑胶护舷带、拖船护舷都用这个截面沿船身扫掠。
   // D-section fender profile: flat back on u = 0 facing -u… bulge toward +u by `d`, height h (v from -h/2..h/2)
   function dProf(d, h, n = 7) {
     const out = [[0, -h / 2]];
@@ -188,6 +228,9 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------------ stroke lettering
+  // 【手绘描边字库】"招牌匠"风格的块状字母表(八边形接头,读感像刷漆/焊接的船用字)。
+  // 字高 1;每个字形 = [进宽, ...折线集];末点等于首点的折线视为闭合环。没有贴图,
+  // 船名/港籍/警示字样全部用这套矢量字直接挤出几何。
   // A sign-writer's block alphabet (octagonal joins read as painted/welded marine lettering). Cap height 1; each glyph:
   // [advance width, ...polylines]; a polyline whose last point equals its first is closed.
   const FONT = {
@@ -233,6 +276,8 @@ export function registerMarinaVessels(D, H) {
     '·': [0.04, [[0, 0.46], [0, 0.54]]],
   };
 
+  // 【单条折线的斜接飘带】(XY 平面,正面在 z = d,背面敞开)。t = 笔画宽度;
+  // 转角处做斜接/斜切,端部封口,形成有厚度的"挤出的笔画"。
   // Mitred ribbon for one polyline (in XY, front face at z = d, open back). t = stroke width.
   function strokeRibbon(mb, pts, t, d, c) {
     let closed = pts.length > 2 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
@@ -274,6 +319,7 @@ export function registerMarinaVessels(D, H) {
       mb.quad(q0, q1, q2, q3);
     }
   }
+  // 【文字几何】XY 平面、面朝 +Z:基线 y = 0,大写高 h,x = 0 居中(align 'c')或左 'l' / 右 'r'。
   // Text geometry in the XY plane facing +Z: baseline y = 0, cap height h, centred on x = 0 (align 'c') or left 'l' / right 'r'.
   function textGeo(str, h, o = {}) {
     const t = (o.weight ?? 0.15) * h, d = o.depth ?? 0.012, sp = (o.spacing ?? 0.24) * h, align = o.align ?? 'c';
@@ -297,12 +343,14 @@ export function registerMarinaVessels(D, H) {
       return geo;
     });
   }
+  // 【文字落位】(x,y,z) = 基线中心;ry 转动 +Z 朝向的字(0 → +Z,PI → -Z …)。
   // Place text on a plane: (x,y,z) = baseline centre, ry turns the +Z-facing text (0 → faces +Z, PI → faces -Z …)
   function text(B, str, h, c, x, y, z, o = {}) {
     B.add(ns(B, o.mat || 'paint'), textGeo(str, h, o), c, x, y, z, { ry: o.ry ?? 0, rx: o.rx ?? 0, rz: o.rz ?? 0 });
   }
 
   // ------------------------------------------------------------------------------------------------ ropes
+  // 【绳索】a 到 b 之间的悬链线(中垂 sag 米,自弦线向下量),用圆管挤出。
   // Catenary-ish rope between a and b (sag metres at mid-span, measured below the chord) as a tube.
   function ropePts(a, b, sag, n = 18) {
     const out = [];
@@ -315,6 +363,8 @@ export function registerMarinaVessels(D, H) {
   function rope(B, a, b, sag, r = 0.03, c = C.rope, n = 18) { B.tube(ns(B, 'rubber'), c, ropePts(a, b, sag, n), r, { radial: 6 }); }
 
   // ------------------------------------------------------------------------------------------------ wear + small parts
+  // 【做旧水渍】墙面风化淌痕(本地平面 z = 0,朝 +Z):上窄下宽的渐隐四边形,
+  // 顶部颜色 c0 向下渐变成 c1——锈水、浪花渍、补漆打磨痕都靠它。
   // Weathering streak on a wall (local plane z = 0, facing +Z): tapered quad fading from `c0` at the top into `c1`.
   function streakGeo(w, h, c0, c1) {
     return cached(['streak', w, h, c0, c1].join('|'), () => {
@@ -327,6 +377,7 @@ export function registerMarinaVessels(D, H) {
   }
   function streak(B, x, y, z, w, h, c0, c1, ry = 0) { B.add(ns(B, 'paint'), streakGeo(w, h, c0, c1), 'white', x, y, z, { ry }); }
 
+  // 【零件烘焙】把带变换的若干模板零件烘成一块统一配色的几何(给 kit 的旋转模板用,如雷达)。
   // Bake transformed template parts into one coloured geometry (for kit spinner templates).
   function bakeParts(parts) {
     let nv = 0, ni = 0;
@@ -357,6 +408,7 @@ export function registerMarinaVessels(D, H) {
     return g;
   }
   const M4 = (x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')), new THREE.Vector3(sx, sy, sz));
+  // 【雷达天线模板】开口阵列天线(绕 +Y 在原点旋转):缝隙波导横杆 + 端帽 + 旋转毂。
   // Open-array radar antenna (spins about +Y at the origin): slotted waveguide bar with end caps + turning hub.
   function radarTemplate(len) {
     const parts = [];
@@ -366,6 +418,7 @@ export function registerMarinaVessels(D, H) {
     parts.push({ g: H.latheGeo([[0, 0], [0.09, 0], [0.09, 0.09], [0.06, 0.12], [0, 0.12]], 12), m: M4(0, -0.02, 0), c: C.whiteDk });
     return bakeParts(parts);
   }
+  // 【雷达放置】优先走 kit 的旋转模板注册表(H.spinTemplate)让天线真转;kit 不支持就退化为静态天线。
   // Spinner via the kit's pack template registry (H.spinTemplate); a static antenna if the kit can't spin.
   function radar(B, x, y, z, len, speed) {
     const kind = 'hv_radar' + Math.round(len * 10);
@@ -376,11 +429,18 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ================================================================================================ FERRY "HALYARD"
+  // 【渡轮"HALYARD"】本包最大件。可玩方块(maps.js 定义碰撞真值):
+  // 船体 x ±16, z ±5, y -1.9…1.1;甲板面到 1.3;客舱 x ±6.5, z ±2.9 到 3.8(日光甲板);
+  // 驾驶台 x ±1.5, z ±1.6 到 5.2;舷墙 z ±(4.6…5) 到 2.0,|x| < 1.8 开口;楼梯;
+  // 跳板落点 x 13.8…16, z -4.6…-2.6(Alpha 侧)。
+  // ferry_hull 装修 -Z 侧长边 + +X 端(镜像副本装修 +Z 侧 + -X 端)。
   // Blocks (maps.js): hull x ±16, z ±5, y -1.9…1.1; deck plate to 1.3; cabin x ±6.5, z ±2.9 to 3.8 (sun deck);
   // wheelhouse x ±1.5, z ±1.6 to 5.2; bulwarks z ±(4.6…5) to 2.0, open at |x| < 1.8; stairs; plank lands x 13.8…16,
   // z -4.6…-2.6 (Alpha). ferry_hull dresses the -Z side + the +X end (mirror copy: +Z side + -X end).
   const FZ = -5, FX = 16, DECK = 1.3;
 
+  // 【无杆锚(Hall 锚)剪影】锚杆、锚冠与两只翘起的锚爪,挤出 + 倒角。
+  // 挂在 XY 平面内建模(锚环 y = 0,锚冠 y ≈ -1.0),板法线 +Z,厚度朝 +Z。
   // Stockless (Hall) anchor silhouette: shank, crown and two raised flukes, extruded + bevelled. Built hanging in the
   // XY plane (shackle at y = 0, crown at y ≈ -1.0), plate normal +Z, thickness toward +Z.
   const ANCHOR = [[-0.065, 0], [0.065, 0], [0.065, -0.78], [0.12, -0.8], [0.25, -0.44], [0.3, -0.42], [0.31, -0.5], [0.27, -0.92], [0.2, -1.02], [-0.2, -1.02], [-0.27, -0.92], [-0.31, -0.5], [-0.3, -0.42], [-0.25, -0.44], [-0.12, -0.8], [-0.065, -0.78]];
@@ -392,6 +452,7 @@ export function registerMarinaVessels(D, H) {
     B.box('metal', shade(c, 1.15), 0.5, 0.06, 0.12, 0, -0.9, 0.06, { r: 0.025 });            // tripping palm ridge
     for (let k = 0; k < 2; k++) B.tor('metal', shade(c, 0.9), 0.07, 0.024, 0, 0.23 + k * 0.13, 0.05, { ry: k % 2 ? HP : 0, rs: 5, ts: 10, sy: 1.4 });
   }
+  // 【巴拿马导缆孔】墙面上的椭圆形铸钢导缆孔(当前坐标架面法线 +Z), centred at (x, y, z)。
   // Oval Panama chock casting on a wall face (face normal +Z in the current frame), centred at (x, y, z).
   function chock(B, x, y, z) {
     noShadow(B, () => {
@@ -400,6 +461,8 @@ export function registerMarinaVessels(D, H) {
     B.cyl('paint', '#15161a', 0.12, 0.004, x, y, z + 0.032, { rx: HP, sx: 1.3, seg: 10 });
     });
   }
+  // 【系缆桩带环】墙面上的重型系缆座(当前坐标架法线 +Z):底板、桩耳、垂挂环 + 绳头插接环。
+  // 返回绳头离开插接点的位置(本地坐标),供 rope() 续接缆绳。
   // Heavy mooring eye on a wall face (normal +Z in the current frame): plate, eye, drop ring with a rope eye splice.
   // Returns the point where the rope leaves the splice (local coords).
   function ringBolt(B, x, y, z, rope = true) {
@@ -412,6 +475,7 @@ export function registerMarinaVessels(D, H) {
     });
     return [x, y - 0.26, z + 0.16];
   }
+  // 【缆桩绕绳】双柱缆桩(X 向 ±sep 两根桩)上绕 turns 圈"8"字缆绳,逐点摆出心形投影。
   // Figure-eight turns of rope around a double bitt (posts at ±sep along X), rising `turns` times.
   function bittTurns(B, x, y, z, sep, rad, turns, c) {
     noShadow(B, () => {
@@ -424,12 +488,15 @@ export function registerMarinaVessels(D, H) {
     });
   }
 
+  // 【ferry_hull:渡轮船壳侧 + 端】水线红色船底带、黑胶护舷带、钢板缝线、船名/港籍涂装字、
+  // 锚与锚链筒、吃水标尺、舷墙顶盖 + 护杆(rail 碰撞条)、排水口、系泊缆——单侧半边建模,镜像补另一侧。
   D.ferry_hull = {
     desc: 'HALYARD double-ended ferry: one long side of the hull (boot-top, belting, plate seams, livery lettering, anchors, draft marks, bulwark cap + guard rail (rail collider), freeing ports, mooring lines) + one end (lowered car-ramp flap, corner fenders). Place at the origin; the mirror copy dresses the other side/end.',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
       B.aoBase = null;
       const seam = shade(C.hull, 0.82), weep = mixc(C.hull, '#7a5646', 0.42), wet = shade(C.hull, 0.8);
+      // --- 船底水线带(红色)及其上缘白线;绕过端部
       // --- boot-top (red band at the waterline) with a white line above it; wraps the end
       noShadow(B, () => {
         B.box('paint', C.boot, 32.06, 0.44, 0.024, 0, -1.47, FZ - 0.012, { r: 0.008 });
@@ -437,6 +504,7 @@ export function registerMarinaVessels(D, H) {
         B.box('paint', C.white, 32.06, 0.035, 0.02, 0, -1.232, FZ - 0.01, { r: 0.006 });
         B.box('paint', C.white, 0.02, 0.035, 10.04, FX + 0.01, -1.232, 0, { r: 0.006 });
       });
+      // --- 舷侧主护舷带(黑色 D 形胶条)沿长边;端部两段夹住汽车跳板豁口
       // --- main belting (black D-fender) along the side, and the two end runs either side of the ramp
       const bprof = dProf(0.11, 0.28).slice(1, -1).map(([u, v]) => [-u, v]);
       const belt = cached('ferryBelt', () => extrudeGeo(bprof, 31.66, 0.05));
@@ -447,6 +515,7 @@ export function registerMarinaVessels(D, H) {
         B.box('metal', C.steelDk, 31.5, 0.035, 0.02, 0, 0.61, FZ - 0.01, { r: 0.008 });
         for (let x = -15.2; x <= 15.3; x += 1.2) cy(B, 'metal', C.steelDk, 0.017, 0.022, x, 0.61, FZ - 0.02, { rx: HP });
       });
+      // --- 角部护舷(竖直胶块包住本侧两个角)
       // --- corner fenders (vertical rubber blocks wrapping both corners of this side)
       for (const cx of [-FX, FX]) {
         const sx = Math.sign(cx);
@@ -456,6 +525,8 @@ export function registerMarinaVessels(D, H) {
           B.cyl('metal', C.steelDk, 0.024, 0.012, cx + sx * 0.203, y, FZ + 0.08, { rz: HP, seg: 6 });
         }
       }
+      // --- 船身涂装(从加油码头方向可读):+X 端 HALYARD + 籍港,-X 半幅 Kraken 圆徽 + KRAKEN LINES,
+      //     两端吃水标尺。文字面朝 -Z(ry = PI),向 -X 排,给 -Z 侧的观察者读。
       // --- livery (reads from the fuel dock): HALYARD + home port at the +X end, Kraken roundel + KRAKEN LINES on
       //     the -X half, draft marks at both ends. Text faces -Z (ry = PI) and runs toward -X for a viewer at -Z.
       text(B, 'HALYARD', 0.46, C.white, 9.6, -0.08, FZ, { ry: PI, weight: 0.16 });
@@ -472,6 +543,7 @@ export function registerMarinaVessels(D, H) {
       for (const cx of [-15.3, 15.3]) {
         for (const [s, y] of [['2', -1.4], ['4', -1.2], ['6', -1.0], ['8', -0.8], ['4M', -0.6]]) text(B, s, 0.1, C.white, cx, y, FZ, { ry: PI, weight: 0.18, depth: 0.008 });
       }
+      // --- 锚链筒 + 收纳锚(近两端),锚窝下锈水淌痕
       // --- hawse pipes + stowed anchors near both ends, rust weeping below the pockets
       for (const cx of [-14.2, 14.2]) {
         B.push(cx, 0.36, FZ, PI);
@@ -483,6 +555,7 @@ export function registerMarinaVessels(D, H) {
         streak(B, -0.13, -1.0, 0.034, 0.09, 0.45, mixc(C.hull, '#7a5646', 0.3), C.hull);
         B.pop();
       }
+      // --- 舷墙:通长外板顶盖、栏杆立柱 + 护杆(顶 ≤ 2.35)、内侧加强筋
       // --- bulwark: outboard cap rail over its full run, stanchions + guard rail (top ≤ 2.35), inboard stiffeners
       for (const [x0, x1] of [[-15.0, -1.8], [1.8, 15.0]]) {
         const L = x1 - x0, xm = (x0 + x1) / 2, capX0 = x0 < 0 ? -FX : x0, capX1 = x0 < 0 ? x1 : FX;
@@ -497,12 +570,16 @@ export function registerMarinaVessels(D, H) {
         B.cyl('metal', C.galv, 0.025, L, xm, 2.32, FZ + 0.04, { rz: HP, seg: 10 });
         B.cyl('metal', C.galv, 0.008, L, xm, 2.19, FZ + 0.04, { rz: HP, seg: 6 });
         for (const x of [x0, x1]) B.sph('metal', C.galv, 0.03, x, 2.32, FZ + 0.04, { ws: 8, hs: 6 });
+        // 【护杆碰撞条】架在舷墙顶外缘之上:rail 只挡小孩(子弹/墨水/鱿鱼穿过)。
+        // 距舷墙顶 6 cm、高 0.75 m——把小孩"推回"而不是"抬起";并向舷外伸出 0.5 m,
+        // 使其中心落在舷墙外侧面之外超过一臂之距:站在舷墙上的小孩永远被推向船内,绝不落水。
         // guard rail over the outboard edge of the bulwark top: rail collider (nobody walks off the bulwark through
         // it; shots / ink / squids pass). 6 cm clear of the bulwark top, 0.75 m tall so a kid up there is pushed, not
         // lifted; it reaches 0.5 m outboard of the hull so its centre lies beyond the bulwark's outer face by more than a
         // foot's reach: a kid on the bulwark is always pushed back inboard, never overboard
         B.col(x0 < 0 ? x0 - 0.03 : x0, 2.06, FZ - 0.5, x0 < 0 ? x1 : x1 + 0.03, 2.75, FZ + 0.1, { rail: true });
       }
+      // 舷墙脚排水口(带铰链盖板),下方湿痕淌下船壳
       // freeing ports along the bulwark foot, hinged flaps, wet streaks weeping down the hull below
       for (let x = -13.5; x <= 13.6; x += 3.0) {
         if (Math.abs(x) < 5) continue;
@@ -511,9 +588,11 @@ export function registerMarinaVessels(D, H) {
         B.cyl('metal', C.steelDk, 0.012, 0.6, x, 1.47, FZ - 0.025, { rz: HP, seg: 6 });
         streak(B, x + 0.06, 0.6, FZ - 0.002, 0.34, 0.9, wet, C.hull, PI);
       }
+      // 跳板落点两侧的船壳防磨条(护舷带之下)
       // rubbing strips on the hull either side of the gangway landing (below the belting)
       for (const s of [-1, 1]) B.box('rubber', C.rubber, 0.16, 1.5, 0.1, s * 1.95, -0.2, FZ - 0.05, { round: true, r: 0.04 });
 
+      // --- 端部:放下的汽车跳板活板,垂挂在甲板缘之下(铰链节、防滑肋、端部小翼、液压支撑杆)
       // --- the end: lowered car-ramp flap hanging below the deck edge (hinge knuckles, ribs, toe flaps, rams)
       const phi = 0.27, RW = 4.7, RL = 2.3;
       for (let k = 0; k < 7; k++) { const z = -RW / 2 + 0.3 + k * ((RW - 0.6) / 6); B.cyl('metal', k % 2 ? C.steelDk : C.steel, 0.075, 0.42, FX + 0.06, 1.19, z, { rx: HP, seg: 12 }); }
@@ -541,6 +620,7 @@ export function registerMarinaVessels(D, H) {
         B.box('metal', C.steelDk, 0.12, 0.26, 0.26, FX + 0.06, -0.55, zs * 2.05, { r: 0.03 });
       }
 
+      // --- 系泊:空旷角(-X)双柱缆桩;缆绳过巴拿马导缆孔到长码头立面
       // --- mooring: double bitt in the free (-X) corner; line through a Panama chock to the Long Pier face
       B.box('metal', C.steelDk, 0.95, 0.05, 0.42, -14.0, DECK + 0.025, -4.12, { r: 0.02 });
       for (const s of [-1, 1]) B.lathe('gloss', C.black, [[0, 0], [0.13, 0], [0.13, 0.25], [0.18, 0.28], [0.18, 0.32], [0.11, 0.34], [0, 0.34]], -14.0 + s * 0.28, DECK + 0.03, -4.12, { seg: 14 });
@@ -551,6 +631,7 @@ export function registerMarinaVessels(D, H) {
       rope(B, [-14.25, DECK + 0.2, -4.12], [-14.0, 1.66, FZ + 0.42], 0.03, 0.03);
       rope(B, [-14.0, 1.66, FZ - 0.02], [-19.5 + 0.16, -0.72, -9.2], 0.4, 0.032);
       B.push(-19.5, 0, -9.2, HP); ringBolt(B, 0, -0.46, 0); B.pop();
+      // 跳板两侧的横缆:舷内侧羊角桩、穿舷墙的导缆孔、码头面的系缆环
       // breast lines either side of the gangway: horn cleats inboard, chocks through the bulwark, rings on the dock face
       for (const s of [-1, 1]) {
         const x = s * 4.4;
@@ -562,6 +643,7 @@ export function registerMarinaVessels(D, H) {
         rope(B, [x + 0.3 * s, 1.62, FZ - 0.02], [s * 3.2, -0.72, -8.6 + 0.16], 0.28, 0.03);
         B.push(s * 3.2, 0, -8.6); ringBolt(B, 0, -0.46, 0); B.pop();
       }
+      // +X 船尾缆到船台立面(避开跳板)
       // stern line from the +X quarter to the boatyard face (clear of the plank)
       B.box('metal', C.steelDk, 0.44, 0.06, 0.08, 12.4, 1.84, FZ + 0.45, { r: 0.025 });
       B.box('metal', C.steelDk, 0.1, 0.12, 0.06, 12.4, 1.79, FZ + 0.43, { r: 0.02 });
@@ -574,6 +656,7 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------------ ferry superstructure
+  // 【渡轮上层建筑工具】水密门、连续玻璃窗带、救生筏筒——都是"贴在某个墙面坐标架"的通用件。
   // Steel weathertight door on a wall (local plane z = 0, facing +Z), sill on y = 0: frame, leaf, porthole, dogs, hinges.
   function shipDoor(B, x, w = 0.84, h = 1.98, c = C.whiteDk, hingeSide = -1) {
     B.box('gloss', shade(c, 0.9), w + 0.16, h + 0.1, 0.03, x, (h + 0.1) / 2, 0.015, { round: true, r: 0.07 });   // frame
@@ -592,6 +675,7 @@ export function registerMarinaVessels(D, H) {
     for (const y of [0.35, h - 0.35]) B.box('metal', C.steelDk, 0.07, 0.04, 0.045, fx, y, 0.07, { r: 0.01 });
     for (const y of [0.34, h / 2 + 0.05, h - 0.3]) B.cyl('metal', C.steelDk, 0.028, 0.16, x + hingeSide * (w / 2 + 0.03), y, 0.06, { seg: 8 });
   }
+  // 【连续玻璃带】墙面平面 z = 0 朝 +Z:深色玻璃、浅色竖梃、框条;每格顶部带淡淡天空反光。
   // Continuous glazed band (dark glass, thin light mullions, frame strips) on a wall plane z = 0 facing +Z.
   function glazing(B, x0, x1, y0, y1, n, o = {}) {
     noShadow(B, () => {
@@ -604,6 +688,7 @@ export function registerMarinaVessels(D, H) {
     for (let i = 0; i < n; i++) B.box('gloss', C.glassLt, w / n - 0.14, h * 0.18, 0.004, x0 + ((i + 0.5) / n) * w, y1 - h * 0.16, 0.022, { r: 0.003 });
     });
   }
+  // 【救生筏筒】卧式救生筏罐,收在墙面凹槽内(平面 z = 0 朝 +Z),沿 X 放置。
   // Life-raft canister stowed in a wall recess (local plane z = 0, facing +Z), lying along X.
   function raftCanister(B, x, y, L = 1.2, R = 0.2) {
     B.box('paint', shade(C.whiteDk, 0.7), L + 0.16, 2 * R + 0.1, 0.012, x, y, 0.006, { round: true, r: 0.08 });
@@ -617,11 +702,15 @@ export function registerMarinaVessels(D, H) {
     text(B, 'LIFERAFT', 0.06, C.navy, x - 0.05, y - 0.03, 0.117, { weight: 0.2, depth: 0.003 });
   }
 
+  // 【ferry_cabin:渡轮客舱单侧】深色玻璃舷窗带 + 竖梃 + 天空反光、窗台下手扶杆、
+  // 嵌墙救生筏筒、细窄屋顶挑檐。放在原点,镜像补另一侧。
   D.ferry_cabin = {
     desc: 'HALYARD passenger saloon (one long side): dark glazed window band with mullions + sky sheen, handrail under the sills, flush life-raft canisters in wall recesses, slim roof lip. Place at the origin (mirrored).',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
       B.aoBase = null;
+      // 长墙 z = -2.9(面 -Z);本地坐标架:+Z 出墙面,+X = 世界 -X。腰线涂带(y 1.3…2.1)
+      // 与客舱端头属于 surfaces 流:本件全部在 y 2.15 以上。
       // long wall z = -2.9 (face -Z); local frame: +Z out of the wall, +X = world -X. The livery stripe band (y 1.3…2.1)
       // and the cabin ends belong to the surfaces stream: everything here sits above y 2.15.
       B.push(0, DECK, -2.9, PI);
@@ -631,18 +720,23 @@ export function registerMarinaVessels(D, H) {
       raftCanister(B, -3.0, 2.18);
       raftCanister(B, 3.0, 2.18);
       B.pop();
+      // 细窄屋顶挑檐(日光甲板边饰,高出屋面 ≤ 2 cm)沿长边
       // slim roof lip (sun-deck edge trim, ≤ 2 cm above the roof) along the long side
       B.box('gloss', C.white, 13.0, 0.1, 0.08, 0, 3.77, -2.94, { r: 0.03 });
       B.box('metal', C.steelDk, 13.0, 0.02, 0.03, 0, 3.71, -2.975, { r: 0.006 });
     },
   };
 
+  // 【ferry_bridge:驾驶台 + 烟囱 + 雷达桅】居中只放一次(mirror: false):
+  // 后倾环绕窗、门、舷灯;高耸的 Kraken 烟囱(碰撞体)带徽记、排气筒与汽笛;
+  // 雷达桅两部旋转扫描器、信号横桁、桅顶灯、天线与信号旗。
   // Wheelhouse, funnel + radar mast (centred, placed once: mirror false)
   D.ferry_bridge = {
     desc: 'HALYARD wheelhouse dressing (placed once at the wheelhouse base): raked wraparound windows, doors, sidelights, nameboards, wipers; the proud Kraken funnel (collider) with emblem, exhausts and horns; radar mast with two spinning scanners, yard, masthead lights, antennas and signal pennants.',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
       B.aoBase = null;
+      // --- 四面窗(本地坐标架:+Z 出各自的面)
       // --- windows on all four faces (local frames: +Z out of each face)
       const faces = [[1.5, 0, HP, 3.2, 'end'], [-1.5, 0, -HP, 3.2, 'end'], [0, 1.6, 0, 3.0, 'side'], [0, -1.6, PI, 3.0, 'side']];
       for (const [fx, fz, ry, W, kind] of faces) {
@@ -671,6 +765,8 @@ export function registerMarinaVessels(D, H) {
         B.box('paint', mixc(C.hull, C.whiteDk, 0.35), W - 0.04, 0.1, 0.012, 0, 0.05, 0.006, { r: 0.004 });
         B.pop();
       }
+      // --- 烟囱:圆角椭圆筒身 loft, crisp 色带(Kraken 芥末黄/白/青/烟黑顶),
+      //     外翻口沿、深色顶板、双雨帽排气筒 + 发电机油囱、两长侧面徽记圆盘
       // --- the funnel: rounded-oval casing lofted with crisp paint bands (Kraken mustard / white / teal / soot top),
       //     flared rim, dark top plate, twin rain-capped exhausts + generator stack, emblem roundels on both long sides
       const FB = 1.4, FH = 2.4, FA = 0.85, FBz = 0.58, FR = 0.3, TAP = 0.06;
@@ -702,6 +798,7 @@ export function registerMarinaVessels(D, H) {
         B.lathe('metal', '#1d1e22', [[r * 0.8, 0], [r * 1.35, 0.05], [r * 1.4, 0.09], [r * 0.8, 0.07]], x, topY + h - 0.06, z, { seg: 16 });
         B.tor('metal', '#3a3c42', r + 0.01, 0.012, x, topY + 0.1, z, { rx: HP, rs: 4, ts: 16 });
       }
+      // 徽记圆盘贴在两条长侧面(随锥度倾斜),色带边缘铆钉排
       // emblem roundels on the flat long sides (tilted with the taper), rivet rows at the band edges
       const hE = 0.95, zE = FBz * kAt(hE), tilt = Math.atan(TAP * FBz / FH);
       for (const s of [-1, 1]) {
@@ -716,6 +813,7 @@ export function registerMarinaVessels(D, H) {
           B.sph('metal', shade(C.mustard, 0.8), 0.011, x, FB + h, s * (FBz * kAt(h) + 0.004), { ws: 5, hs: 3, half: true, rx: s * HP });
         }
       }
+      // +X 端登桅梯,-X 端进气百叶
       // ladder up the +X end to the mast step, intake louvres on the -X end
       const endX = (h) => FA * kAt(h);
       for (let k = 0; k < 10; k++) { const h = 0.3 + k * 0.22; B.cyl('metal', C.galv, 0.013, 0.34, endX(h) + 0.09, FB + h, 0, { rx: HP, seg: 6 }); }
@@ -724,6 +822,7 @@ export function registerMarinaVessels(D, H) {
       B.box('paint', '#2b2e34', 0.5, 0.56, 0.02, 0, 0, 0.01, { r: 0.03 });
       for (let k = 0; k < 7; k++) B.box('paint', shade(C.mustard, 0.85), 0.46, 0.035, 0.035, 0, -0.24 + k * 0.08, 0.025, { rx: -0.55, r: 0.008 });
       B.pop();
+      // --- 桅杆:锥形杆自烟囱顶升起,雷达托架(双扫描器)、横桁、灯具、天线
       // --- mast: tapered pole rising from the funnel top, radar bracket (twin scanners), yard, lights, antennas
       const m0 = topY, mTop = 7.4;
       B.lathe('gloss', C.white, [[0, m0], [0.1, m0], [0.085, m0 + 0.12], [0.055, mTop], [0, mTop + 0.01]], 0, 0, 0, { seg: 12 });
@@ -755,6 +854,7 @@ export function registerMarinaVessels(D, H) {
       B.box('metal', C.steelDk, 0.12, 0.1, 0.12, 0.08, 4.95, 0, { r: 0.02 });
       B.cyl('gloss', '#36383e', 0.1, 0.22, 0.25, 5.1, 0, { rz: HP, seg: 14 });
       B.cyl('glow', '#fff1d6', 0.085, 0.01, 0.362, 5.1, 0, { rz: HP, seg: 14, glow: 1.2 });
+      // 信号旗绳从横桁端上拉到桅顶,串三角旗(全部 ≥ 4.6 m 高于驾驶台顶)
       // signal dressing line from the yardarm up to the masthead with pennants (all ≥ 4.6 m over the wheelhouse roof)
       const hy0 = [0, yd + 0.02, 0.92], hy1 = [0, mTop - 0.05, 0.05];
       B.tube(ns(B, 'rubber'), C.white, ropePts(hy0, hy1, 0.04, 8), 0.008, { radial: 4 });
@@ -767,6 +867,8 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------------ ferry cover pieces
+  // 【渡轮 cover 件】docs/HALYARD.md 列出的"盖件"——它们自己就是碰撞真值的一部分。
+  // ferry_locker:汽车甲板救生衣柜(碰撞 2.5×2.5×1.1)。
   D.ferry_locker = {
     desc: 'Lifejacket lockers on the ferry car deck (cover, collider 2.5 × 2.5 × 1.1): two GRP deck chests side by side with overhanging lids, piano hinges, hasps + padlocks, reflective tape, LIFEJACKETS lettering and the lifejacket pictogram.',
     params: {}, variants: 1, mount: 'ground',
@@ -804,6 +906,7 @@ export function registerMarinaVessels(D, H) {
     },
   };
 
+  // 【定制木托盘】当前坐标架原点,甲板条板沿 X,长 L 宽 W。
   // Custom-size timber pallet (deck boards along X) at the current frame's origin.
   function palletXZ(B, L, W) {
     const nb = Math.max(3, Math.round(W / 0.19));
@@ -811,10 +914,14 @@ export function registerMarinaVessels(D, H) {
     for (const z of [-W / 2 + 0.05, 0, W / 2 - 0.05]) B.box('wood', shade(C.teakDk, B.r(0.95, 1.05)), L, 0.02, 0.1, 0, 0.01, z, { r: 0.005 });
     for (let i = 0; i < nb; i++) B.box('wood', shade('#d2b082', B.r(0.9, 1.05)), 0.12, 0.022, W, -L / 2 + 0.06 + (i / (nb - 1)) * (L - 0.12), 0.121, 0, { r: 0.006 });
   }
+  // 【ferry_cargo:渡轮甲板货】两个 cover 半件拼一件:
+  // +X 矮半 = 托盘 + KRAKEN LINES 纸箱捆扎到 0.9 m(实体碰撞);
+  // -X 高半 = 镀锌网笼 stillage 到 1.4 m(rail 碰撞:挡小孩、子弹/墨水/鱿鱼穿过)。
   D.ferry_cargo = {
     desc: 'Deck cargo on the ferry car deck (cover: carton half solid 1 × 2 × 0.9, mesh cage half 1 × 2 × 1.4 = rail): a galvanised mesh stillage of spare fenders, buoys and rope on one pallet, a strapped stack of KRAKEN LINES cartons on the other, ratchet straps to deck rings, a sack truck.',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
+      // 矮半(+X):托盘 + 纸箱,捆绑到 0.9 m
       // low half (+X): pallet + cartons strapped to 0.9 m
       B.push(0.5, 0, 0); palletXZ(B, 0.98, 1.98); B.pop();
       for (let i = 0; i < 2; i++) for (let j = 0; j < 3; j++) {
@@ -828,6 +935,7 @@ export function registerMarinaVessels(D, H) {
         for (const s of [-1, 1]) B.box('paint', '#e0a33a', 0.012, 0.86, 0.05, 0.5 + s * 0.456, 0.46, z, { r: 0.003 });
         B.box('metal', C.steel, 0.1, 0.06, 0.06, 0.956, 0.62, z, { r: 0.015 });
       }
+      // 高半(-X):镀锌网笼到 1.4 m,内装船用备件(防撞黑胶护舷、珊瑚色浮球、绳圈)
       // high half (-X): galvanised stillage cage to 1.4 m with marine spares inside
       B.push(-0.5, 0, 0); palletXZ(B, 0.98, 1.98); B.pop();
       const x0 = -0.98, x1 = -0.02, y0 = 0.145, y1 = 1.4, z0 = -0.98, z1 = 0.98;
@@ -853,17 +961,23 @@ export function registerMarinaVessels(D, H) {
       for (const s of [-1, 1]) B.cyl('rubber', C.black, 0.1, 0.06, -0.12, 0.1, s * 0.22, { rx: HP, seg: 14, bevel: 0.02 });
       B.cyl('metal', C.red, 0.018, 0.4, -0.05, 1.22, 0, { rx: HP, seg: 8 });
       B.pop();
-      B.col(0, 0, -1, 1, 0.9, 1);                        // strapped cartons: solid cover
-      B.col(-1, 0, -1, 0, 1.4, 1, { rail: true });      // mesh stillage cage: kids blocked, shots / ink / squids pass
+      B.col(0, 0, -1, 1, 0.9, 1);                        // strapped cartons: solid cover —— 捆扎纸箱:实体碰撞
+      B.col(-1, 0, -1, 0, 1.4, 1, { rail: true });      // mesh stillage cage: kids blocked, shots / ink / squids pass —— 网笼:rail 碰撞
       B.blob(2.4, 2.4);
     },
   };
 
 
   // ================================================================================================ RAMP DRESSING
+  // 【坡道装修】楼梯/坡道两侧的扶手与挡脚板。扶手栏杆统一用"rail 碰撞条":
+  // 挡小孩、不挡子弹/墨水/鱿鱼,且贴面距离经过计算,保证关卡的面/碰撞采样永不落进碰撞条内。
   // Sloped handrail along a ramp edge: rail points sit `h` above the slope line at stations `ts` (0…1 along a → b).
   const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
+  // 【ferry_stair:渡轮日光甲板楼梯】Alpha:坡从 (12.6, 1.3) 升到 (6.5, 3.8),z -2.9…-0.9;镜像补 Bravo。
+  // 两侧开敞(客舱端墙只接到楼梯头),所以两侧都要做腹板弦梁 + 支撑托板 + 立柱扶手
+  // (高出坡面 0.95 m、距走道宽外 7 cm);扶手延伸到日光甲板作着陆短段,下端折向汽车甲板。
+  // 踏面上及上方不放任何东西(采样避让)。
   // Ferry sun-deck stair (Alpha: slope from (12.6, 1.3) up to (6.5, 3.8), z -2.9…-0.9; the mirror dresses Bravo's).
   // Both sides are open (the cabin end wall only meets the stair head), so both get cheek stringers with support flats
   // and stanchion handrails (0.95 m above the slope, 7 cm outboard of the walking width); the rails run out onto the
@@ -908,6 +1022,8 @@ export function registerMarinaVessels(D, H) {
         B.tube('metal', railC, [P3(foot[0] + 0.3, foot[1] + 0.5 - 0.05, zR), ...stations.map((sv) => { const q = at(sv); return P3(q[0], q[1] + 0.5, zR); }), P3(head[0] - 0.2, head[1] + 0.5, zR), P3(head[0] - 0.55, head[1] + 0.5, zL)], 0.016, { radial: 6 });
         B.cyl('metal', shade(railC, 0.8), 0.045, 0.02, head[0] - 0.55, head[1] + 0.01, zL, { seg: 8 });   // landing foot on the sun deck
         B.cyl('metal', shade(railC, 0.8), 0.045, 0.02, foot[0] + 0.45, DECK + 0.01, zR, { seg: 8 });       // foot on the car deck
+        // 【扶手 rail 碰撞条】小孩走不出楼梯侧面;子弹/墨水/鱿鱼穿过。碰撞条距楼梯侧面 ≥ 4.5 cm、
+        // 高出甲板 6 cm,关卡的面/倒角采样永不落入其中。
         // rail colliders (kids can't walk off the stair side; shots / ink / squids pass). Strips stay ≥ 4.5 cm off the
         // stair's side face and 6 cm above the decks so the level's face / bevel samples never land inside them.
         const [c0, c1] = out < 0 ? [ze - 0.13, ze - 0.045] : [ze + 0.045, ze + 0.13];   // (-3.03 keeps the corridor's nav row at z -3.5)
@@ -923,6 +1039,10 @@ export function registerMarinaVessels(D, H) {
     },
   };
 
+  // 【tug_ramp_rails:拖船坡道脚手架护栏】Alpha:x 16.4…18.6,坡从 z -7.6(y 0)升到船尾 z -13(y 2.6);
+  // 镜像补 Bravo。脚手架式:立杆立在垫板上(底座板 +  sole 木板),顶杆 0.95 m、腰杆 0.5 m 沿坡,
+  // 挡脚板、扣件;东护栏在横杆高度上接 docks 流的脚手架塔,西护栏接拖船甲板栏杆端头。
+  // 2.2 m 走道宽上方不压任何东西。
   // Tug ramp (Alpha: x 16.4…18.6, slope from z -7.6 (y 0) up to the stern at z -13 (y 2.6); the mirror dresses Bravo's).
   // Scaffold-tube guardrails on standards set just outside both edges (sole boards + base plates on the yard), top rail
   // 0.95 m and mid rail 0.5 m above the slope, scaffold-board toe boards, couplers; the east rail is tied into the docks
@@ -960,6 +1080,11 @@ export function registerMarinaVessels(D, H) {
       }
       B.tube('metal', tube, [P3(16.3, 2.85, -12.87), P3(16.21, 2.85, -13.06)], 0.02, { radial: 6 });
       noShadow(B, () => bx(B, 'metal', cpl, 0.07, 0.07, 0.07, 16.3, 2.85, -12.87));
+      // 【坡道护栏 rail 碰撞条】距坡道侧面 ≥ 4.5 cm、高出坡面 6 cm、避开拖船尾立面:
+      // 小孩不能从坡道侧面跨下,子弹/墨水/鱿鱼穿过。沿坡碰撞条伸出立柱两端 0.2 m,
+      // 让 nav 的坡道列保持在中间(没有 bot 会规划从侧面翻入);坡脚碰撞盒紧贴立柱、
+      // 从第一根立柱(z -7.95)才开始——走"坡脚到场地缘 0.6 m 条带"(上坡的路,nav 行 z -7.5)
+      // 的小孩永远不会蹭到它,也不会被推向水面。
       // rail colliders along both guardrails (≥ 4.5 cm off the ramp's side faces, 6 cm above the slope, clear of the
       // tug's stern face): kids can't step off the ramp side, shots / ink / squids pass. Up the slope they reach 0.2 m past
       // the standards so the nav keeps its ramp column in the middle (no bot plans a side entry / drop through the rail);
@@ -978,12 +1103,17 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ================================================================================================ ZONE CONTROL ACCESS (tug)
+  // 【Zone Control 侧区上船通道】仅 zones 局(dressing onlyIn 'zones';放原点,镜像)。
+  // 两条额外上拖船甲板的路:船艏楼梯(防守方从码头直上)和木箱台阶(进攻方从舷侧中段绕行)。
+  // 对应开口由 tug_dress { access: true } 在栏杆/护舷/舷侧杂物上让出。
   // Zone Control only (dressing onlyIn 'zones'; place at the origin, mirrored): the two extra ways onto the tug deck
   // (the side zone). Blocks: tug-bow-stair (x 17.9…20.1, treads from z -29.95 on the yard up to the bow at z -24.0, y 2.6)
   // — the defenders' way up from the quay; the crate steps (colliders here, x 12.1…13.1 top 0.87 and x 13.1…14.5 top
   // 1.73, z -16.9…-13.3) against the west hull side along the aft deck to the stern corner — the attackers' way up from the mid side. The tug's
   // own rail / fender / hull clutter is opened for both by tug_dress { access: true }.
   const TA = { zF: -29.95, zH: -24.0, yH: 2.6, xL: 17.9, xR: 20.1, cx0: 12.1, cx1: 13.1, cx2: 14.5, cz0: -16.9, cz1: -13.3, cA: 0.87, cB: 1.73 };
+  // 【板条箱】定制尺寸的木箱(在当前坐标架原点成箱):面板、横档、角柱、长面斜撑、箱盖。
+  //  attackers 的箱阶就是几只这种箱子叠出来的(顶层即 0.87/1.73 m 两级台阶)。
   function crateBox(B, x0, x1, y0, y1, z0, z1, tone = 1, ry = 0) {
     const w = x1 - x0, h = y1 - y0, d = z1 - z0, wc = shade('#c9a47a', tone), dk = shade('#8d6a45', tone);
     B.push((x0 + x1) / 2, y0, (z0 + z1) / 2, ry);
@@ -1001,16 +1131,21 @@ export function registerMarinaVessels(D, H) {
     B.box('wood', shade(wc, 1.05), w - 0.05, 0.03, d - 0.05, 0, h - 0.005, 0, { r: 0.01 });   // lid
     B.pop();
   }
+  // 【托盘垫底】标准托盘,给箱阶垫高防潮。
   function palletUnder(B, x0, x1, z0, z1, tone = 1) {
     const w = x1 - x0, d = z1 - z0, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     for (const f of [-0.42, 0, 0.42]) bx(B, 'wood', shade('#7b5a3a', tone), w - 0.02, 0.1, 0.1, cx, 0.05, cz + f * (d - 0.1) / 0.84 * 0.84);
     noShadow(B, () => { for (let i = 0; i < Math.round(w / 0.17); i++) bx(B, 'wood', shade('#b48f63', tone * (0.92 + (i % 3) * 0.04)), 0.13, 0.022, d - 0.02, x0 + 0.08 + i * ((w - 0.16) / Math.max(1, Math.round(w / 0.17) - 1)), 0.111, cz); });
   }
+  // 【tug_access:拖船甲板通道】仅 Zone Control 模式:
+  // 船艏登船梯(舷梯弦梁 + 支撑托板 + 镀锌立柱扶手 + 危险踢脚板,扶手折上艏甲板,rail 碰撞条)
+  // 和西舷侧两级木箱台阶(碰撞:0.87 m 与 1.73 m 级,通向 2.6 m 甲板),NUDGE SPARES 喷字,绳缆绑扎。
   D.tug_access = {
     desc: 'Zone Control access to the tug deck (place at the origin; mirrored): steel boarding-stair dressing on the tug-bow-stair block (cheek stringers, support flats, galvanised stanchion handrails with mid rails, hazard kick plates, rails turned down onto the foredeck — rail colliders) and a two-step stack of braced timber spares crates on pallets against the west hull side (colliders: 0.87 m and 1.73 m steps up to the 2.6 m deck), stencilled NUDGE SPARES, lashed with rope.',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
       B.aoBase = 0;
+      // ---------------- 船艏登船梯(坡沿 +Z)
       // ---------------- bow boarding stair (slope along +Z)
       const { zF, zH, yH, xL, xR } = TA, run = zH - zF, L = Math.hypot(run, yH), dz = run / L, dy = yH / L, th = Math.atan2(yH, run);
       const nz = -dy, ny = dz;                                                  // up-normal of the slope (z, y)
@@ -1029,6 +1164,7 @@ export function registerMarinaVessels(D, H) {
             for (const q of [-0.07, 0.07]) cy(B, 'metal', '#50555c', 0.014, 0.016, xe + out * 0.064, p[1] + q * dy - ny * 0.08, p[0] + q * dz - nz * 0.08, { rz: HP });
           }
         });
+        // 立柱 + 顺坡顶杆 + 腰杆;顶杆上端折上艏甲板,下端折入场地
         // stanchions + sloped top rail + mid rail; the rail turns down onto the foredeck at the head, into the yard at the foot
         const stations = [0.45, 2.0, 3.55, 5.1, L - 0.25], tops = [];
         for (const sv of stations) {
@@ -1044,6 +1180,8 @@ export function registerMarinaVessels(D, H) {
         B.tube('metal', railC, [P3(xR2, foot[1] + 0.45, foot[0] - 0.3), ...stations.map((sv) => { const q = at(sv); return P3(xR2, q[1] + 0.5, q[0]); }), P3(xR2, head[1] + 0.5, head[0] + 0.2), P3(xR2, head[1] + 0.5, head[0] + 0.42)], 0.016, { radial: 6 });
         B.cyl('metal', shade(railC, 0.8), 0.045, 0.02, xR2, head[1] + 0.01, head[0] + 0.42, { seg: 8 });
         B.cyl('metal', shade(railC, 0.8), 0.045, 0.02, xR2, 0.01, foot[0] - 0.45, { seg: 8 });
+        // 【rail 碰撞条】小孩跨不出楼梯侧面;子弹/墨水/鱿鱼穿过:距侧面 ≥ 4.5 cm、高出坡面 6 cm;
+        // 上端短段延伸到艏甲板,去接拖船栏杆的端柱
         // rail colliders (kids can't step off the stair side; shots / ink / squids pass): ≥ 4.5 cm off the side face, 6 cm
         // above the slope; the head stub runs onto the foredeck to meet the tug rail's end post
         const [c0, c1] = out < 0 ? [xe - 0.13, xe - 0.045] : [xe + 0.045, xe + 0.13];
@@ -1054,6 +1192,7 @@ export function registerMarinaVessels(D, H) {
         }
         B.col(c0, yH + 0.06, zH, c1, yH + 0.98, zH + 0.45, { rail: true });
       }
+      // ---------------- 西舷侧箱阶(进攻方从中段舷侧绕上的路)
       // ---------------- crate steps against the west hull side (attackers' way up from the mid side)
       const { cx0, cx1, cx2, cz0, cz1, cA, cB } = TA, zm = (cz0 + cz1) / 2;
       palletUnder(B, cx0 + 0.02, cx1 - 0.01, cz0 + 0.03, zm - 0.02, 0.95);
@@ -1064,6 +1203,7 @@ export function registerMarinaVessels(D, H) {
       crateBox(B, cx1 + 0.04, cx2 - 0.04, 0.122, 0.93, cz0 + 0.05, cz1 - 0.05, 1.0);
       crateBox(B, cx1 + 0.05, cx2 - 0.05, 0.93, cB, cz0 + 0.12, zm - 0.02, 0.92);
       crateBox(B, cx1 + 0.06, cx2 - 0.04, 0.93, cB, zm + 0.02, cz1 - 0.1, 1.06);
+      // 朝场地(-X)一面与两端(±Z)的喷字标记
       // stencils on the faces toward the yard (-X) and the ends (±Z)
       B.push(cx0 + 0.05, 0, zm, -HP);
       text(B, 'NUDGE', 0.12, '#3a3f4a', 0.6, 0.55, 0.004, { weight: 0.2 });
@@ -1076,12 +1216,14 @@ export function registerMarinaVessels(D, H) {
       B.push((cx1 + cx2) / 2, 0, cz0 + 0.065, PI);
       text(B, 'FRAGILE', 0.08, '#b0473b', 0, 0.62, 0.004, { weight: 0.22, spacing: 0.3 });
       B.pop();
+      // 上层箱子的绳缆绑扎(垂到托盘吊环)+ 下层台阶上留的一盘绳
       // rope lashings over the upper crates (down to pallet rings) + a coil left on the lower step
       for (const zz of [cz0 + 0.45, zm - 0.35, zm + 0.4, cz1 - 0.45]) {
         B.tube(ns(B, 'rubber'), C.rope, [P3(cx1 + 0.03, 0.2, zz), P3(cx1 + 0.03, cB + 0.005, zz), P3(cx2 - 0.3, cB + 0.02, zz), P3(cx2 - 0.05, cB + 0.005, zz)], 0.012, { radial: 4 });
       }
       B.tor('rubber', C.ropeDk, 0.2, 0.035, cx0 + 0.5, cA + 0.035, cz1 - 0.55, { rx: HP, rs: 5, ts: 16 });
       B.tor('rubber', C.rope, 0.14, 0.03, cx0 + 0.5, cA + 0.09, cz1 - 0.55, { rx: HP, rs: 5, ts: 14 });
+      // 碰撞盒:两级台阶(顶面可走)
       // colliders: the two steps (walkable tops)
       B.col(cx0, 0, cz0, cx1, cA, cz1);
       B.col(cx1, 0, cz0, cx2, cB, cz1);
@@ -1089,6 +1231,11 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ================================================================================================ small-boat library
+  // 【小艇参数化船体库】核心:makeHull 用一组型值参数 loft 出整个船壳。水线 y = 0,船尾 z = -L/2,船艏 +L/2。
+  // spec 字段:L 船长、B 船宽、T 舟体吃水深度、F0/F1 尾/艏干舷、tr 尾板宽比(0 = 尖尾)、
+  // rake 艏舷外飘悬伸、chine(0 圆舭 … 1 硬折角舭)、flare 外飘。返回 { geo, sheer(t), at(t,s,side),
+  // yAt(t,y), band(y0,y1,color) 色带 ribbon, deck(color,camber) 甲板面 }——四种小艇(帆船/机动艇/
+  // 渔船/RIB)全由它派生,只换 spec 和上层细节。
   // Parametric lofted hull, waterline at y = 0, stern at z = -L/2, bow at +L/2. spec: L, B (beam), T (depth of the
   // canoe body below the waterline), F0/F1 (freeboard at stern/bow), tr (transom width fraction; 0 = pointed stern),
   // rake (bow overhang at the sheer), chine (0 round bilge … 1 hard chine), flare. Returns { geo, sheer(t) → [hb, top, z],
@@ -1166,10 +1313,14 @@ export function registerMarinaVessels(D, H) {
     const sheer = (t) => { const p = at(t, 1, 1); return [p[0], p[1], p[2]]; };
     return { geo, band, deck, sheer, at, yAt, hb, top, bot, spec: sp };
   }
+  // 【船体缓存】按 key 缓存 makeHull 结果:同一规格的小艇(含镜像副本)只 loft 一次,
+  // 船壳 geo 与甲板 geo 一并打包复用。
   function hullOf(key, spec) { return cached('hull|' + key, () => { const h = makeHull(spec); return { h, body: h.geo(), deckGeo: h.deck(spec.camber ?? 0.05) }; }); }
 
+  // 【皮划艇】(两端尖)沿本地 Z 卧放在 (x, y, z):船体 + 甲板、座舱围板、弹力绳、提把。
   // Sea kayak (pointed both ends) lying along local Z at (x, y, z): hull + deck, cockpit coaming, bungees, grab toggles.
   const kayakTop = (L, H, z) => { const t = z / L + 0.5, sn = Math.max(0, Math.sin(t * PI)); return H * (0.55 + 0.45 * Math.pow(sn, 0.45)) + 0.05 * Math.pow(Math.abs(t - 0.5) * 2, 3); };
+  // 【皮划艇网格】旋转截面 loft:截面宽/高随 sin 分布,上半甲板、下半船底,闭合成环。
   function kayakGeo(L, W, H) {
     return cached(['kayak', L, W, H].join('|'), () => {
       const mb = new MB(), NS = 16, NP = 6, rows = [];
@@ -1184,6 +1335,7 @@ export function registerMarinaVessels(D, H) {
       return mb.geo();
     });
   }
+  // 【皮划艇放置】推坐标架 → 放船体 → 座舱井/围板/弹力绳/甲板线/端部提把。
   function kayakMesh(B, x, y, z, L, W, H, c, ry = 0) {
     B.push(x, y, z, ry);
     B.add('gloss', kayakGeo(L, W, H), c, 0, 0, 0, {});
@@ -1198,6 +1350,7 @@ export function registerMarinaVessels(D, H) {
 
 
   // ------------------------------------------------------------------------------------------------ outboard motor
+  // 【舷外机】挂在当前坐标架原点的尾板上(尾板面 z = 0,机尾朝 -Z),向上翘起 tilt。
   // Outboard hung on a transom at the current frame's origin (transom face at z = 0, motor aft toward -Z), tilted up by `tilt`.
   function outboard(B, c = '#2b2e34', tilt = 0, s = 1) {
     B.push(0, 0, -0.06 * s, 0, -tilt);
@@ -1212,6 +1365,8 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------------ marina pontoons
+  // 【游艇码头浮桥】沿本地 +X 的浮筒栈桥(x = 0 到 L),宽 W,甲板高出海面 dy:
+  // 分单元的木板铺面 + 接缝钢板、木护缘 + 防磨条、水线上黑色浮筒、系缆桩,可选服务柱。
   // Floating pontoon along local +X (from x = 0 to L), width W, deck `dy` above the sea: plank decking in units with
   // joint plates, timber fascia + rubbing strip, black float drums at the waterline, cleats, optional service pedestals.
   const SEA = -1.6;
@@ -1235,6 +1390,7 @@ export function registerMarinaVessels(D, H) {
       }
     }
   }
+  // 【钢制导桩】锥形桩帽 + 环抱浮桥边的桩箍(在 x, z;箍绕浮桥边缘)。
   // Steel guide pile with a conical cap and a pontoon hoop (at x, z; hoop around the pontoon edge).
   function guidePile(B, x, z, h = 3.2, r = 0.16) {
     B.cyl('metal', '#6f7479', r, h + 1.0, x, SEA + (h + 1.0) / 2 - 1.0, z, { seg: 10 });
@@ -1243,6 +1399,8 @@ export function registerMarinaVessels(D, H) {
     B.tor('metal', C.galv, r + 0.07, 0.025, x, SEA + 0.6, z, { rx: HP, rs: 4, ts: 12 });
   }
 
+  // 【挡风棚(spray dodger)】帆布罩 loft 在拱形截面上(前低斜 → 后全高开敞),基部 y 0,
+  // 前端 z = 0 向尾(-Z)。返回 { canvas, frame } 两个几何。
   // Spray dodger: canvas hood lofted over arch sections (low sloped front → full-height open back), base at y 0,
   // front at z = 0 running aft (-Z). Returns { canvas, frame } geometries.
   function dodgerGeo(w, h, d) {
@@ -1261,6 +1419,9 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------------ SAILBOAT
+  // 【帆船】桅顶巡航游艇。水线对准道具的 y(摆放时 pos y 取海面 -1.6),船艏朝本地 +Z。
+  // 全程序化:随机船色/撞色、antifouling 底漆带、靴带/舷侧色带、柚木舷缘、舱室 + 舷窗、
+  // 舵轮或舵柄、挡风棚、桅杆 + 横桁 + 固定索具、帆套 + 懒绳、卷收艏帆、栏杆绳、碰垫、船尾旗、船名。
   // Masthead cruising yacht, waterline at the prop's y (put pos y at the sea, -1.6), bow toward local +Z.
   function sailboat(B, o) {
     const L = o.length ?? 10, Bm = L * 0.32, pick = (a) => a[Math.floor(B.r(0, a.length - 0.001))];
@@ -1275,14 +1436,17 @@ export function registerMarinaVessels(D, H) {
     B.add('paint', cached('sailBT' + L.toFixed(1), () => h.band(0.0, 0.07)), dark ? C.white : acc, 0, 0, 0, {});
     B.add('paint', cached('sailCV' + L.toFixed(1), () => h.band((t) => h.top(t) - 0.17, (t) => h.top(t) - 0.13)), dark ? '#c9a24a' : acc, 0, 0, 0, {});
     B.add('paint', deckGeo, '#e9e4d8', 0, 0, 0, {});
+    // 沿舷缘的柚木踏脚栏杆
     // teak toe rails along the sheer
     for (const sd of [-1, 1]) { const tp = []; for (let k = 1; k < 10; k++) { const t = k / 10, p = h.at(t * 0.985, 1, sd); tp.push(P3(p[0] * 0.985, p[1] + 0.02, p[2])); } B.tube('wood', C.teak, tp, 0.028, { radial: 4 }); }
+    // 舱室(舷窗) + 天窗 + 扶手杆
     // coachroof with ports, hatch and grab rails
     const t0 = 0.34, t1 = 0.64, zc = (zt(t0) + zt(t1)) / 2, len = zt(t1) - zt(t0), wC = h.hb(0.5) * 1.18, yC = h.top(0.5) + 0.2;
     B.box('gloss', '#f1eee6', wC, 0.42, len, 0, yC, zc, { round: true, r: 0.14 });
     for (const sd of [-1, 1]) { bx(B, 'gloss', C.glass, 0.01, 0.1, len * 0.28, sd * wC / 2, yC + 0.02, zc + len * 0.18); bx(B, 'gloss', C.glass, 0.01, 0.1, len * 0.22, sd * wC / 2, yC + 0.02, zc - len * 0.2); }
     bx(B, 'gloss', C.glass, wC * 0.4, 0.01, 0.5, 0, yC + 0.212, zc + len * 0.25);
     for (const sd of [-1, 1]) B.tube('wood', C.teak, [P3(sd * wC * 0.34, yC + 0.21, zc - len * 0.35), P3(sd * wC * 0.34, yC + 0.27, zc - len * 0.3), P3(sd * wC * 0.34, yC + 0.27, zc + len * 0.3), P3(sd * wC * 0.34, yC + 0.21, zc + len * 0.35)], 0.016, { radial: 4 });
+    // 座舱围板、踏板、舵轮或舵柄、舱口上方挡风棚
     // cockpit coamings, sole, wheel or tiller, and a spray dodger over the companionway
     const tc0 = 0.07, tc1 = 0.33, zcc = (zt(tc0) + zt(tc1)) / 2, lc = zt(tc1) - zt(tc0), wc = h.hb(0.2) * 1.2, yT = h.top(0.2);
     for (const sd of [-1, 1]) B.box('gloss', '#f1eee6', 0.08, 0.26, lc, sd * wc / 2, yT + 0.1, zcc, { r: 0.03 });
@@ -1298,6 +1462,7 @@ export function registerMarinaVessels(D, H) {
     B.tube('metal', C.galv, dg.frame.map((q) => P3(q[0], q[1] + dy0, q[2] + dz0)), 0.014, { radial: 4 });
     B.push(0, dy0 + 0.24, dz0 - 0.1, 0, -0.95); bx(B, 'gloss', C.glass, wC * 0.62, 0.3, 0.012, 0, 0, 0.004); B.pop();
     for (const sd of [-1, 1]) { B.push(sd * wC * 0.4, dy0 + 0.36, dz0 - 0.42, sd * 0.2); bx(B, 'gloss', C.glass, 0.012, 0.18, 0.34, 0, 0, 0); B.pop(); }
+    // 桅杆、横桁、桅顶套件
     // mast, spreaders, masthead kit
     const tm = 0.6, zm = zt(tm), y0 = yC + 0.21, Hm = L * 1.22 + 1.0, sp1 = h.hb(0.5) * 0.92, sp2 = h.hb(0.5) * 0.6;
     B.lathe('metal', '#d6dbe0', [[0, y0], [0.075, y0], [0.07, y0 + Hm * 0.55], [0.05, y0 + Hm], [0, y0 + Hm + 0.02]], 0, 0, zm, { seg: 8 });
@@ -1306,6 +1471,7 @@ export function registerMarinaVessels(D, H) {
     bx(B, 'metal', C.black, 0.02, 0.02, 0.4, 0, y0 + Hm + 0.1, zm - 0.1, { rx: 0.3 });                     // windex
     cy(B, 'metal', '#e8ecef', 0.09, 0.4, 0, y0 + Hm * 0.55, zm + 0.12, { seg: 6 });                         // radar reflector
     B.blink('#fff6e0', 0, y0 + Hm + 0.06, zm, { size: 0.035, rate: 0.1, lo: 1.6, hi: 1.9 });
+    // 固定索具(前支索、后支索、过横桁的上侧支索、下侧支索)
     // standing rigging (forestay, backstay, cap shrouds over the spreaders, lowers)
     const stem = h.at(0.995, 1, 1), tr0 = h.at(0.004, 1, 1), mh = [0, y0 + Hm * 0.985, zm];
     const rig = (pts, r = 0.013) => B.tube('metal', '#8d949b', pts.map((p) => P3(...p)), r, { radial: 3 });
@@ -1317,6 +1483,7 @@ export function registerMarinaVessels(D, H) {
       rig([[0, y0 + Hm * 0.4, zm], [cp[0], cp[1], cp[2] + 0.35]]);
       rig([[0, y0 + Hm * 0.4, zm], [cp[0], cp[1], cp[2] - 0.45]]);
     }
+    // 帆杆 + 主帆袋式帆罩、懒绳、主帆缭绳
     // boom with the mainsail stack-pack cover, lazy jacks, mainsheet
     const by = y0 + 1.05, bz0 = zm - 0.1, bz1 = zt(0.1);
     B.tube('metal', '#d6dbe0', [P3(0, by, bz0), P3(0, by + 0.08, bz1)], 0.055, { radial: 6 });
@@ -1326,11 +1493,13 @@ export function registerMarinaVessels(D, H) {
     bx(B, 'paint', shade(acc, 0.7), 0.02, 0.02, (bz0 - bz1) * 0.9, 0, by + 0.43, (bz0 + bz1) / 2 + 0.2);
     for (const sd of [-1, 1]) rig([[0, y0 + Hm * 0.55, zm], [sd * 0.16, by + 0.3, (bz0 + bz1) / 2 + 0.3]], 0.006);
     rig([[0, by, bz1 + 0.35], [0, yT + 0.15, zt(0.03)]], 0.008);
+    // 卷在前支索上的艏帆(撞色 UV 保护边)+ 卷帆鼓
     // furled genoa on the forestay (UV strip in the accent colour) + furling drum
     const fs = [];
     for (let k = 0; k <= 10; k++) { const t = k / 10; fs.push(P3(0, stem[1] + 0.25 + (mh[1] - stem[1] - 0.25) * t * 0.9, stem[2] - 0.05 + (zm - stem[2] + 0.05) * t * 0.9)); }
     B.tube('paint', acc, fs, (t) => 0.018 + 0.075 * Math.pow(Math.sin(PI * Math.min(1, t * 1.05)), 0.7) * (1 - t * 0.6), { radial: 6 });
     cy(B, 'metal', C.galv, 0.07, 0.12, 0, stem[1] + 0.16, stem[2] - 0.05, { seg: 8 });
+    // 艏艉护栏、栏杆立柱、救生绳
     // bow + stern pulpits, stanchions, lifelines
     const pul = (ts, up, closeFwd) => {
       const pts = [];
@@ -1348,6 +1517,7 @@ export function registerMarinaVessels(D, H) {
       tops.push(sp[sd]);
       B.tube('metal', '#c9ced3', tops, 0.007, { radial: 3 });
     }
+    // 邻泊位一侧的碰垫、后支索上的船尾旗、船尾船名
     // fenders on the side facing the neighbouring finger, ensign on the backstay, transom name
     const fs0 = o.fenderSide ?? 1;
     for (const t of [0.3, 0.62]) { const p = h.at(t, 1, fs0); B.lathe('gloss', t > 0.5 ? C.white : '#2f3a57', [[0, -0.28], [0.07, -0.26], [0.1, -0.18], [0.1, 0.18], [0.07, 0.26], [0, 0.28]], p[0] * 1.02 + fs0 * 0.1, p[1] - 0.55, p[2], { seg: 8 }); B.tube('rubber', C.white, [P3(p[0] * 0.96, p[1] + 0.3, p[2]), P3(p[0] * 1.02 + fs0 * 0.1, p[1] - 0.26, p[2])], 0.007, { radial: 3 }); }
@@ -1357,6 +1527,8 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------------ MOTOR YACHT
+  // 【机动游艇】硬折角舭船体、舷窗带、游泳平台 + 登船梯、沙龙(深色窗带、前倾前脸)、
+  // 飞桥 + 舵座 + 遮阳棚、雷达拱、艏栏杆 + 锚、碰垫、船尾旗、船尾船名。
   function motorYacht(B, o) {
     const L = o.length ?? 12, Bm = L * 0.34, pick = (a) => a[Math.floor(B.r(0, a.length - 0.001))];
     const hullC = o.color ?? pick(['#f4f1ea', '#f4f1ea', '#1f2a40', '#e9e4d6']), dark = col(hullC).getHSL({}).l < 0.4;
@@ -1370,10 +1542,12 @@ export function registerMarinaVessels(D, H) {
     B.add('paint', cached('myHW' + L.toFixed(1), () => h.band((t) => h.top(t) - 0.62, (t) => h.top(t) - 0.5)), C.glass, 0, 0, 0, {});   // hull windows
     B.add('paint', deckGeo, '#ece8de', 0, 0, 0, {});
     { const tp = []; for (let k = 1; k < 16; k++) { const t = k / 16, p = h.at(t, 1, 1); tp.push(P3(p[0] * 1.01, p[1] - 0.04, p[2])); } B.tube('metal', C.galv, tp, 0.03, { radial: 4 }); B.tube('metal', C.galv, tp.map((p) => P3(-p[0], p[1], p[2])), 0.03, { radial: 4 }); }
+    // 游泳平台 + 登船梯
     // swim platform + boarding ladder
     const tr0 = h.at(0.003, 1, 1);
     bx(B, 'wood', C.teak, h.hb(0) * 2 - 0.1, 0.06, 0.9, 0, 0.32, tr0[2] - 0.45);
     for (const sd of [-1, 1]) cy(B, 'metal', C.galv, 0.015, 0.5, sd * 0.2, 0.1, tr0[2] - 0.86, { seg: 5 });
+    // 沙龙舱室(深色窗带、前倾前脸)、飞桥 + 舵座、遮阳棚、雷达拱
     // saloon deckhouse (dark window band, raked front), flybridge + helm, bimini, radar arch
     const ts0 = 0.14, ts1 = 0.64, zs = (zt(ts0) + zt(ts1)) / 2, ls = zt(ts1) - zt(ts0), ws = h.hb(0.4) * 1.56, ys = h.top(0.4) + 0.42;
     B.box('gloss', hullC === '#1f2a40' ? '#f1eee6' : '#f4f1ea', ws, 0.84, ls, 0, ys, zs, { round: true, r: 0.18 });
@@ -1390,6 +1564,7 @@ export function registerMarinaVessels(D, H) {
     B.box('gloss', C.white, 0.7, 0.14, 0.3, 0, yf + 1.62, zt(0.19), { round: true, r: 0.06 });           // open-array radome
     B.sph('gloss', C.white, 0.14, 0.4, yf + 1.65, zt(0.19), { ws: 8, hs: 5, half: true });
     cy(B, 'metal', C.black, 0.008, 1.2, -0.3, yf + 2.1, zt(0.19), { seg: 4 });
+    // 艏栏杆、锚床上的锚、船尾船名、碰垫、船尾旗
     // bow rail, anchor on the roller, transom name, fenders, ensign
     const bpts = [];
     for (let k = 0; k <= 8; k++) { const t = 0.62 + 0.36 * (k / 8), p = h.at(t, 1, -1); bpts.push(P3(p[0] * 0.9, p[1] + 0.55, p[2])); }
@@ -1407,6 +1582,8 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------------ FISHING BOAT
+  // 【渔船】高艏船体、舷墙色带、轮胎碰垫、前置驾驶台(桅杆、雷达、航行灯)、
+  // 外展撑杆、尾部作业甲板(A 形吊门、网鼓、鱼箱、浮标)。
   function fishingBoat(B, o) {
     const L = o.length ?? 10, Bm = L * 0.36, pick = (a) => a[Math.floor(B.r(0, a.length - 0.001))];
     const hullC = o.color ?? pick(['#2f5a52', '#8a2f35', '#2f3a57', '#3b5f8a']), acc = o.accent ?? pick(['#e2b64c', C.white]);
@@ -1418,12 +1595,14 @@ export function registerMarinaVessels(D, H) {
     B.add('paint', cached('fbBT' + L.toFixed(1), () => h.band(0.0, 0.08)), C.white, 0, 0, 0, {});
     B.add('paint', cached('fbSH' + L.toFixed(1), () => h.band((t) => h.top(t) - 0.24, (t) => h.top(t) - 0.02)), acc, 0, 0, 0, {});
     B.add('paint', deckGeo, '#9aa0a0', 0, 0, 0, {});
+    // 舷墙扶手 + 两舷轮胎碰垫
     // bulwark rail + tyre fenders along both sides
     for (const sd of [-1, 1]) {
       const tp = []; for (let k = 1; k < 16; k++) { const t = k / 16, p = h.at(t, 1, sd); tp.push(P3(p[0] * 0.99, p[1] + 0.05, p[2])); }
       B.tube('wood', C.teakDk, tp, 0.04, { radial: 4 });
       for (const t of [0.25, 0.45, 0.65]) { const p = h.at(t, 0.8, sd); tyre(B, p[0] + sd * 0.09, p[1], p[2], 'x', 0.8); }
     }
+    // 前置驾驶台:窗、桅杆 + 航行灯、雷达、外展撑杆
     // wheelhouse forward with windows, mast + lights, radar, outrigger booms
     const tw0 = 0.52, tw1 = 0.76, zw = (zt(tw0) + zt(tw1)) / 2, lw = zt(tw1) - zt(tw0), ww = h.hb(0.64) * 1.3, yw = h.top(0.64) + 0.85;
     B.box('gloss', '#f1eee6', ww, 1.7, lw, 0, yw, zw, { round: true, r: 0.1 });
@@ -1439,6 +1618,7 @@ export function registerMarinaVessels(D, H) {
       B.tube('metal', '#8d949b', [P3(sd * 0.25, my + 0.2, mz), P3(sd * (Bm * 0.55 + 2.2), my + 3.6, mz - 0.4)], 0.035, { radial: 5 });
       B.tube('metal', '#8d949b', [P3(0, my + 3.0, mz), P3(sd * (Bm * 0.55 + 2.2), my + 3.6, mz - 0.4)], 0.008, { radial: 3 });
     }
+    // 尾部作业甲板:A 形吊门、网鼓、鱼箱、浮标
     // aft working deck: A-frame gantry, net drum, fish boxes, marker buoys
     const za = zt(0.04), ya = h.top(0.05);
     for (const sd of [-1, 1]) B.tube('metal', C.mustardDk, [P3(sd * h.hb(0.05) * 0.85, ya, za + 0.15), P3(sd * 0.35, ya + 2.1, za - 0.15)], 0.06, { radial: 6 });
@@ -1452,6 +1632,8 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------------ RIB tender
+  // 【RIB 硬底橡皮艇】GRP 深 V 底 + 灰色 Hypalon 充气围管(带抓手绳)、
+  // 驾驶台 + 风挡 + 骑士座(或加座板/油箱/桨),尾挂舷外机。
   function ribBoat(B, o) {
     const L = o.length ?? 5, pick = (a) => a[Math.floor(B.r(0, a.length - 0.001))];
     const tubeC = o.color ?? pick(['#5d6470', '#2f3a57', '#e9703a', '#6b7280']), R = L * 0.07, hw = L * 0.19;
@@ -1485,17 +1667,23 @@ export function registerMarinaVessels(D, H) {
   }
 
   // ================================================================================================ TUG "NUDGE" (on blocks)
+  // 【拖船"NUDGE"(船台上墩)】可玩方块:tug-hull x 14.5…20.5, z -24…-13,甲板 y 2.6;
+  // tug-house x 15.8…19.2, z -20.4…-17.4,顶 4.3;坡道落在船尾(+Z 端,x 16.4…18.6)。
+  // 放在船体中心 (17.5, 0, -18.5):本地船体 x ±3, z ±5.5,艏朝 -Z。
   // Blocks: tug-hull x 14.5…20.5, z -24…-13, deck y 2.6; tug-house x 15.8…19.2, z -20.4…-17.4, top 4.3; the ramp lands on
   // the stern (+Z end, x 16.4…18.6). Placed at the hull centre (17.5, 0, -18.5): local hull x ±3, z ±5.5, bow at -Z.
+  // 【轮胎碰垫截面】贴墙平挂的轮胎:`axis` = 墙面法线轴('x' | 'z')。
   // Tyre hung flat against a wall: `axis` = the wall normal axis ('x' | 'z').
   const TYRE = [[0.33, -0.05], [0.315, -0.088], [0.28, -0.103], [0.2, -0.1], [0.17, -0.06], [0.17, 0.06], [0.2, 0.1], [0.28, 0.103], [0.315, 0.088], [0.33, 0.05]];
   function tyre(B, x, y, z, axis, s = 0.9, c = '#202227') {
     B.lathe('rubber', c, TYRE, x, y, z, { seg: 12, closed: true, s, ...(axis === 'x' ? { rz: HP } : { rx: HP }) });
   }
+  // 【挂绳】a 到 b 的绳缆,b 端带一个小环(穿过轮胎/五金件)。
   // Rope lanyard from a to b that ends in a small loop through a tyre / fitting at b.
   function lanyard(B, a, b, r = 0.014, c = C.rope) {
     B.tube(ns(B, 'rubber'), c, [P3(...a), P3((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 0.02, (a[2] + b[2]) / 2 + 0.01), P3(...b)], r, { radial: 4 });
   }
+  // 【短链】a 到 b 之间一串椭圆链环(相邻环扭转 90°)。
   // Short chain (a few oval links) from a to b.
   function chain(B, a, b, n = 5, r = 0.035) {
     for (let k = 0; k < n; k++) {
@@ -1505,6 +1693,7 @@ export function registerMarinaVessels(D, H) {
       B.tor('metal', '#4d5157', r, 0.009, x, y, z, { ry: yaw + (k % 2 ? HP : 0), rx: pitch - HP, sy: 1.5, rs: 4, ts: 8 });
     }
   }
+  // 【船台支架】螺旋调节式船墩(三脚架 + 丝杠 + 垫块),顶在 z = 0 的本地船壳壁上(法线 +Z)。
   // Screw-type boat stand (tripod + threaded post + pad) pressing on a hull wall at local plane z = 0 (normal +Z).
   function boatStand(B, x, padY, out) {
     const hub = [x, 0.5, out], pad = [x, padY, 0.05];
@@ -1519,6 +1708,8 @@ export function registerMarinaVessels(D, H) {
     B.box('rubber', C.rubber, 0.22, 0.3, 0.05, pad[0], pad[1], pad[2], { r: 0.015 });
     B.box('metal', '#5f7d84', 0.14, 0.18, 0.06, pad[0], pad[1] - 0.02, pad[2] + 0.05, { r: 0.015 });
   }
+  // 【垫木堆】船壳边缘下的 timber 垫木垛(本地平面 z = 0 是船壳壁,木块朝 +Z 伸出):
+  // 贴地一根 longitudinal 垫木,然后交叉垫木伸进船底(端头露出),顶上一块楔木。
   // Timber cribbing stack under the hull edge (local plane z = 0 is the hull wall, blocks poke out toward +Z).
   function cribbing(B, x, layers, out) {
     // a sleeper on the ground along the hull, then crossed timbers running in under the hull (ends showing)
@@ -1529,6 +1720,7 @@ export function registerMarinaVessels(D, H) {
     }
     bx(B, 'wood', shade(C.teak, 0.8), 0.28, 0.1, 0.22, x, 0.16 + layers * 0.18 + 0.1, 0.1, { rx: 0.3 });   // wedge
   }
+  // 【舷窗】墙上的圆舷窗(平面 z = 0,朝 +Z):铜框、深色玻璃、天空反光、三只 dogs。
   // Round porthole on a wall (plane z = 0, facing +Z)
   function porthole(B, x, y, r = 0.13, rim = '#b58a4a') {
     noShadow(B, () => {
@@ -1538,6 +1730,8 @@ export function registerMarinaVessels(D, H) {
     for (let k = 0; k < 3; k++) { const a = -HP + k * (TAU / 3); bx(B, 'metal', rim, 0.04, 0.05, 0.03, x + Math.cos(a) * (r + 0.05), y + Math.sin(a) * (r + 0.05), 0.02, { rz: a }); }
     });
   }
+  // 【Kraken 船队烟囱】圆角筒身 + 公司色带(黄/白/青/烟黑),返回几何(基部 y 0)。
+  // 拖船甲板室顶上那座小烟囱就是它,渡轮大烟囱是 ferry_bridge 里的特制品。
   // Kraken fleet stack/funnel (rounded casing with company bands); returns its geometry (base at y 0).
   function fleetFunnelGeo(a, b, r, h, key) {
     return cached('funnel|' + key, () => {
@@ -1554,6 +1748,11 @@ export function registerMarinaVessels(D, H) {
     });
   }
 
+  // 【tug_dress:拖船 NUDGE 整体装修】放在船体中心,装修 tug-hull/tug-house 方块:
+  // 前倾艏柱 + 艏护舷 + 轮胎垛、舷缘护舷、链条轮胎碰垫、防磨条、舷窗、水线带 + 载重线、
+  // 矮甲板栏杆(坡道处开口,rail 碰撞条)、H 形缆桩 + 拖缆绞车(碰撞体)、拖钩、
+  // 带门窗舷灯的甲板室、Kraken 烟囱(碰撞体)、桅杆(拖带灯、汽笛、探照灯、雷达、旗);
+  // 船台区:船墩、垫木、舷侧斜梯。普通局与 Zone Control 局(access: true)两种开口形态。
   D.tug_dress = {
     desc: 'Harbour tug NUDGE up on blocks (dresses the tug-hull/tug-house blocks, placed at the hull centre): raked stem with bow fender + tyre stack, gunwale fender, tyre fenders all round on chains, rubbing strake, portholes, boot-top + load line, low deck rail open at the ramp (rail colliders), H-bitt + towing winch (colliders), towing hook, windowed deckhouse with doors + sidelights, Kraken stack (collider), mast with towing lights, radar, horn, searchlight, antennas + flag; boat stands, timber cribbing and a ladder in the yard.',
     params: { access: 'Zone Control build: open the bow rail for the boarding stair (local x 0.35…2.65) and the west rail for the crate steps (local z 1.55…5.25, to the stern corner)' },
@@ -1561,11 +1760,14 @@ export function registerMarinaVessels(D, H) {
     build(B, o = {}) {
       B.aoBase = 0;
       const HX = 3.0, HZ = 5.5, DK = 2.6, buff = C.buff, tugDk = C.tugDk;
+      // Zone Control 通道(tug_access 负责楼梯 + 箱阶):在船艏楼梯落脚处(本地 x)和
+      // 西侧箱阶处(本地 z)给甲板栏杆、舷缘护舷和舷侧杂物留豁口
       // Zone Control access (tug_access dresses the stair + crates): gaps in the deck rail, the gunwale fender and the
       // hull-side clutter where the bow stair lands (bow, local x) and where the crate steps stand (west side, local z)
       const acc = !!o.access, bowGap = [0.35, 2.65], westGap = [1.55, 5.25];
       const inBow = (x) => acc && x > bowGap[0] - 0.05 && x < bowGap[1] + 0.1;
       const inWest = (z, pad = 0) => acc && z > westGap[0] - pad && z < westGap[1] + pad;
+      // --- 舷缘护舷:绕船体一周的连续橡胶防撞条(坡道处开口),在艏部鼓成艏护舷
       // --- gunwale fender: one continuous rubber bumper around the hull (open at the ramp), swelling into the bow fender
       const gy = 2.44, pts = [], rad = [], R0 = 0.12, cr = 0.2;
       const push = (x, z, r = R0) => { pts.push(P3(x, gy, z)); rad.push(r); };
@@ -1594,6 +1796,7 @@ export function registerMarinaVessels(D, H) {
         pts.forEach((p, k) => { if (p[2] < -HZ + 0.05 && inBow(p[0])) { flush(); return; } run.push(p); rr.push(rad[k]); });
         flush();
       }
+      // --- 艏护舷下的前倾艏柱,搁在艏部垫木上;艏轮胎垛用链条锁在它上面
       // --- raked stem under the bow fender, resting on the bow cribbing; bow tyre stack chained to it
       const stem = [];
       for (let k = 0; k <= 8; k++) { const t = k / 8, y = 0.42 + t * 1.8; stem.push(P3(0, y, -HZ - 0.09 - 0.21 * Math.pow(t, 1.6))); }
@@ -1602,6 +1805,7 @@ export function registerMarinaVessels(D, H) {
       for (const [y, z] of [[0.82, -5.77], [1.38, -5.83], [1.92, -5.91]]) tyre(B, 0, y, z, 'z', 0.9);
       for (const s of [-1, 1]) B.box('rubber', C.rubber, 0.34, 1.7, 0.34, s * HX, 1.45, -HZ, { round: true, r: 0.12 });
       lanyard(B, [0, 2.26, -5.84], [0, 2.14, -5.93], 0.016);
+      // --- 防磨条、水线带、载重线、船名、舷窗
       // --- rubbing strake, boot-top line, load line, name, portholes
       for (const s of [-1, 1]) {
         B.cyl('gloss', tugDk, 0.05, 2 * HZ - 0.3, s * HX, 1.25, 0, { rx: HP, seg: 10 });
@@ -1612,11 +1816,13 @@ export function registerMarinaVessels(D, H) {
       for (const s of [-1, 1]) {
         B.push(s * HX, 0, 0, s * HP);                                              // local +Z = out of this side
         text(B, 'NUDGE', 0.32, C.white, s * 3.9, 0.8, 0.002, { weight: 0.17 });
+        // 载重线(Plimsoll)标志,舯部
         // load line (Plimsoll) mark amidships
         B.tor(ns(B, 'paint'), C.white, 0.16, 0.018, -s * 1.3, 1.02, 0.01, { rs: 4, ts: 24 });
         B.box(ns(B, 'paint'), C.white, 0.5, 0.035, 0.012, -s * 1.3, 1.02, 0.01, { r: 0.004 });
         B.box(ns(B, 'paint'), C.white, 0.4, 0.03, 0.012, -s * 1.3, 1.25, 0.01, { r: 0.004 });
         for (const z of [-2.2, -1.0, 0.2]) porthole(B, -s * z, 1.72);
+        // 舷缘护舷下挂的链条轮胎碰垫
         // tyre fenders hung on chains below the gunwale fender
         for (let k = 0; k < 8; k++) {
           const z = -4.0 + k * 1.2;
@@ -1625,21 +1831,25 @@ export function registerMarinaVessels(D, H) {
           lanyard(B, [-s * z - 0.1, 2.31, 0.06], [-s * z - 0.04, 1.97, 0.1]);
           lanyard(B, [-s * z + 0.1, 2.31, 0.06], [-s * z + 0.04, 1.97, 0.1]);
         }
+        // 做旧:轮胎擦痕 + 船体下部的底漆补丁
         // weathering: tyre scuffs + a primer patch on the lower hull
         for (let k = 0; k < 8; k += 2) if (!(s < 0 && inWest(-4.0 + k * 1.2, 0.4))) streak(B, -s * (-4.0 + k * 1.2), 1.42, 0.004, 0.36, 0.3, shade(C.tug, 0.78), C.tug);
         streak(B, s * 3.4, 0.62, 0.005, 0.9, 0.5, mixc(C.tug, '#b9b3a6', 0.42), C.tug);                 // sanded patches
         streak(B, s * 2.55, 0.5, 0.006, 0.55, 0.36, mixc(C.tug, '#b9b3a6', 0.32), C.tug);
         B.pop();
       }
+      // 船尾:艉部轮胎 + 坡道左侧的船名/籍港
       // stern: quarter tyres + name/port left of the ramp
       for (const x of [1.75, 2.55]) tyre(B, -x, 1.72, HZ + 0.09, 'z', 0.9);                      // (+X quarter: yard scaffold)
       text(B, 'NUDGE', 0.2, C.white, -2.15, 1.0, HZ + 0.002, { weight: 0.18 });
       text(B, 'INKWAVE', 0.1, C.white, -2.15, 0.82, HZ + 0.002, { weight: 0.2, spacing: 0.4 });
+      // --- 低矮甲板边栏杆(0.36 m),坡道处开口;buff 色涂装
       // --- low deck-edge rail (0.36 m), open at the ramp; buff paint
       const railY = DK + 0.36, inset = 0.1;
       const railRuns = !acc ? [
         [[1.3, HZ - inset], [HX - inset, HZ - inset], [HX - inset, -HZ + inset], [-HX + inset, -HZ + inset], [-HX + inset, HZ - inset], [-1.3, HZ - inset]],
       ] : [
+        // Zone Control:船尾坡道、船艏楼梯落脚处、西侧箱阶三处开口
         // Zone Control: open at the stern ramp, the bow stair landing and the west crate steps
         [[1.3, HZ - inset], [HX - inset, HZ - inset], [HX - inset, -HZ + inset], [bowGap[1], -HZ + inset]],
         [[bowGap[0], -HZ + inset], [-HX + inset, -HZ + inset], [-HX + inset, westGap[0]]],
@@ -1662,6 +1872,15 @@ export function registerMarinaVessels(D, H) {
         B.tube('metal', buff, rp.map((p) => P3(p[0], DK + 0.19, p[2])), 0.012, { radial: 6 });
         for (const e of [rp[0], rp[rp.length - 1]]) B.sph('metal', buff, 0.032, e[0], railY, e[2], { ws: 8, hs: 6 });
       }
+      // 【甲板栏杆碰撞条】rail:小孩走不出甲板边,子弹/墨水/鱿鱼穿过;与栏杆一样在坡道开口。
+      // 悬浮带 0.62…1.1 m 高于甲板:小孩身体(0.35…1.45 m)过不去,但沿墨汁船侧爬上的鱿鱼
+      // 会从它下面穿过(攀爬探针在 +0.3 / +0.85 m,触不到它就先弹上台阶),
+      // 所以船体仍是鱿鱼上舷侧高地的通道。碰撞盒贴着舷外(0.3 m,悬在场地之上):
+      // 甲板上任何地方的小孩——哪怕攀爬后正好在边缘浮出——都被推回舷内
+      // (rail 沿最近面外推),绝不会被推出甲板;nav 也保住甲板边缘节点
+      // (甲板室旁 1.3 m 窄条上仅有的那些)和艏排。
+      // (距边缘 5 mm,防边缘行 nav 节点卡在浮点取舍;外伸 ≤ 0.3 m,否则 nav 的
+      // 45° 净空探针会把它们丢掉)
       // deck-rail colliders (rail: kids can't walk off the deck edge, shots / ink / squids pass), open at the ramp like
       // the rail itself. A floating band 0.62…1.1 m over the deck: a kid's body (0.35…1.45 m) can't get past it, but a
       // squid climbing the inked hull side passes under it (the climb probes at +0.3 / +0.85 m never touch it before the
@@ -1684,6 +1903,7 @@ export function registerMarinaVessels(D, H) {
         B.col(bowGap[1], r0, -HZ - O, HX + O, r1, -HZ - e, { rail: true });
       }
       for (const s of [-1, 1]) B.col(s > 0 ? 1.26 : -HX - O, r0, HZ + e, s > 0 ? HX + O : -1.26, r1, HZ + O, { rail: true });
+      // --- 艏甲板 H 形缆桩(碰撞体)+ 甲板室旁的拖缆绞车(碰撞体)
       // --- foredeck H-bitt (collider) and the towing winch against the deckhouse (collider)
       B.box('metal', C.steelDk, 1.16, 0.05, 0.4, 0, DK + 0.025, -3.7, { r: 0.02 });
       for (const s of [-1, 1]) {
@@ -1705,6 +1925,7 @@ export function registerMarinaVessels(D, H) {
       B.tube('rubber', C.rope, [P3(0.3, wy + 0.3, wz + 0.05), P3(0.33, wy + 0.34, wz + 0.2), P3(0.36, wy + 0.1, wz + 0.36), P3(0.37, wy - 0.12, wz + 0.37)], 0.045, { radial: 7 });
       B.tor('rubber', C.ropeDk, 0.08, 0.035, 0.37, wy - 0.2, wz + 0.37, { ry: HP, rs: 6, ts: 12 });
       B.col(-0.8, DK, 1.1, 0.8, DK + 0.9, 1.84);
+      // --- 甲板室:前倾前窗、侧窗 + 门、艉窗、拖钩、舷灯、救生圈
       // --- deckhouse: raked front windows, side windows + doors, aft windows, towing hook, sidelights, life ring
       const HB = 2.6, HT = 4.3, hx = 1.7, hz0 = -1.9, hz1 = 1.1;
       B.push(0, HB, hz0, PI);                                                         // front (-Z)
@@ -1733,6 +1954,7 @@ export function registerMarinaVessels(D, H) {
       B.tube('metal', '#3c4046', [P3(0, 1.3, 0.12), P3(0, 1.14, 0.14), P3(0, 1.02, 0.14), P3(0.0, 0.95, 0.1), P3(0, 0.97, 0.04), P3(0, 1.04, 0.03)], 0.04, { radial: 8 });
       B.box('gloss', C.white, 2 * hx + 0.2, 0.05, 0.1, 0, HT - HB - 0.03, 0.05, { r: 0.02 });
       B.pop();
+      // --- 烟囱(碰撞体)在甲板室顶,偏艉;雨帽排气
       // --- the stack (collider) on the deckhouse roof, aft; rain-capped exhaust
       B.add('gloss', fleetFunnelGeo(0.45, 0.35, 0.16, 1.2, 'tug'), 'white', 0, HT, 0.45, {});
       B.col(-0.45, HT, 0.1, 0.45, HT + 1.2, 0.8);
@@ -1745,6 +1967,7 @@ export function registerMarinaVessels(D, H) {
         B.tube('paint', C.white, [P3(-0.09, -0.03, 0.014), P3(-0.07, 0.05, 0.014), P3(0.0, 0.09, 0.014), P3(0.06, 0.05, 0.014), P3(0.05, -0.02, 0.014), P3(0.0, -0.03, 0.014)], 0.014, { radial: 4 });
         B.pop();
       }
+      // --- 桅杆(buff 色)立在甲板室顶前部:拖带灯、汽笛、探照灯、横桁、顶部雷达(≥ 4.6 m 高出屋面)
       // --- mast (buff) on the deckhouse roof front: towing lights, horn, searchlight, yard, radar on top (≥ 4.6 m over the roof)
       const mx = 0, mz = -1.3, mTop = 9.15;
       B.box('metal', C.steelDk, 0.3, 0.04, 0.3, mx, HT + 0.02, mz, { r: 0.012 });
@@ -1767,6 +1990,7 @@ export function registerMarinaVessels(D, H) {
       B.box('gloss', C.whiteDk, 0.26, 0.18, 0.24, mx, mTop + 0.08, mz, { round: true, r: 0.04 });
       radar(B, mx, mTop + 0.2, mz, 1.1, 2.7);
       B.blink('#ff5a4a', mx, mTop + 0.45, mz, { size: 0.04, rate: 0.5, lo: 0.3, hi: 4.5 });
+      // --- 船台区:船墩、艏部 + 舱底垫木、舷侧斜梯
       // --- in the yard: boat stands, cribbing under the bow + bilges, a ladder up the west side
       for (const s of [-1, 1]) {
         B.push(s * HX, 0, 0, s * HP);
@@ -1777,7 +2001,7 @@ export function registerMarinaVessels(D, H) {
       }
       B.push(acc ? -0.35 : 0, 0, -HZ, PI); cribbing(B, 0, 2, 0.5); B.pop();
       if (!acc) {
-      B.push(-HX, 0, 2.6, -HP);                                                                          // ladder (west side)
+      B.push(-HX, 0, 2.6, -HP);                                                                          // ladder (west side) —— 斜梯(舷侧)
       for (const s of [-1, 1]) {
         B.tube('metal', '#c9ced3', [P3(s * 0.23, 0.02, 0.78), P3(s * 0.23, 2.3, 0.14)], 0.024, { radial: 6 });
         B.box('rubber', C.rubber, 0.08, 0.05, 0.1, s * 0.23, 0.025, 0.79, { r: 0.015 });
@@ -1789,13 +2013,21 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ================================================================================================ HOUSEBOAT "SEA SHANTY"
+  // 【船屋"SEA SHANTY"】可玩方块:houseboat-hull x -17.6…-7.0, z -23.4…-14.4,甲板 y 0.7
+  // (宽体浮筒宅船,占满泊位:可从长码头跳板侧、指桥、栈道跳上;加油码头一侧带门廊栏杆);
+  // houseboat-cabin x -16.2…-13.0, z -21.4…-16.2,屋面 y 2.9(仅鱿鱼可达的高地);
+  // 跳板落在西缘 z -18.8。放在舱室中心 (-14.6, 0, -18.9):本地船体 x -3.0…7.6, z ±4.5
+  // (露天日光甲板是本地 x 1.6…7.6);舱 x ±1.6, z -2.5…2.7。
   // Blocks: houseboat-hull x -17.6…-7.0, z -23.4…-14.4, deck y 0.7 (a wide floating-home pontoon filling the slip:
   // kid-hoppable from the Long Pier gangway side, the finger pier and the boardwalk; a porch rail along the fuel-dock
   // side); houseboat-cabin x -16.2…-13.0, z -21.4…-16.2, roof y 2.9 (squid-only high ground); gangway lands on the west
   // edge at z -18.8. Placed at the CABIN centre (-14.6, 0, -18.9): local hull x -3.0…7.6, z ±4.5 (the open sun deck is
   // local x 1.6…7.6); cabin x ±1.6, z -2.5…2.7.
+  // 【植被模板缓存】灌木丛/花球几何按种子缓存,plantBed 和 lightBike 的篮子共用。
   const bushPuff = (seed, det = 1) => cached('puff|' + seed + '|' + det, () => H.puffGeo(det, seed));
   const flowerBlob = (seed) => cached('blob|' + seed, () => H.blobGeo(1, 0, seed));
+  // 【花坛】在 W × D 占地、高度 y(花盆土面)处铺一垄灌木 + 花头:一列圆滚滚的 foliage 团块
+  // 按确定性随机错开,花用黄金比散点——便宜但读感茂盛的"程序化花境"。
   // leafy mound + flower heads inside a W × D footprint at height y (planter soil level)
   function plantBed(B, x, y, z, W, Dp, seed, flowers = ['#e79ab8', '#f2eee6', '#e5b94d', '#a79be0'], det = 1) {
     const n = Math.max(2, Math.round(W / 0.36));
@@ -1808,6 +2040,8 @@ export function registerMarinaVessels(D, H) {
       B.add('foliage', flowerBlob(k % 8), flowers[k % flowers.length], fx, y + 0.24 + ((k * 7) % 5) * 0.025, fz, { s: 0.045 });
     }
   }
+  // 【村舍木窗】墙上的木框窗(平面 z = 0,朝 +Z):框、十字梃、玻璃、窗帘、窗台;
+  // box = true 时窗下挂一个自灌溉花盆(自动调用 plantBed 填花)。
   // Timber-framed cottage window on a wall (plane z = 0, facing +Z): frame, cross mullions, glass, curtains, sill.
   function cottageWindow(B, x, y, w, h, curtain = '#e5b94d', box = false) {
     noShadow(B, () => {
@@ -1825,6 +2059,9 @@ export function registerMarinaVessels(D, H) {
     });
   }
 
+  // 【轻便城市自行车】沿本地 +X(前轮 +X),远景陈设用(约 1.3k 三角):
+  // 两个车圈(轮胎 + 轮圈 + 辐条 + 花鼓)、车架主管三角、座垫、把立 + 车把把套、
+  // 链条罩、挡泥板弧线、脚撑;可选前筐(筐里还塞了一丛绿植)。
   // Light city bike along local +X (front wheel +X), for set dressing at a distance (≈ 1.3k tris).
   function lightBike(B, frame, basket = false) {
     const R = 0.33, rw = [-0.5, R], fw = [0.52, R], bb = [-0.05, 0.3], st = [-0.2, 0.86], ht = [0.38, 0.9];
@@ -1854,18 +2091,27 @@ export function registerMarinaVessels(D, H) {
       B.pop();
     }
   }
+  // 【圆弧采样】XY 平面上的圆弧点列(挡泥板等用)。
   function arcPtsXY(cx, cy2, R, a0, a1, n) { const out = []; for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * (i / n); out.push(P3(cx + Math.cos(a) * R, cy2 + Math.sin(a) * R, 0)); } return out; }
 
+  // 【houseboat_dress:船屋 SEA SHANTY 整体装修】放在舱室中心:
+  // 甲板边木压条 + 防磨条、水线带、舷弧线 + 排水口、船名、碰垫、系泊缆(到长码头与
+  // 加油码头系缆桩)、门廊栏杆(加油码头侧 + 敞水船尾,rail 碰撞条;跳板/码头/指桥/栈道处开口)、
+  // 带窗帘 + 花盆的木窗、带灯 + 信箱的门、檐口/天沟;露天日光甲板(咖啡桌椅套 + 木花槽长凳,
+  // 低 cover 碰撞件)和串灯;屋顶花园(花槽、太阳能板、皮划艇架、烟囱——碰撞体)、
+  // 躺椅 + 收拢的遮阳伞;自行车 + 晾衣绳。
   D.houseboat_dress = {
     desc: 'Houseboat SEA SHANTY (dresses the houseboat hull/cabin blocks, placed at the cabin centre): timber deck-edge cap + rubbing strip, waterline band, sheer line + scuppers, names, fenders, mooring lines to the Long Pier and fuel-dock cleats, porch rail along the fuel-dock side + the open-water stern (rail colliders; open at the gangway, the pier, the finger pier and the boardwalk), cottage windows with curtains + flower boxes, door with lamp + mailbox, fascia/gutters; open sun deck with a café table set + a timber planter bench (colliders) and festoon lights; roof garden (planter trough, solar panels, kayak on a rack, chimney — colliders), deck chair + furled parasol; bike + laundry line.',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
       B.aoBase = 0.7;
+      // 本地坐标架 = 舱室中心;船体从 XW(西,长码头侧)到 XE(东,加油码头侧)
       // local frame = the cabin centre; the hull runs from XW (west, Long Pier side) to XE (east, fuel-dock side)
       const XW = -3.0, XE = 7.6, XC = (XW + XE) / 2, HW = (XE - XW) / 2, HZ = 4.5;
       const DK = 0.7, CX = 1.6, CZ0 = -2.5, CZ1 = 2.7, RF = 2.9, wood = C.teak, woodDk = C.teakDk;
       const ORG = [-14.6, -18.9];                                               // placement (world) → local = world - ORG
       const band = '#2f3b3a', sheer = shade(C.houseTeal, 1.12);
+      // --- 浮筒船体:水线带、防磨条、浅色舷弧线、甲板边木压条、排水口
       // --- pontoon hull: waterline band, rubbing strip, pale sheer line, deck-edge timber cap on the faces, scuppers
       for (const [x, s] of [[XW, -1], [XE, 1]]) {
         B.box(ns(B, 'paint'), band, 0.02, 0.34, 2 * HZ + 0.04, x + s * 0.01, -1.5, 0, { r: 0.006 });
@@ -1882,6 +2128,7 @@ export function registerMarinaVessels(D, H) {
       noShadow(B, () => {                                                       // deck scuppers just above the rubbing strip
         for (let x = XW + 1.2; x < XE - 0.8; x += 2.1) for (const s of [-1, 1]) bx(B, 'paint', band, 0.22, 0.06, 0.012, x, 0.12, s * (HZ + 0.006));
         for (const z of [-3.2, -1.05, 1.1, 3.25]) bx(B, 'paint', band, 0.012, 0.06, 0.22, XE + 0.006, 0.12, z);
+        // 水线带与防磨条之间的焊接拼板缝(避开船名 + 游泳梯)
         // welded pontoon plate seams between the waterline band and the rubbing strip (clear of the names + swim ladder)
         const seam = shade(C.houseTeal, 0.86), sy = (-1.33 + 0.24) / 2, sh = 0.24 + 1.33;
         for (let z = -HZ + 1.5; z < HZ - 0.5; z += 1.5) {
@@ -1893,20 +2140,22 @@ export function registerMarinaVessels(D, H) {
           bx(B, 'paint', seam, 0.035, sh, 0.01, x, sy, HZ + 0.005);
         }
       });
-      B.push(XW, 0, 0, -HP);                                                    // west face (toward the Long Pier)
+      B.push(XW, 0, 0, -HP);                                                    // west face (toward the Long Pier) —— 西面(朝长码头)
       text(B, 'SEA SHANTY', 0.26, C.white, 2.75, -0.2, 0.002, { weight: 0.17 });
       text(B, 'INKWAVE', 0.11, C.white, 2.75, -0.4, 0.002, { weight: 0.2, spacing: 0.4 });
       B.pop();
-      B.push(4.9, 0, -HZ, PI);                                                  // south face (seen from the quay across the slip)
+      B.push(4.9, 0, -HZ, PI);                                                  // south face (seen from the quay across the slip) —— 南面(对岸码头可见)
       text(B, 'SEA SHANTY', 0.3, C.white, 0, -0.18, 0.002, { weight: 0.17 });
       text(B, 'INKWAVE', 0.12, C.white, 0, -0.42, 0.002, { weight: 0.2, spacing: 0.4 });
       B.pop();
-      B.push(XE, 0, 0, HP);                                                      // east face
+      B.push(XE, 0, 0, HP);                                                      // east face —— 东面
       text(B, 'SEA SHANTY', 0.26, C.white, 0, -0.2, 0.002, { weight: 0.17 });
+      // 东缘向下的游泳梯
       // swim ladder down the east side
       for (const s of [-1, 1]) B.tube('metal', C.galv, [P3(s * 0.22, -1.9, 0.12), P3(s * 0.22, 0.45, 0.12), P3(s * 0.22, 0.62, 0.08), P3(s * 0.22, 0.62, 0.02)], 0.02, { radial: 6 });
       for (let y = -1.35; y < 0.4; y += 0.3) B.cyl('metal', C.galv, 0.016, 0.44, 0, y, 0.12, { rz: HP, seg: 6 });
       B.pop();
+      // --- 挂在舷侧羊角桩上的碰垫;系泊缆到码头系缆桩(docks 流,长码头内列)
       // --- fenders hung off hull-side cleats; mooring lines to the pier cleats (docks stream, Long Pier inner run)
       const sideCleat = (x, y, z, ry) => { B.push(x, y, z, ry); B.box('metal', C.galv, 0.2, 0.04, 0.05, 0, 0, 0.03, { r: 0.012 }); for (const q of [-1, 1]) B.cyl('metal', C.galv, 0.015, 0.05, q * 0.06, 0, 0.02, { rx: HP, seg: 6 }); B.pop(); };
       const hangFender = (x, z, ry, c = C.navy) => {
@@ -1920,6 +2169,8 @@ export function registerMarinaVessels(D, H) {
       hangFender(XW, -2.9, -HP); hangFender(XW, 3.1, -HP, C.white);
       hangFender(-1.4, -HZ, PI, C.white); hangFender(1.2, -HZ, PI); hangFender(6.7, -HZ, PI, C.white);
       hangFender(XE, -2.1, HP); hangFender(XE, 2.35, HP, C.white);
+      // 系泊缆:西到长码头内列系缆桩(世界 x -19.64, z -22.8 / -14.8),东跨泊位到
+      // 加油码头泊位系缆桩(世界 x -4.36, z -21.6 / -16.4)——两侧横缆,像泊在泊位里
       // mooring lines: west to the Long Pier inner-run cleats (world x -19.64, z -22.8 / -14.8), east across the slip to
       // the fuel dock's berth cleats (world x -4.36, z -21.6 / -16.4) — breast lines both sides, as if moored in the berth
       const L2 = (wx, wz) => [wx - ORG[0], wz - ORG[1]];
@@ -1930,6 +2181,7 @@ export function registerMarinaVessels(D, H) {
         rope(B, [hx0 + s * 0.07, hy0, hz0], [px - s * 0.07, py + 0.04, pz], 0.22, 0.018, C.rope, 14);
         bittTurns(B, px, py - 0.015, pz, 0.05, 0.035, 1, C.rope);
       }
+      // --- 舱室:角板、檐口 + 天沟 + 落水管、窗、门
       // --- cabin: corner boards, fascia + gutters + downpipes, windows, door
       for (const [x, z] of [[-CX, CZ0], [CX, CZ0], [-CX, CZ1], [CX, CZ1]]) B.box('wood', C.white, 0.12, RF - DK, 0.12, x, (DK + RF) / 2, z, { r: 0.03 });
       for (const s of [-1, 1]) {
@@ -1938,19 +2190,23 @@ export function registerMarinaVessels(D, H) {
         B.cyl('metal', C.galv, 0.05, CZ1 - CZ0 + 0.1, s * (CX + 0.075), RF - 0.12, (CZ0 + CZ1) / 2, { rx: HP, seg: 10 });
         B.tube('metal', C.galv, [P3(s * (CX + 0.06), RF - 0.16, CZ1 - 0.08), P3(s * (CX + 0.1), RF - 0.3, CZ1 - 0.08), P3(s * (CX + 0.1), DK + 0.2, CZ1 - 0.08), P3(s * (CX + 0.14), DK + 0.05, CZ1 - 0.04)], 0.035, { radial: 8 });
       }
+      // 东墙(+X):三扇窗带花盆
       // east wall (+X): three windows with flower boxes
       B.push(CX, 0, 0, HP);
       for (const [z, cc] of [[-1.55, '#e5b94d'], [0.1, '#df7c66'], [1.75, '#e5b94d']]) cottageWindow(B, -z, 1.95, 0.9, 0.72, cc, true);
       B.pop();
+      // 南墙(-Z):两扇窗
       // south wall (-Z): two windows
       B.push(0, 0, CZ0, PI);
       for (const x of [-0.78, 0.78]) cottageWindow(B, x, 1.95, 0.78, 0.72, '#a79be0', x > 0);
       B.pop();
+      // 北墙(+Z):一扇宽窗 + 一扇小窗
       // north wall (+Z): one wide window + a small one
       B.push(0, 0, CZ1);
       cottageWindow(B, -0.55, 2.0, 1.2, 0.66, '#df7c66');
       cottageWindow(B, 0.95, 2.1, 0.44, 0.44, '#e5b94d');
       B.pop();
+      // 西墙(-X):门朝跳板,灯、门牌号、信箱、一扇窗、一个救生圈
       // west wall (-X): the door facing the gangway, lamp, house number, mailbox, one window, a life ring
       B.push(-CX, 0, 0, -HP);                                                    // local +X = world +Z
       const dz = 0.1;
@@ -1973,6 +2229,8 @@ export function registerMarinaVessels(D, H) {
       ringBuoy(B, 1.85, DK + 0.72, 0.07, 0.75);
       B.pop();
 
+      // --- 门廊栏杆:加油码头(东)侧、敞水船尾(南,从指桥端到角)和栈道侧一小段折返。
+      //     西/码头侧、跳板、船尾的指桥段和栈道其余部分保持开敞(小孩跳上甲板)。
       // --- porch rail: the fuel-dock (east) side, the stern over open water (south, from the finger pier's end to the
       //     corner) and a short return on the boardwalk side (north). The west/pier side, the gangway, the finger-pier
       //     stretch of the stern and the rest of the boardwalk side stay open (kid hops onto the deck).
@@ -1995,16 +2253,22 @@ export function registerMarinaVessels(D, H) {
         B.cyl('rubber', C.rope, 0.014, px - XS - 0.1, (px + XS) / 2, DK + y, -HZ + 0.12, { rz: HP, seg: 6 });
         B.cyl('rubber', C.rope, 0.014, 1.2, px - 0.6, DK + y, HZ - 0.12, { rz: HP, seg: 6 });
       }
+      // 【门廊栏杆碰撞条】rail:小孩穿不过,子弹/墨水/鱿鱼穿过;高出甲板 6 cm。
+      // 每个碰撞盒向水面外伸 0.7 m,使中心落在甲板边缘之外超过一臂之距(0.24):
+      // 脚下还踩着甲板的任何地方——哪怕是贴着边缘浮出的鱿鱼——都被推回舷内
+      // (rail 沿最近面外推),绝不落进泊位。
       // porch-rail colliders (rail: kids can't walk through, shots / ink / squids pass), 6 cm above the deck. Each box
       // reaches 0.7 m out over the water so its centre lies beyond the deck edge by more than a foot's reach (0.24): a kid
       // anywhere its feet still hold the deck — even a squid surfacing on the very lip — is pushed back inboard (a rail
       // pushes out along its nearest face), never into the slip.
+      // RIB 小艇的艏缆从船尾角柱垂到它的艏环(boat_rib 摆在世界 (-9.4, -27.0))
       // the RIB tender's painter from the stern corner post down to its bow eye (boat_rib placed at world (-9.4, -27.0))
       rope(B, [px, DK + 0.12, -HZ + 0.12], [-7.74 - ORG[0], -1.28, -27.12 - ORG[1]], 0.35, 0.014, C.rope, 16);
       const p0 = DK + 0.06, p1 = DK + railH + 0.08, t = XE - (px - 0.04), W0 = 0.7;
       B.col(px - 0.04, p0, -HZ - W0, XE + W0, p1, HZ + W0, { rail: true });
       B.col(XS - 0.06, p0, -HZ - W0, px - 0.04, p1, -HZ + t, { rail: true });
       B.col(px - 1.26, p0, HZ - t, px - 0.04, p1, HZ + W0, { rail: true });
+      // 日光甲板上的串灯:从屋面东角柱拉到门廊栏杆两根高柱
       // festoon lights over the sun deck: from the roof's east corner posts out to two tall posts on the porch rail
       for (const [zr, zp] of [[CZ0 + 0.08, -HZ + 0.12 + 1.1], [CZ1 - 0.08, -HZ + 0.12 + 4.4]]) {   // on the rail posts at z -3.28 / 0.02
         B.box('wood', C.white, 0.08, 1.55, 0.08, px, DK + railH + 0.1 + 0.62, zp, { r: 0.02 });
@@ -2018,8 +2282,12 @@ export function registerMarinaVessels(D, H) {
           B.sph('glow', k % 3 === 1 ? '#ffd9a8' : '#fff0c9', 0.03, q[0], q[1] - 0.07, q[2], { ws: 6, hs: 4, glow: 2.6, sy: 1.25 });
         }
       }
+      // --- 露天日光甲板(本地 x 1.6…7.6):珊瑚色遮阳伞下的咖啡桌椅套 + 木花槽长凳——
+      //     两个低 cover 件(碰撞体),其余留空
       // --- the open sun deck (local x 1.6…7.6): a café table set under a coral parasol and a timber planter bench —
       //     two low cover pieces (colliders), everything else left clear
+      // 【借用别的类型当陈设】记录碰撞表长度 → 借用 D.cafeset 的几何 → 截回碰撞表:
+      // 借来的桌椅自带碰撞会污染本件的碰撞清单,手动恢复到借用前,再自己声明 cover 碰撞盒。
       { const n = B.cols.length; B.push(4.4, DK, -1.9, 0.35); D.cafeset.build(B, { color: C.coral, variant: 1 }); B.pop(); B.cols.length = n; }
       B.col(4.4 - 0.85, DK, -1.9 - 0.85, 4.4 + 0.85, DK + 0.78, -1.9 + 0.85);
       {
@@ -2036,6 +2304,7 @@ export function registerMarinaVessels(D, H) {
         for (const q of [-1, 1]) B.box('wood', woodDk, 0.06, 0.44, 0.36, bx0 + q * (bW / 2 - 0.3), DK + 0.22, bz - bD / 2 - 0.2, { r: 0.012 });
         B.col(bx0 - bW / 2, DK, bz - bD / 2 - 0.42, bx0 + bW / 2, DK + bH, bz + bD / 2);
       }
+      // 晾在门廊栏杆外侧的晾衣绳(绝不压甲板),两头高柱之间
       // laundry pegged on a line along the outside of the east porch rail (never over the deck), between two tall posts
       const lz0 = 1.05, lz1 = HZ - 0.12, ly = DK + railH + 0.3, lx = px + 0.07;
       for (const z of [lz0, lz1]) B.box('wood', C.white, 0.08, 0.5, 0.08, px, DK + railH + 0.22, z, { r: 0.02 });
@@ -2048,12 +2317,16 @@ export function registerMarinaVessels(D, H) {
         B.box('foliage', c, 0.012, h, w, p[0] + 0.01, p[1] - h / 2 + 0.01, p[2], { rx: (k % 2 ? 0.05 : -0.04), r: 0.004 });
         for (const q of [-1, 1]) bx(B, 'wood', '#ddb987', 0.02, 0.05, 0.015, p[0] + 0.012, p[1] + 0.005, p[2] + q * w * 0.35);
       });
+      // 靠在舱室背墙(北)上的自行车
       // bike leaning on the back (north) wall of the cabin
       B.push(0.25, DK, CZ1 + 0.3, 0, 0.08); lightBike(B, C.sky || '#7fc0df', true); B.pop();
 
+      // --- 屋顶花园(y 2.9,仅鱿鱼可达):北侧花槽 + 烟囱,南侧太阳能板,东侧皮划艇架,
+      //     西缘躺椅 + 收拢的遮阳伞;长边沿线串灯。实心件都有碰撞。
       // --- roof garden (y 2.9, squid-only): planter trough + chimney north, solar panels south, kayak rack east,
       //     deck chair + furled parasol on the west edge; festoon lights along the long edges. Solid items collide.
       B.aoBase = RF;
+      // 种植花槽
       // planter trough
       const tz = 2.18, tW = 2.3, tD = 0.5, tH = 0.42, tx = -0.35;
       B.box('wood', wood, tW, tH, tD, tx, RF + tH / 2, tz, { r: 0.03 });
@@ -2061,12 +2334,14 @@ export function registerMarinaVessels(D, H) {
       B.box('paint', '#5a4535', tW - 0.1, 0.04, tD - 0.1, tx, RF + tH - 0.03, tz, { r: 0.01 });
       plantBed(B, tx, RF + tH - 0.04, tz, tW - 0.2, tD - 0.12, 3);
       B.col(tx - tW / 2, RF, tz - tD / 2, tx + tW / 2, RF + tH, tz + tD / 2);
+      // 烟囱(炉管 + 雨帽),在东北角
       // chimney (stove pipe + cap) in the north-east corner
       B.box('metal', C.steelDk, 0.3, 0.06, 0.3, 1.25, RF + 0.03, 2.3, { r: 0.02 });
       B.cyl('metal', '#2b2d31', 0.075, 1.05, 1.25, RF + 0.55, 2.3, { seg: 12 });
       B.lathe('metal', '#1f2024', [[0.07, 0], [0.16, 0.08], [0.02, 0.2]], 1.25, RF + 1.1, 2.3, { seg: 12 });
       B.cyl('metal', '#2b2d31', 0.1, 0.04, 1.25, RF + 0.85, 2.3, { seg: 12 });
       B.col(1.1, RF, 2.15, 1.4, RF + 1.1, 2.45);
+      // 斜架上的太阳能板(南端)
       // solar panels on a raked frame (south end)
       for (const x of [-0.78, 0.78]) {
         B.push(x, RF + 0.3, -1.98, 0, -0.32);
@@ -2078,6 +2353,7 @@ export function registerMarinaVessels(D, H) {
         for (const [dz, h] of [[-0.42, 0.18], [0.42, 0.44]]) B.box('metal', C.galv, 0.04, h, 0.04, x, RF + h / 2, -1.98 + dz, { r: 0.01 });
       }
       B.col(-1.55, RF, -2.46, 1.55, RF + 0.48, -1.5);
+      // 东缘低矮皮划艇架上的皮划艇
       // kayak on a low roof rack along the east edge
       for (const z of [-0.8, 1.1]) {
         B.box('metal', C.steelDk, 0.44, 0.04, 0.06, 1.33, RF + 0.3, z, { r: 0.012 });
@@ -2086,14 +2362,16 @@ export function registerMarinaVessels(D, H) {
       }
       kayakMesh(B, 1.33, RF + 0.36, 0.15, 3.1, 0.58, 0.3, C.coral, 0);
       B.col(1.1, RF, -1.45, 1.58, RF + 0.62, 1.75);
+      // 西缘躺椅 + 收拢的遮阳伞(面朝长码头方向的落日)
       // deck chair + furled parasol on the west edge (facing the sunset over the Long Pier)
       { const n = B.cols.length; B.push(-1.0, RF, -0.55, -HP + 0.25); D.deckchair.build(B, { color: 'teal', variant: 0 }); B.pop(); B.cols.length = n; }
       B.cyl('metal', C.steelDk, 0.16, 0.06, -1.3, RF + 0.03, 0.35, { seg: 14, bevel: 0.02 });
       B.lathe('foliage', mixc(C.coral, C.white, 0.2), [[0.014, 0.95], [0.045, 1.08], [0.07, 1.34], [0.066, 1.56], [0.045, 1.78], [0.016, 1.92]], -1.3, RF, 0.35, { seg: 10 });
-      for (let k = 0; k < 5; k++) B.lathe('foliage', shade(C.coral, 0.82), [[0.02, 1.0 + k * 0.18], [0.068, 1.12 + k * 0.17]], -1.3, RF, 0.35, { seg: 10, ry: k * 0.9 });   // fabric folds
-      B.cyl('paint', C.white, 0.072, 0.035, -1.3, RF + 1.45, 0.35, { seg: 10 });                           // tie strap
+      for (let k = 0; k < 5; k++) B.lathe('foliage', shade(C.coral, 0.82), [[0.02, 1.0 + k * 0.18], [0.068, 1.12 + k * 0.17]], -1.3, RF, 0.35, { seg: 10, ry: k * 0.9 });   // fabric folds —— 布面褶痕
+      B.cyl('paint', C.white, 0.072, 0.035, -1.3, RF + 1.45, 0.35, { seg: 10 });                           // tie strap —— 捆扎带
       B.cyl('wood', C.teak, 0.022, 0.95, -1.3, RF + 0.5, 0.35, { seg: 8 });
       B.sph('wood', C.teakDk, 0.03, -1.3, RF + 1.97, 0.35, { ws: 8, hs: 6 });
+      // 两长边之间沿角柱的串灯
       // festoon lights along both long edges between corner posts
       for (const s of [-1, 1]) {
         for (const z of [CZ0 + 0.08, CZ1 - 0.08]) {
@@ -2113,6 +2391,9 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ================================================================================================ marina prop types
+  // 【码头道具类型】泊船水线对准道具 y(摆 y -1.6),艏朝本地 +Z。全部不碰撞(场外景观)。
+  // 【boatType 工厂】四种小艇共用一个类型壳:统一参数表(length/color/accent/name/fenderSide),
+  // build 时包一层 noShadow(泊船都是远景,不投影)。
   // Moored boats sit with their waterline at the prop's y (place at y -1.6), bow toward local +Z. Non-colliding.
   const boatType = (desc, fn) => ({ desc, params: { length: 'm', color: 'hull', accent: 'stripe / canvas', name: 'transom name', fenderSide: '±1' }, variants: 1, mount: 'ground', build(B, o) { B.aoBase = null; noShadow(B, () => fn(B, o)); } });
   D.yacht_sail = boatType('Masthead cruising yacht: lofted hull with antifouling, boot + cove stripes, teak toe rails, coachroof with ports, cockpit (wheel or tiller), spray dodger, mast with spreaders + standing rigging, boom with stack-pack cover and lazy jacks, furled genoa, pulpits + lifelines, fenders, ensign, transom name.', sailboat);
@@ -2120,6 +2401,9 @@ export function registerMarinaVessels(D, H) {
   D.boat_fishing = boatType('Inshore fishing boat: high-bowed hull with bulwark stripe, tyre fenders, forward wheelhouse with mast, radar + lights, outrigger booms, A-frame gantry, net drum, fish boxes and marker buoys.', fishingBoat);
   D.boat_rib = boatType('RIB tender: GRP deep-V hull inside a grey Hypalon tube with grab line, console + windscreen, jockey seat, outboard.', ribBoat);
 
+  // 【marina_pontoon:游艇码头浮桥】沿本地 +X(甲板高出海面 0.45 m):分单元铺板 + 接缝板、
+  // 护缘 + 防磨条、浮筒、系缆桩;可选导桩、服务柱、码头箱、救生圈柱、皮划艇架。
+  // 场外景观,无碰撞。
   D.marina_pontoon = {
     desc: 'Floating marina pontoon along local +X (deck 0.45 m above the sea): plank units with joint plates, fascia + rubbing strip, float drums, cleats; optional guide piles, service pedestals, dock boxes, life ring posts. Non-colliding scenery (outside the arena).',
     params: { length: 'm', width: 'm (2)', piles: '[s] pile positions on the +Z edge (or {s, side})', pedestals: '[s]', boxes: '[s]', rings: '[s]', kayaks: 's of a kayak rack' },
@@ -2130,7 +2414,8 @@ export function registerMarinaVessels(D, H) {
       const L = o.length ?? 8, W = o.width ?? 2.0, top = SEA + 0.45;
       pontoonRun(B, L, W, o);
       for (const p of o.piles || []) { const s = typeof p === 'number' ? p : p.s, side = typeof p === 'number' ? 1 : p.side; guidePile(B, s, side * (W / 2 + 0.24), p.h ?? 3.2); }
-      for (const sx of o.pedestals || []) {                                               // shore-power / water pedestal
+      for (const sx of o.pedestals || []) {                                               // 岸电/供水服务柱
+        // shore-power / water pedestal
         const z = -W / 2 + 0.25;
         B.box('gloss', C.white, 0.26, 0.9, 0.22, sx, top + 0.45, z, { r: 0.05 });
         B.box('gloss', C.navy, 0.28, 0.12, 0.24, sx, top + 0.84, z, { r: 0.04 });
@@ -2138,19 +2423,22 @@ export function registerMarinaVessels(D, H) {
         bx(B, 'paint', C.teal, 0.2, 0.08, 0.01, sx, top + 0.62, z + 0.115);
         B.tube('rubber', '#3a6fb0', [P3(sx + 0.08, top + 0.5, z + 0.1), P3(sx + 0.3, top + 0.2, z + 0.3), P3(sx + 0.6, top + 0.03, z + 0.4)], 0.014, { radial: 4 });
       }
-      for (const sx of o.boxes || []) {                                                  // white GRP dock box
+      for (const sx of o.boxes || []) {                                                  // 白色 GRP 码头储物箱
+        // white GRP dock box
         const z = W / 2 - 0.45;
         B.box('gloss', '#f1eee6', 1.3, 0.6, 0.6, sx, top + 0.3, z, { round: true, r: 0.06 });
         B.box('gloss', '#e6e1d6', 1.34, 0.08, 0.64, sx, top + 0.62, z, { round: true, r: 0.03 });
         bx(B, 'metal', C.galv, 0.1, 0.1, 0.02, sx, top + 0.52, z - 0.31);
       }
-      for (const sx of o.rings || []) {                                                  // life ring on a post
+      for (const sx of o.rings || []) {                                                  // 柱上救生圈
+        // life ring on a post
         const z = W / 2 - 0.15;
         cy(B, 'gloss', C.white, 0.04, 1.4, sx, top + 0.7, z, { seg: 8 });
         ringBuoy(B, sx, top + 1.05, z - 0.08, 0.75);
         bx(B, 'gloss', '#c8473d', 0.36, 0.06, 0.14, sx, top + 1.45, z - 0.04);
       }
-      if (o.kayaks != null) {                                                            // kayak rack with three kayaks
+      if (o.kayaks != null) {                                                            // 皮划艇架 + 三条皮划艇
+        // kayak rack with three kayaks
         const sx = o.kayaks, z = 0;
         for (const dx of [-1.1, 1.1]) for (const dz of [-0.45, 0.45]) cy(B, 'metal', C.galv, 0.03, 1.2, sx + dx, top + 0.6, z + dz, { seg: 6 });
         for (let k = 0; k < 3; k++) {
@@ -2162,6 +2450,9 @@ export function registerMarinaVessels(D, H) {
     },
   };
 
+  // 【marina_gate:码头入口】铝制跳板从码头缘(本地 x = 0, y = 0)下到 x = run、y = -1.15 的浮桥,
+  // 两侧扶手,顶部一把上锁的网格门 + "BERTH HOLDERS ONLY" 告示(让它永远不像是出口)。
+  // 在游戏边界之外;只有门是碰撞(rail)。
   // Marina gate: aluminium gangway from the quay edge (local x = 0, y = 0) down to a pontoon at local x = run, y = -1.15,
   // handrails, a locked mesh gate with a "BERTH HOLDERS ONLY" sign at the top (so it never reads as a way out).
   D.marina_gate = {
@@ -2182,6 +2473,7 @@ export function registerMarinaVessels(D, H) {
       }
       for (const zs of [-1, 1]) cy(B, 'rubber', C.black, 0.08, 0.1, Lr - 0.1, -0.08, zs * (W / 2 - 0.2), { rx: HP, seg: 10 });   // rollers
       B.pop();
+      // 跳板顶端的门框
       // gate frame at the top of the gangway
       for (const zs of [-1, 1]) B.box('metal', '#8b949c', 0.1, 2.1, 0.1, 0.32, 1.05, zs * (W / 2 + 0.08), { r: 0.02 });
       B.box('metal', '#8b949c', 0.1, 0.1, W + 0.26, 0.32, 2.1, 0, { r: 0.02 });
@@ -2191,6 +2483,7 @@ export function registerMarinaVessels(D, H) {
       B.box('gloss', C.navy, 0.04, 0.46, 1.2, 0.26, 2.42, 0, { round: true, r: 0.03 });
       B.push(0.235, 0, 0, -HP); text(B, 'HALYARD MARINA', 0.1, C.white, 0, 2.47, 0.001, { weight: 0.2, depth: 0.004 }); text(B, 'BERTH HOLDERS ONLY', 0.06, C.mustard, 0, 2.3, 0.001, { weight: 0.22, depth: 0.004 }); B.pop();
       });
+      // 上锁的门是 rail 碰撞条(码头上的小孩穿不过;子弹/墨水/鱿鱼穿过)
       // the locked gate is a rail collider (a kid on the quay can't walk through it; shots / ink / squids pass)
       const Wg = (o.width ?? 1.3) / 2 + 0.13;
       B.col(0.27, 0, -Wg, 0.37, 2.15, Wg, { rail: true });
@@ -2198,12 +2491,16 @@ export function registerMarinaVessels(D, H) {
   };
 
   // ================================================================================================ DINGHY ON TRAILER
+  // 【拖车小艇】cover 件(碰撞体 3.0 × 3.8 × 1.5,基部 y 0):灰围管 RIB 小艇停在小艇拖车上,
+  // 牵引杆朝 +Z。摆放见 HALYARD_VESSELS(普通局在拖场内;Zone Control 挪到码头,
+  // 给船艏楼梯让出场前的场地)。
   // Cover piece (collider 3.0 × 3.8 × 1.5, base y 0): a grey-tubed RIB tender on a galvanised road trailer, drawbar +Z.
   D.dinghy_trailer = {
     desc: 'Dinghy on its road trailer (cover, collider 3.0 × 3.8 × 1.5): galvanised A-frame trailer with bunks, mudguards, wheels, jockey wheel, winch post + strap, light board; a RIB tender with grey tubes, grab lines, console and a tilted-up outboard.',
     params: {}, variants: 1, mount: 'ground',
     build(B) {
       const g = '#aeb5bb', gDk = '#7d858c';
+      // 拖车底盘
       // trailer chassis
       for (const s of [-1, 1]) {
         bx(B, 'metal', g, 0.08, 0.1, 3.0, s * 0.62, 0.36, -0.35);
@@ -2230,6 +2527,7 @@ export function registerMarinaVessels(D, H) {
       bx(B, 'metal', g, 0.08, 0.7, 0.08, 0, 0.72, 1.15);                                                   // winch post + strap
       B.box('metal', C.steelDk, 0.18, 0.14, 0.14, 0, 0.98, 1.2, { r: 0.03 });
       B.tube('paint', '#3a6fb0', [P3(0, 0.98, 1.1), P3(0, 0.86, 1.03)], 0.012, { radial: 3 });
+      // RIB 坐在滑木上(船底龙骨 y ≈ 0.5),舷外机翘起越过尾灯板
       // the RIB, sitting on the bunks (hull keel at y ≈ 0.5), outboard tilted up over the light board
       B.push(0, 0.78, 0.12);
       ribBoat(B, { length: 3.9, color: '#5d6470', tilt: 1.25, console: false, motorScale: 0.95 });
@@ -2240,37 +2538,55 @@ export function registerMarinaVessels(D, H) {
   };
 }
 
+// 摆放表(格式同 src/world/dressing.js;除 mirror: false 外都被地图 180° 旋转镜像)。
+// 分组:渡轮三件 → cover 件 → 拖船(普通/Zone Control 两版)→ 坡道装修 → 船屋 + 小艇 →
+// 拖车小艇(两局不同位)→ marina() 展开的码头区。
 // Placements (same format as src/world/dressing.js; mirrored by the map's 180° rotation unless mirror: false).
 export const HALYARD_VESSELS = [
+  // ---- 渡轮(船壳侧+端、客舱侧;镜像副本装修远端和另一侧)
   // ---- the ferry (hull side + end, saloon side; the mirror copies dress the far side and end)
   { type: 'ferry_hull', pos: [0, 0, 0] },
   { type: 'ferry_cabin', pos: [0, 0, 0] },
   { type: 'ferry_bridge', pos: [0, 3.8, 0], mirror: false },
+  // docs/HALYARD.md 的 cover 件(Alpha 半;镜像)
   // cover pieces from docs/HALYARD.md (Alpha half; mirrored)
   { type: 'ferry_locker', pos: [11.75, 1.3, 2.15] },
   { type: 'ferry_cargo', pos: [14.2, 1.3, 0.4] },
+  // ---- 船台上墩的拖船(Zone Control 局:甲板即侧区——栏杆为船艏楼梯 + 箱阶开口,
+  //      船尾坡道放缓到 23.8° 进入豁口;见 tug_access)
   // ---- the tug on blocks in the boatyard (Zone Control build: its deck is the side zone — rails opened for the bow
   //      boarding stair + the crate steps, the stern ramp eased to 23.8° into a notch; see tug_access)
   { type: 'tug_dress', pos: [17.5, 0, -18.5], notIn: 'zones' },
   { type: 'tug_dress', pos: [17.5, 0, -18.5], access: true, onlyIn: 'zones' },
   { type: 'tug_access', pos: [0, 0, 0], onlyIn: 'zones' },
+  // ---- 坡道装修:渡轮日光甲板楼梯(弦梁 + 扶手)与拖船坡道的脚手架护栏
   // ---- ramp dressing: ferry sun-deck stair (stringers + handrails) and the tug ramp's scaffold guardrails
   { type: 'ferry_stair', pos: [0, 0, 0] },
   { type: 'tug_ramp_rails', pos: [0, 0, 0], notIn: 'zones' },
   { type: 'tug_ramp_rails', pos: [0, 0, 0], z0: -7.55, z1: -13.45, onlyIn: 'zones' },
+  // ---- 长码头泊位里的船屋 + 船尾拖带的小 RIB(在泊位靠加油码头的敞水角;无碰撞)
   // ---- the houseboat in the Long Pier slip + its RIB tender on a painter off the stern (in the open-water corner of the
   //      slip by the fuel dock; non-colliding)
   { type: 'houseboat_dress', pos: [-14.6, 0, -18.9] },
   { type: 'boat_rib', pos: [-9.4, -1.6, -27.0], rotY: Math.PI / 2 - 0.08, length: 3.6, color: '#3f9f97' },
+  // ---- 拖车小艇(船台 cover 件)。Zone Control:船艏楼梯占了拖船艏前的场地,
+  //      拖车改停码头边船库旁(保持楼梯东侧的通道从码头直通——拖船旁不留死胡同)
   // ---- dinghy on its trailer (boatyard cover piece). Zone Control: the bow stair takes the yard in front of the tug's
   //      bow, so the trailer is parked out on the quay by the boathouse instead (keeps the lane east of the stair open
   //      from the quay — no dead-end alley beside the tug)
   { type: 'dinghy_trailer', pos: [22.1, 0, -27.7], notIn: 'zones' },
   { type: 'dinghy_trailer', pos: [20.4, 0, -35.3], rotY: 0.12, onlyIn: 'zones' },
+  // ---- 船台后面的游艇码头(Alpha,x > 24;镜像侧在长码头之外):码头大门 + 跳板、
+  //      走道、指桥、泊位里的船
   // ---- the marina beyond the boatyard (mirrored beyond the Long Pier): quay gate + gangway, walkway, fingers, boats
   ...marina(),
 ];
 
+// 【marina():码头布局】(Alpha 半,x > 24;镜像)。藏在 docks 流防波堤(岩石自 x ≈ 38.7,
+// 头部 z 10)内侧的港池里,在其航道浮标(z 17…22)以南:沿 Z 的走道 x 26.7…28.5,
+// 由码头 z -37.9 处的上锁跳板进入;外缘每 4.2 m 伸一条指桥,泊位里的船(船尾靠走道、
+// 船艏朝防波堤,≤ 8.6 m 以避开岩石),内侧贴一条 RIB + 皮划艇。
+// 也避开环境自带泊船(+X 渔船 z 20…29;镜像侧 x -26.4…-25.1 的划艇)。
 // The marina layout (Alpha half, x > 24; mirrored). It lives in the basin behind the docks stream's breakwater (rocks
 // from x ≈ 38.7, head at z 10) and south of its channel markers (z 17…22): a walkway along Z at x 26.7…28.5 reached by a
 // gated gangway from the quay at z -37.9, fingers off its outer side every 4.2 m, boats in the berths (sterns to the
@@ -2293,6 +2609,7 @@ function marina() {
     const z = -33.4 + k * 4.2;
     out.push({ type, pos: [WX + WW / 2 + 0.5 + L / 2, SEA, z + (k % 2 ? 0.12 : -0.12)], rotY: P / 2 + ((k % 3) - 1) * 0.015, length: L, name, fenderSide: k % 2 ? -1 : 1 });
   });
+  // 走道内侧(舷侧对场)并排的 RIB
   // alongside the inner side of the walkway (broadside to the arena)
   out.push({ type: 'boat_rib', pos: [25.58, SEA, -24.6], rotY: 0.02, length: 4.0 });
   out.push({ type: 'boat_rib', pos: [25.58, SEA, -9.8], rotY: P - 0.02, length: 4.0, color: '#e9703a' });

@@ -1,3 +1,18 @@
+// ===============================================================================================================
+// 【中文导读】INKWAVE 特效系统(ink particle FX)——全游戏唯一的粒子/墨花特效中心。
+// 【职责】墨滴、墨花(burst)、爆炸(explosion)、被击杀爆墨(splatted)、游泳尾迹(wake)、枪口焰(muzzle)、
+//         出生闪光(spawnFlash)、雨(rain),以及 VFX 流补充的大量武器/动作配方(footstep、dive、spinUp、
+//         slamWave、superJump 系列等,共 60+ 个公开方法)。
+// 【对象池架构】加载期(FX 构造函数)一次性建好全部对象池——滴粒(drops)、精灵(puffs/glows 两个子池)、
+//         环贴花(rings + 即时 marks)、墨壳(shells)、光柱(beams + 即时 pillars)、尘粒(motes);
+//         容量按画质 QUALITY 的粒子倍率 q 缩放。运行期只写 Float32Array、复用实例属性缓冲,
+//         热循环零分配;全系统每帧固定 7 个 draw call。
+// 【与 _warmup 的关系】部分材质(如 bomb)首次使用才编译着色器会卡顿;boot 阶段的 _warmup 用屏幕外
+//         替身提前调用本类的爆炸类配方完成预热(见 docs/BOOT.zh-CN.md §8)。本类自身不做任何懒创建,
+//         构造即全部就绪。
+// 【配套阅读】docs/BOOT.zh-CN.md §7(对象池创建时机)、§8(预热流程);docs/CONTRACTS.md §4(契约 API 约定)。
+// 【建议阅读顺序】GLSL 着色器区 → FX 类(各池 _init/_update)→ 契约 API(特效配方)→ update() 帧循环。
+// ===============================================================================================================
 // INKWAVE — ink particle FX. Pooled, allocation-free per frame, 7 draw calls total.
 //
 // const fx = new FX(scene, { quality: 'high' });      // quality: QUALITY key | QUALITY preset | particles multiplier
@@ -43,6 +58,7 @@ const EMPTY = Object.freeze({});
 const easeOut = (t) => 1 - (1 - t) * (1 - t) * (1 - t);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
+// 【位标志】滴粒行为开关,打包进 dA 数组第 8 槽随粒子走;各配方按需组合(见 _spawnDrop)。
 // droplet flags
 const F_PAINT = 1, F_RING = 2, F_NOCOL = 4, F_QUIET = 8, F_MATTE = 16;
 // glow kinds (encoded as kind * 10 + core in the shader)
@@ -55,6 +71,8 @@ const R_WAVE = 0, R_RIPPLE = 1, R_DISC = 2, R_DANGER = 3, R_TARGET = 4, R_DUST =
 // ---------------------------------------------------------------------------------------------------------------
 // shared GLSL
 // ---------------------------------------------------------------------------------------------------------------
+// 【共享 GLSL】fxHash/fxNoise:无纹理的确定性 hash/值噪声,供 puff、ring、shell、beam 的片元着色器
+// 做边缘扰动、撕裂孔洞、流动条纹等程序化细节;OUT_CHUNKS 是引擎色调映射与色彩空间转换的注入点。
 const GLSL_HASH = /* glsl */`
 float fxHash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float fxNoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
@@ -65,6 +83,10 @@ const OUT_CHUNKS = /* glsl */`
   #include <colorspace_fragment>
 `;
 
+// 【滴粒着色器——速度拉伸的液体替身】每个墨滴只是一张 2 三角形 quad,完全靠顶点+片元着色器伪装成
+//  glossy 墨滴:顶点侧把 quad 转到视图空间,沿速度方向拉长(越快越像泪滴)、横向压窄,并整体向
+//  相机推出 0.6r 防止穿模;片元侧用 SDF 画球体/泪滴轮廓(解析抗锯齿),再做透射光、透镜暗边、
+//  天空环境反射与锐利太阳高光。哑光(matte)模式把 gloss 置 0,同一着色器兼作灰尘颗粒。
 // ---- droplets: velocity-stretched liquid impostors (aColA.a = gloss). Slow drops are spheres; fast ones become
 // teardrops (round head leading, tapered tail) — shaded as glossy translucent ink: dark lens rim, light transmitted
 // through the body glowing on the side away from the sun, sky reflection at grazing angles and a crisp sun glint.
@@ -147,6 +169,11 @@ void main() {
 }
 `;
 
+// 【billboard 精灵着色器】puffs(普通混合,半透明:雾、墨云、羽毛、鱿鱼幽灵、灰尘)与
+//  glows(加法混合,HDR 亮度超过引擎 bloom 阈值 2.4 即发光:柔光、星芒、气泡、光环)共用同一顶点
+//  着色器——直接从 viewMatrix 取出相机的右向量 camR 与上向量 camU 做圆柱形 billboard(只绕视线平移,
+//  不朝向相机,满天粒子时不闪烁),aMisc.x 提供面内旋转。面片外观完全由两个片元着色器按 kind 分支
+//  程序化绘制,零纹理。
 // ---- billboards (puffs + glows) ----
 const SPRITE_VERT = /* glsl */`
 attribute vec4 aPosSize;
@@ -276,6 +303,10 @@ void main() {
 }
 `;
 
+// 【环贴花着色器】贴在地表/墙面的圆形 decal quad:顶点侧以表面法线为基准用 cross 构造切线基
+//  (t,b),把 quad 平铺在表面上并抬高 0.025 防 z-fighting(材质再叠 polygonOffset);片元侧按
+//  style 分 8 种图案(墨浪、涟漪、溅盘、危险圈、超级跳目标、尘环、墨渍、细激波),全部用噪声
+//  hash 程序化生成,靠 vT(年龄 0..1)驱动扩散/消隐。
 // ---- rings (decal quads aligned to a surface normal) ----
 const RING_VERT = /* glsl */`
 attribute vec4 aPosR;   // xyz, radius (current)
@@ -387,6 +418,10 @@ void main() {
 }
 `;
 
+// 【墨壳着色器】爆炸/溅落的"一张墨水sheet鼓起来并撕裂"效果:顶点侧对球面做三重正弦摆动+噪声
+//  jet 推出钝刺(顶点级 320 三角形球);片元侧用 3D 噪声阈值随年龄升高制造孔洞与飘带(阈值型撕
+//  裂而非淡出),crown 模式(沿表面法线的王冠水花)从顶部一开始就开口;双面渲染,内面更暗模拟自
+//  阴影;alpha 通道作为覆盖率配合 alphaToCoverage 抗锯齿。
 // ---- ink shells (translucent wobbly spheres: explosion shell, splat pop) ----
 const SHELL_VERT = /* glsl */`
 ${GLSL_HASH}
@@ -479,6 +514,9 @@ void main() {
 }
 `;
 
+// 【光柱着色器】两种模式共用一根开口圆柱(24×7 段):geyser(墨泉,从下往上冲,随年龄收细)与
+//  pillar(即时光柱,微微上细)。亮度来自菲涅尔 rim + 角向/高度噪声条纹,近相机处条纹发亮,
+//  透明度随高度两端羽化。
 // ---- beams (geyser columns + light pillars) ----
 const BEAM_VERT = /* glsl */`
 attribute vec4 aPosR;   // base pos, radius
@@ -528,6 +566,9 @@ void main() {
 }
 `;
 
+// 【尘粒(motes)着色器】环绕相机的环境微尘/海盐——完全 GPU 动画,CPU 零成本:顶点侧用 mod 把
+//  漂移位置折回以相机为中心的盒子里(粒子永远围绕相机),alpha 综合距相机距离、迎光看太阳的
+//  正向散射、个体闪烁与地面以下裁掉;种子属性加载时随机一次,之后纯靠 uTime 驱动。
 // ---- motes: sunlit dust / sea-salt specks drifting around the camera (fully GPU-animated) ----
 const MOTE_VERT = /* glsl */`
 attribute vec4 aSeed;
@@ -574,6 +615,8 @@ void main() {
 // ---------------------------------------------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------------------------------------------
+// 【零分配纪律】_v1.._v6、_tA/_tB、_from/_to、_hitP/_hitN、_cbP/_cbN/_cbC 等全部是模块级
+//  暂存对象:任何特效配方都不得 new/clone,只能借这些 scratch 对象中转,保证每帧零 GC 压力。
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const _v5 = new THREE.Vector3(), _v6 = new THREE.Vector3();
 const _tA = new THREE.Vector3(), _tB = new THREE.Vector3();
@@ -641,7 +684,8 @@ function withInstanceAttrs(base, cap, attrs) {
   g.userData.dyn = list;
   return g;
 }
-// Upload only the live part of every dynamic attribute. Reuses one range object per attribute (no per-frame garbage).
+// 【上传优化】只把每个动态属性缓冲的"存活前缀"标记为脏——复用挂在属性上的 _fxRange 对象
+// (不新建 updateRange,避免每帧垃圾),instanceCount 之外的尾部旧数据不会被重复上传。
 function markUpdated(geo, count) {
   const list = geo.userData.dyn;
   for (let i = 0; i < list.length; i++) {
@@ -654,12 +698,18 @@ function markUpdated(geo, count) {
   }
 }
 
+// 【延迟调度器】多阶段特效(如 spawnFlash 的二次冲击环、水花的第二波涟漪)用扁平 Float32Array
+//  当队列:每条 14 个数 [延迟, 操作码, pos xyz, normal xyz, 颜色 rgb, 三个参数],到点触发,
+//  同样零分配。操作码见下。
 // scheduler ops (delayed parts of multi-stage effects)
 const OP_RING = 1, OP_CROWN = 2, OP_DUSTRING = 3;
 
 // ---------------------------------------------------------------------------------------------------------------
 // FX
 // ---------------------------------------------------------------------------------------------------------------
+// 【FX 主类】对象池管家。构造函数 = 加载期建池(见 docs/BOOT.zh-CN.md §7):各 _init* 方法创建
+//  InstancedBufferGeometry + ShaderMaterial + Mesh 并挂到 this.root(FX 组节点);此后运行期只有
+//  spawn(写数组)/update(推进+写实例属性)两条路径,绝不新增对象。
 export class FX {
   constructor(scene, opts = {}) {
     this.scene = scene;
@@ -696,6 +746,8 @@ export class FX {
     this.root.name = 'FX';
     scene.add(this.root);
 
+    // 【建池】容量随画质倍率 q 缩放;池满后的兜底策略各池不同(滴粒环形复用、其余随机覆盖)。
+    // 调度器 _sq:96 条 × 14 个 float 的扁平延迟队列。
     this._initDrops(Math.round(2600 * this.q));
     this._initSprites(Math.round(520 * this.q), Math.round(300 * this.q));
     this._initRings(Math.round(300 * this.q));
@@ -709,6 +761,8 @@ export class FX {
   setCollider(fn) { this.collider = fn; }
 
   // ------------------------------------------------------------------ colour input → linear THREE.Color (no alloc after first use of a string)
+  // 【颜色归一化】契约 API 接受 THREE.Color | 十六进制 | css 字符串 | {r,g,b};字符串首次使用后缓存在
+  //  _colCache(Map),之后全程零分配。结果写入 out(scratch),调用方不得保存返回值。
   _color(c, out) {
     if (c && c.isColor) return out.copy(c);
     if (typeof c === 'number') return out.setHex(c);
@@ -723,6 +777,9 @@ export class FX {
   _near(pos, d) { return this._camPos.distanceToSquared(pos) < d * d; }
 
   // ------------------------------------------------------------------ droplets (velocity-stretched glossy sphere impostors, 2 tris each)
+  // 【滴粒池】结构体数组式布局:位置 dP/速度 dV/颜色 dC 各 cap*3,元数据 dA cap*8
+  // (size, age, life, grav, stretch, seed, -, flags)。几何是一张 −1..1 的 quad,
+  // 实例属性 aPosR(位置+半径)/aVelS(速度+拉伸)/aColA(颜色+gloss)由 _updateDrops 每帧填充。
   _initDrops(cap) {
     this.dCap = cap;
     this.dN = 0;
@@ -743,6 +800,8 @@ export class FX {
     this.root.add(mesh);
   }
 
+  // 【滴粒生成】池未满则追加,满了用 _recycle 步进 7 的环形下标覆盖最旧者(7 与容量互质,
+  //  覆盖均匀);dK 记录上一次碰撞检测点,作为下一帧碰撞射线的起点。
   // flags: 1 paint, 2 ripple ring on land, 4 no-collide, 8 quiet landing (no blot / beads), 16 matte (dust grain)
   _spawnDrop(px, py, pz, vx, vy, vz, col, size, life, grav, stretch, flags) {
     let i;
@@ -757,6 +816,8 @@ export class FX {
     A[i8] = size; A[i8 + 1] = 0; A[i8 + 2] = life; A[i8 + 3] = grav; A[i8 + 4] = stretch; A[i8 + 5] = rand(); A[i8 + 6] = 0; A[i8 + 7] = flags;
     return i;
   }
+  // 【swap-with-last 压缩】用末尾粒子整体覆盖被删槽位,数组永远保持 [0, n) 紧凑,
+  //  遍历与上传都不留空洞(所有池的删除都走这个模式)。
   _killDrop(i) {
     const last = --this.dN;
     if (i !== last) {
@@ -773,6 +834,9 @@ export class FX {
     if (this.onRipple) { this.onRipple(pos, amp, wavelength, speed, life); return; }
     if (col) this._ringRaw(pos, normal, col, speed * life * 0.8 + 0.1, life * 0.7, R_RIPPLE, 0.45, 1);
   }
+  // 【滴粒落地】墨留在落点:上色滴(F_PAINT)经 onDropletLand 变成真正的涂装 splat(契约回调,
+  //  fxHooks 把它接到 paint 系统);非上色滴落点留下 onSpeck 墨渍(GPU 微 splat,近处才有);
+  //  大墨滴还会沿法线反溅 1~2 颗小珠。水面的落点一律是白化涟漪环。
   // Droplet hit something. Ink stays where it lands: paint droplets become real splats (onDropletLand), the rest
   // leave a speck of ink (onSpeck, GPU-only micro splat) and a ripple; heavy drops kick up a couple of beads.
   _landDrop(i, px, py, pz, nx, ny, nz, water) {
@@ -809,6 +873,9 @@ export class FX {
     }
   }
 
+  // 【滴粒更新——每帧热循环】① 推进 age,超寿即删;② 线性阻尼+按个体 grav 倍率的重力积分;
+  //  ③ 碰撞:每滴从上帧检测点 dK 到本帧新位置打一条射线,但全帧碰撞射线总数受 maxChecks
+  //  预算限制(画质倍率缩放,防爆时全部滴粒一起打射线拖垮 CPU);④ 水面穿越检测(插值落点)。
   _updateDrops(dt) {
     const P = this.dP, Vv = this.dV, A = this.dA, K = this.dK;
     const g = this.gravity, wy = this.waterY;
@@ -818,6 +885,7 @@ export class FX {
       A[i8 + 1] += dt;
       if (A[i8 + 1] >= A[i8 + 2]) { this._killDrop(i); i--; continue; }
       const drag = 1 - 0.35 * dt;
+      // 【阻尼+重力】三个分量同一阻尼;y 额外叠 g × 个体 grav 倍率(不同墨水重量不同)
       Vv[i3] *= drag; Vv[i3 + 2] *= drag;
       Vv[i3 + 1] = Vv[i3 + 1] * drag - g * A[i8 + 3] * dt;
       const ox = P[i3], oy = P[i3 + 1], oz = P[i3 + 2];
@@ -843,6 +911,8 @@ export class FX {
       }
     }
     // --- write instance attributes ---
+    // 【写实例属性】半径 = size × 出生生长 × 临终收缩;拉伸随速度增大并叠加高频"颤动"(年轻滴
+    //  更明显,墨感的关键);gloss 槽 = 哑光标志的反码——同一着色器区分墨滴与灰尘。
     const aP = this.dGeo.attributes.aPosR.array, aV = this.dGeo.attributes.aVelS.array, aC = this.dGeo.attributes.aColA.array;
     for (let i = 0; i < this.dN; i++) {
       const i3 = i * 3, i4 = i * 4, i8 = i * 8;
@@ -863,6 +933,9 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ sprites (puffs = alpha, glows = additive)
+  // 【精灵池双子池】puffs 与 glows 结构相同(位置 P/速度 V/颜色 C/元数据 X 14 槽),共用
+  //  SPRITE_VERT,只因混合模式与片元着色器不同而分成两个 Mesh——保证加法 glow 不被半透明 puff
+  //  排序干扰,也只需 2 个 draw call。池满随机覆盖一槽。
   _initSprites(capPuff, capGlow) {
     const attrs = [['aPosSize', 4], ['aColA', 4], ['aMisc', 4]];
     const mkPool = (cap, frag, blending, order, name) => {
@@ -881,6 +954,8 @@ export class FX {
     this.puffs = mkPool(capPuff, PUFF_FRAG, THREE.NormalBlending, 12, 'FX_Puffs');
     this.glows = mkPool(capGlow, GLOW_FRAG, THREE.AdditiveBlending, 20, 'FX_Glows');
   }
+  // 【精灵生成】X 14 槽:起止尺寸、age、life、alpha、旋转/转速、阻尼、浮力(buoy)、kind、
+  //  淡入时长、种子、摇摆、淡出时长。鱿鱼幽灵(P_GHOST)不随机初始旋转,保持剪影直立。
   _sprite(pool, px, py, pz, vx, vy, vz, col, size0, size1, life, alpha, drag = 2.2, buoy = 0, kind = 0, fadeIn = 0.08, spin = 1.2, wobble = 0, fadeOut = 0) {
     let i;
     if (pool.n < pool.cap) i = pool.n++; else i = Math.floor(rand() * pool.cap);
@@ -894,6 +969,9 @@ export class FX {
     X[x + 9] = kind; X[x + 10] = fadeIn; X[x + 11] = rand(); X[x + 12] = wobble; X[x + 13] = fadeOut;
     return i;
   }
+  // 【精灵更新】先整体推进(阻尼+浮力+可选李萨如摇摆,羽毛/幽灵/飘雾的漂移感来自这里,
+  //  swap-with-last 删除),再统一写实例属性:尺寸沿 easeOut 从 size0 长到 size1,alpha =
+  //  峰值 × 淡入 × 淡出(加法 glow 用线性淡出,普通 puff 用平方淡出更柔和)。
   _updateSprites(pool, dt, additive) {
     const P = pool.P, Vv = pool.V, C = pool.C, X = pool.X;
     const aPS = pool.geo.attributes.aPosSize.array, aC = pool.geo.attributes.aColA.array, aM = pool.geo.attributes.aMisc.array;
@@ -934,6 +1012,10 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ rings (+ immediate-mode marks appended each frame)
+  // 【环贴花池】存活环 rings + 即时标记 marks 共享同一块实例缓冲(容量 cap+48):marks 是
+  //  "只画下一帧"的即时模式贴花(危险圈、跳跃目标、激光点),每帧在 _updateRings 末尾追加在
+  //  存活环之后、画完即清零——两者一次 draw call 搞定。X 8 槽末位 grow0 按样式给不同初速度
+  //  比例(溅盘/墨渍从 0.55 开始,尘环 0.35,其余 0.22,配合 easeOut 出扩散感)。
   _initRings(cap) {
     const mCap = 48;
     const geo = makeQuadGeo(cap + mCap, [['aPosR', 4], ['aNrmT', 4], ['aColA', 4], ['aMisc', 4]]);
@@ -962,6 +1044,8 @@ export class FX {
     R.X[x + 7] = style === R_DISC || style === R_BLOT ? 0.55 : style === R_DUST ? 0.35 : 0.22;
     return i;
   }
+  // 【即时模式贴花】调用方每帧可见即调(如 dangerRing、jumpMarker、laserDot):不老化、不分配,
+  //  只登记到 marks,下一帧随 rings 一起画出后丢弃。cap 满则静默丢弃。
   // Immediate-mode decal for this frame only (drawn next frame, then discarded).
   mark(pos, normal, color, radius, style = R_TARGET, alpha = 1, t = 0, thick = 1, seed = 0.5) {
     const M = this.marks;
@@ -974,6 +1058,8 @@ export class FX {
     M.C[i3] = col.r; M.C[i3 + 1] = col.g; M.C[i3 + 2] = col.b;
     M.X[x] = radius; M.X[x + 1] = t; M.X[x + 2] = alpha; M.X[x + 3] = style; M.X[x + 4] = thick; M.X[x + 5] = seed;
   }
+  // 【环更新】存活环推进 age/可选整体漂移(带阻尼),半径 = 目标半径 × (grow0 + 剩余部分 easeOut),
+  //  之后把 marks 逐条追加进实例缓冲尾部(M.n 清零 = 即时语义),最终 instanceCount = 两者之和。
   _updateRings(dt) {
     const R = this.rings, X = R.X;
     const aP = R.geo.attributes.aPosR.array, aN = R.geo.attributes.aNrmT.array, aC = R.geo.attributes.aColA.array, aM = R.geo.attributes.aMisc.array;
@@ -1017,6 +1103,9 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ shells
+  // 【墨壳池】基数是 20 面体细分 3 级的球(320 三角形,撕裂效果的顶点密度来源),
+  //  实例属性 aPosR(位置+当前半径)/aColA/aMisc(t, seed, -, wobble)/aAxis(王冠轴+王冠量)。
+  //  容量仅 32——爆炸级特效同一时刻不会太多,池满随机覆盖。
   _initShells(cap) {
     const base = new THREE.IcosahedronGeometry(1, 3);
     const geo = withInstanceAttrs(base, cap, [['aPosR', 4], ['aColA', 4], ['aMisc', 4], ['aAxis', 4]]);
@@ -1029,6 +1118,8 @@ export class FX {
     // P pos, V vel, C col, X: r0, r1, age, life, expand, alpha, kind, seed, wobble
     this.shells = { cap, n: 0, geo, mesh, P: new Float32Array(cap * 3), V: new Float32Array(cap * 3), C: new Float32Array(cap * 3), X: new Float32Array(cap * 9), A: new Float32Array(cap * 4) };
   }
+  // 【墨壳生成】axis 缺省 = 自由爆开(轴取 +Y、crown 0);给了 axis 即王冠水花模式
+  // (crown 1 = 沿表面法线张口的碗状水花,落墨/落水用)。
   // axis/crown: a crown splash opening along the surface normal (crown 1) instead of a free burst (0)
   _shell(pos, col, r0, r1, expand, life, alpha, kind, vy = 0, wobble = 0.08, axis = null, crown = 0) {
     const S = this.shells;
@@ -1043,6 +1134,8 @@ export class FX {
     if (axis) { S.A[i4] = axis.x; S.A[i4 + 1] = axis.y; S.A[i4 + 2] = axis.z; S.A[i4 + 3] = crown; }
     else { S.A[i4] = 0; S.A[i4 + 1] = 1; S.A[i4 + 2] = 0; S.A[i4 + 3] = 0; }
   }
+  // 【墨壳更新】壳几乎不做 CPU 动画:只有整体 y 漂移。半径沿 easeOut 从 r0 涨到 r1(expand 是
+  //  "涨到位"的时长),撕裂完全交给片元着色器的 t;alpha 槽装的是"初始完整度",wobble 随展开衰减。
   _updateShells(dt) {
     const S = this.shells, X = S.X;
     const aP = S.geo.attributes.aPosR.array, aC = S.geo.attributes.aColA.array, aM = S.geo.attributes.aMisc.array, aA = S.geo.attributes.aAxis.array;
@@ -1073,6 +1166,8 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ beams (+ immediate pillars)
+  // 【光柱池】beams(存活 geyser)与 pillars(即时光柱)同 rings/marks 的共享缓冲套路:
+  //  一个 CylinderGeometry(底心移到原点,高 1)实例化 cap+8 份,pillars 每帧追加画完即清。
   _initBeams(cap) {
     const pCap = 8;
     const base = new THREE.CylinderGeometry(1, 1, 1, 24, 7, true);
@@ -1094,6 +1189,7 @@ export class FX {
     B.C[i * 3] = col.r; B.C[i * 3 + 1] = col.g; B.C[i * 3 + 2] = col.b;
     B.X[i * 5] = radius; B.X[i * 5 + 1] = height; B.X[i * 5 + 2] = 0; B.X[i * 5 + 3] = life; B.X[i * 5 + 4] = rand();
   }
+  // 【即时光柱 pillar】与 mark 同类的即时模式:每帧调用、下一帧画出即丢(光束蓄力、跳跃目标柱)。
   // Immediate-mode light pillar (this frame only).
   pillar(pos, color, radius = 0.5, height = 8, alpha = 0.6, seed = 0.3) {
     const Pl = this.pillars;
@@ -1104,6 +1200,8 @@ export class FX {
     Pl.C[i * 4] = col.r; Pl.C[i * 4 + 1] = col.g; Pl.C[i * 4 + 2] = col.b; Pl.C[i * 4 + 3] = alpha;
     Pl.X[i * 3] = radius; Pl.X[i * 3 + 1] = height; Pl.X[i * 3 + 2] = seed;
   }
+  // 【光柱更新】geyser 的高度快速冲顶(t*3.2 的 easeOut)、半径先涨后缩,alpha 用
+  //  pow(1-t, 1.6)·min(1, t*25) 做"陡起缓消"的包络;pillars 以固定 t=0.35 追加在尾部。
   _updateBeams(dt) {
     const B = this.beams, X = B.X;
     const aP = B.geo.attributes.aPosR.array, aC = B.geo.attributes.aColA.array, aM = B.geo.attributes.aMisc.array;
@@ -1139,6 +1237,8 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ motes (GPU)
+  // 【尘粒池】唯一没有 CPU 侧数组的池:位置完全由 uTime 在顶点着色器里算,CPU 只喂相机位置、
+  //  盒尺寸(uBox 16)、风向与太阳方向。开关整层用 fx.motes.visible。
   _initMotes(count) {
     const g = new THREE.InstancedBufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
@@ -1160,6 +1260,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ scheduler (delayed stages; allocation-free)
+  // 【入队】把多阶段特效的后续阶段压成 14 个 float 追加到 _sq;队列满(96 条)静默丢弃。
   _after(delay, op, pos, normal, col, a0 = 0, a1 = 0, a2 = 0) {
     if (this._sqN >= 96) return;
     const o = this._sqN++ * 14, S = this._sq;
@@ -1169,6 +1270,8 @@ export class FX {
     S[o + 8] = col.r; S[o + 9] = col.g; S[o + 10] = col.b;
     S[o + 11] = a0; S[o + 12] = a1; S[o + 13] = a2;
   }
+  // 【调度执行】每帧把各条延迟减 dt,到期的先 swap-with-last 摘队(注意先摘队再触发——
+  //  触发函数里可能再 _after 新任务,避免在同一次遍历里重复处理),再按操作码补画环/王冠/尘环。
   _runSchedule(dt) {
     const S = this._sq;
     for (let i = 0; i < this._sqN; i++) {
@@ -1188,6 +1291,8 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ ground probe (for rings under explosions)
+  // 【向下探地】从 pos 垂直向下打一条碰撞射线找地面(爆炸/砸地特效要把环贴到真实地面上);
+  //  没有碰撞系统(labs)时退化为水面判断。
   _probeDown(pos, depth, outP, outN) {
     if (this.collider) {
       _from.copy(pos); _to.copy(pos); _to.y -= depth;
@@ -1199,6 +1304,8 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ internal building blocks
+  // 【内部积木】契约 API 由这些小工具拼成;_crown 径向王冠(沿表面法线抛一圈墨滴,角度均匀+
+  //  抖动保证不呈齿轮感)、_dustRing 地面尘环、_grains 锥形尘粒。数量一律按画质 q 缩放。
   // radial splash crown on a surface: droplets thrown outward + upward along the normal
   _crown(pos, normal, col, n, speed, size, flags = 0) {
     basis(normal, _tA, _v4);
@@ -1235,6 +1342,8 @@ export class FX {
   _toCam(pos, out) { return out.copy(this._camPos).sub(pos).normalize(); }
 
   // =================================================================== contract API
+  // 【契约 API】docs/CONTRACTS.md §4 约定的对外特效接口:武器/角色系统只调这些方法,不关心内部
+  //  池结构。颜色参数一律经 _color 归一化;向量只读取不保存(见文件头契约)。
   // Impact splash: a small sheet of ink pops off the surface and tears (count ≥ 5 near the camera), droplets fly out in a
   // crown — most low along the surface, a few higher — and a ripple runs through the wet ink. Ring decal / mist are
   // opt-in (opts.ring / opts.mist === true).
@@ -1268,11 +1377,13 @@ export class FX {
     }
   }
 
+  // 【drop】单颗定制墨滴(弹道武器的手动弹丸),所有参数走 opts;与 burst 的批量喷洒互补。
   drop(pos, vel, color, opts = EMPTY) {
     const col = this._color(color, this._col);
     this._spawnDrop(pos.x, pos.y, pos.z, vel.x, vel.y, vel.z, col, opts.size ?? 0.1, opts.life ?? 1.2, opts.gravity ?? 1, opts.stretch ?? 1, (opts.paint ? F_PAINT : 0) | (opts.ring ? F_RING : 0) | (opts.quiet ? F_QUIET : 0) | (opts.noCollide ? F_NOCOL : 0));
   }
 
+  // 【ring】表面环贴花。默认沿法线向后 snap 到真实表面(空中的点直接丢弃——半空中的溅环会悬浮)。
   // A ring decal on a surface. Snapped onto the surface behind `pos` along the normal; skipped when there is none (a
   // splash ring handed a point in mid-air — e.g. a body hit — would float).
   ring(pos, normal, color, opts = EMPTY) {
@@ -1288,6 +1399,9 @@ export class FX {
     this._ringRaw(p, n, col, opts.radius ?? 1.5, opts.life ?? 0.35, opts.style ?? R_WAVE, opts.alpha ?? 0.95, opts.thickness ?? 1);
   }
 
+  // 【爆炸】bomb/砸地通用:HDR 双闪光(glow)+ 撕裂墨壳 + 三类滴粒(快丝/重滴/细雾,见
+  //  _burstDrops)+ 地面探针涟漪 + 浅白墨云。体积件尺寸用 Rv = min(R, 2.4) 封顶,防止大爆
+  //  炸贴脸糊满相机;地面波浪与滴粒仍按完整半径展示。
   // A bomb / blast / slam: a brief hot flash, then the ink itself — a glossy sheet that balloons out and tears into
   // ribbons, ligaments flung off it, heavy gloops that paint satellite splats, fine spray, a fast ink wave over the
   // ground and a ripple through the wet ink. Volumetric parts (flash, sheet, mist) are capped so a big blast (e.g.
@@ -1315,6 +1429,8 @@ export class FX {
       this._sprite(this.puffs, pos.x + _v1.x * d, pos.y + _v1.y * d * 0.6, pos.z + _v1.z * d, _v1.x * 1.8, 0.5 + rand() * 0.6, _v1.z * 1.8, this._colB, Rv * (0.25 + rand() * 0.15), Rv * (0.55 + rand() * 0.25), 0.55 + rand() * 0.3, 0.12, 2.8, 0.2);
     }
   }
+  // 【爆破碎滴】一个爆炸的滴粒构成:ligaments(快、拉丝、三成上色)、gloops(慢弧、全部上色,
+  //  落地成卫星 splat)、fine spray(细雾、纯装饰)。explosion/splatted 共用。
   // droplets of a burst: nl ligaments (fast, streaked, some paint), ng heavy gloops (slow arcs, all paint), nf fine spray
   _burstDrops(pos, col, Rv, spd, paint, nl, ng, nf) {
     const q = this.q;
@@ -1338,6 +1454,8 @@ export class FX {
     }
   }
 
+  // 【splatted】角色爆墨死亡:闪光 + 绕身撕裂墨壳 + 爆破碎滴 + 浅白墨云 + 地面涟漪,
+  //  比 explosion 小一档(radius 固定 ~1.2)。
   // A character bursting into ink: flash, a sheet of ink tearing open around the body, droplets, ground wave.
   splatted(pos, color) {
     const col = this._color(color, this._col);
@@ -1355,6 +1473,9 @@ export class FX {
     if (this._probeDown(pos, 3, _v2, _v3)) this._ripple(_v2, 0.014, 0.26, 2.4, 1.1, _v3, col);
   }
 
+  // 【游泳尾迹】潜泳时角色每 ~0.05s 调用:速度越快尾羽越高(鸡尾状 glossy 滴从尾部甩出)+
+  //  概率性气泡。45m 距离裁剪。水面的涟漪/隆起本体在 swimWake.js 的墨面着色器里,这里只
+  //  管"跃出水面"的部分。
   // Swimming wake: called ~every 0.05 s by the actor while submerged (dir = unit horizontal heading). The ripples and
   // the mound live in the ink surface itself (swimWake.js → level shader); this adds what leaves the surface — a thin
   // rooster tail of glossy drops kicked up off the tail (heavier the faster you swim) and bubbles popping in the trail.
@@ -1377,6 +1498,7 @@ export class FX {
     }
   }
 
+  // 【急转弯刻痕】潜泳变向时从弯道外侧甩出一扇墨( out = 单位外向速度 ),k 越大甩得越急。
   // Carving a hard turn while submerged: a fan of ink thrown off the outside of the turn. out = unit outward vector.
   swimCarve(pos, dir, out, color, k = 1) {
     if (!this._near(pos, 32)) return;
@@ -1388,6 +1510,8 @@ export class FX {
     }
   }
 
+  // 【枪口焰】三种武器通用入口,按 kind 分支:blaster(爆破枪:大火球+冲击环+锥形喷滴)、
+  //  charger(蓄力狙:星芒闪+细环+高精尖速射)、shooter(默认小喷:双柔光+锥形滴+口部雾)。
   muzzle(pos, dir, color, kind = 'shooter') {
     const col = this._color(color, this._col);
     _v3.copy(dir).normalize();
@@ -1434,6 +1558,8 @@ export class FX {
     this._sprite(this.puffs, pos.x + _v3.x * 0.15, pos.y + _v3.y * 0.15, pos.z + _v3.z * 0.15, _v3.x * 2.5, _v3.y * 2.5 + 0.3, _v3.z * 2.5, this._colB, 0.12, 0.38, 0.28, 0.3, 6);
   }
 
+  // 【出生闪光】角色落点登场:光柱 + 柔光球 + 冲击环 + 0.12s 后经调度器的二段细环(展示
+  //  _after 的典型用法)+ 全向喷滴 + 星芒。
   spawnFlash(pos, color) {
     const col = this._color(color, this._col);
     const q = this.q;
@@ -1463,6 +1589,8 @@ export class FX {
     }
   }
 
+  // 【雨】按 dt 泊松式生成:每帧期望数 = 面积 × 密度 × q × dt,取整加随机实现"平均对、不共振";
+  //  伴随的云层 puff 可关(opts.cloud === false)。
   rain(pos, radius = 3.4, color, dt = this._dt, opts = EMPTY) {
     const col = this._color(color, this._col);
     const area = radius * radius;
@@ -1484,6 +1612,10 @@ export class FX {
   }
 
   // =================================================================== VFX-stream recipes
+  // 【VFX 流配方】按武器/动作分组的"每帧或每事件"调用约定:带 k 参数的蓄力类逐帧调(k = 进度),
+  //  其余在事件点单次调。配方内部仍只组合 _spawnDrop/_sprite/_shell/_ringRaw/_ripple 等积木。
+  // 【脚步声】surface 区分三种地面:干地只有跑起来才扬尘;己墨是轻快小滴+涟漪;敌墨黏稠
+  //  (慢速重滴+迟缓涟漪+敌墨嘶嘶声)。
   // Foot plant. surface: 0 dry, 1 own ink, 2 enemy ink (color = the ink under the foot). dir: unit horizontal heading.
   // In ink the foot squelches: a few droplets kicked back and a ripple through the ink surface (no decals).
   footstep(pos, color, surface = 0, dir = null, speed = 5) {
@@ -1522,6 +1654,7 @@ export class FX {
     }
   }
 
+  // 【着地】干地:尘环+尘粒+震 grains,速度越大越猛;墨面(己/敌):王冠+拍击墨壳+强涟漪。
   land(pos, color, surface = 0, speed = 8) {
     const col = this._color(color, this._col);
     const k = clamp((speed - 3) / 12, 0, 1);
@@ -1545,6 +1678,7 @@ export class FX {
     this._ripple(_v2, 0.007 + 0.006 * k, 0.16, 1.6 + k, 0.8, UP, this._colB);
   }
 
+  // 【起跳/起游】己墨或游泳:上喷滴+涟漪;敌墨:复用 footstep 的黏脚表现;干地:小尘团。
   jumpOff(pos, color, surface = 0, swim = false) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.01, pos.z);
@@ -1567,6 +1701,7 @@ export class FX {
     }
   }
 
+  // 【人鱿互变】变身爆点:puff + 朝相机的一次性细环(保证任何视角都读得到)+ 环状小滴。
   // kid ⇄ squid transform pop
   formPop(pos, color, toSquid = true, inInk = false) {
     const col = this._color(color, this._col);
@@ -1584,6 +1719,7 @@ export class FX {
     }
   }
 
+  // 【潜入墨中】鱿鱼钻进墨里:王冠+拍击墨壳(快速潜入才有)+ 涟漪 + 气泡。
   // squid slips into its own ink (from the air or from kid form): a crown, a slapped-up sheet, two ripples
   dive(pos, color, speed = 4) {
     const col = this._color(color, this._col);
@@ -1594,6 +1730,7 @@ export class FX {
     this._ripple(_v2, 0.008 + Math.min(0.006, speed * 0.0006), 0.15, 1.5, 0.85, UP, this._colB);
     this.bubbles(pos, col, 3);
   }
+  // 【浮出墨面】上涌滴 + 涟漪,比 dive 轻。
   emerge(pos, color, speed = 4) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.01, pos.z);
@@ -1606,6 +1743,7 @@ export class FX {
     this._colB.copy(col).lerp(_white, 0.2);
     this._ripple(_v2, 0.007, 0.14, 1.3, 0.75, UP, this._colB);
   }
+  // 【气泡】上浮的小气泡(glow 池的 bubble 样式),潜水/入水时点缀。
   bubbles(pos, color, n = 3) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.55).multiplyScalar(1.1);
@@ -1616,6 +1754,7 @@ export class FX {
     }
   }
 
+  // 【爬墙滴墨】鱿鱼贴墙攀爬时顺墙滑下的墨滴 + 墙上涟漪(一半概率,避免过密)。
   // squid wall-climb: a drip sliding down the wall + a ripple through the ink on the wall
   climbDrip(pos, normal, color) {
     const col = this._color(color, this._col);
@@ -1625,6 +1764,7 @@ export class FX {
     this._colB.copy(col).lerp(_white, 0.2);
     if (rand() < 0.5) this._ripple(_v2, 0.004, 0.12, 0.9, 0.55, normal, this._colB);
   }
+  // 【翻越墙顶】爬到墙头弹出时向前上方喷一圈墨。
   // squid pops over the top of a wall: spray flung up and forward
   climbPop(pos, dir, color) {
     const col = this._color(color, this._col);
@@ -1638,11 +1778,14 @@ export class FX {
     this._colB.copy(col).lerp(_white, 0.35);
     this._sprite(this.puffs, pos.x, pos.y + 0.3, pos.z, dir.x, 1.2, dir.z, this._colB, 0.15, 0.5, 0.35, 0.3, 4);
   }
+  // 【受伤滴墨】被打角色身上落下的敌方墨滴(慢速下坠,视觉伤口)。
   // enemy-ink drip falling off a damaged character
   hurtDrip(pos, color, size = 0.035) {
     const col = this._color(color, this._col);
     this._spawnDrop(pos.x, pos.y, pos.z, (rand() - 0.5) * 0.5, -0.2 - rand() * 0.4, (rand() - 0.5) * 0.5, col, size * (0.7 + rand() * 0.6), 1.6, 1, 1.3, 0);
   }
+  // 【命中飞溅】子弹打到身体:贴身小墨壳撕裂 + 大部分喷雾沿弹道继续前进、三分之一朝射手
+  //  方向反溅(i % 3 === 0 的 back 分支)+ 短闪(远处也能读到命中)。killed 时省掉雾团。
   // ink hitting a body: a small sheet of ink bursts off the body and tears, most of the spray carries on through with
   // the shot's momentum and some splashes back toward the shooter; a quick flash so the hit registers at range.
   // dir = shot direction.
@@ -1668,12 +1811,14 @@ export class FX {
       this._sprite(this.puffs, _v2.x, _v2.y, _v2.z, _v3.x * 1.5, 0.3, _v3.z * 1.5, this._colB, 0.18, 0.45 + 0.15 * k, 0.28, 0.22, 4);
     }
   }
+  // 【单团雾】炮口/喷溅的通用雾团积木,本身即公开 API。
   // one mist puff (shot trails, spray)
   mist(pos, vel, color, size = 0.2, alpha = 0.25) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.4);
     this._sprite(this.puffs, pos.x, pos.y, pos.z, vel ? vel.x : 0, vel ? vel.y : 0, vel ? vel.z : 0, this._colB, size * 0.45, size * 1.4, 0.3 + rand() * 0.12, alpha, 4.5, 0.2);
   }
+  // 【弹道拖尾】飞行中的子弹每帧调用: faint 雾 + 概率性甩出微滴(big 武器更浓)。
   // shot in flight: faint mist + an occasional shed micro-droplet
   shotTrail(pos, vel, color, big = false) {
     const col = this._color(color, this._col);
@@ -1682,12 +1827,16 @@ export class FX {
     this._sprite(this.puffs, pos.x, pos.y, pos.z, vel.x * 0.06, vel.y * 0.06 + 0.1, vel.z * 0.06, this._colB, s * 0.5, s * 1.5, big ? 0.4 : 0.26, big ? 0.3 : 0.2, 5, 0.1);
     if (rand() < (big ? 0.8 : 0.35)) this._spawnDrop(pos.x, pos.y, pos.z, vel.x * 0.25 + (rand() - 0.5), vel.y * 0.25, vel.z * 0.25 + (rand() - 0.5), col, big ? 0.03 + rand() * 0.02 : 0.016 + rand() * 0.012, 0.8, 1, 1.4, F_QUIET);
   }
+  // 【空仓挂机】墨打光时的干哑一声:枪口一小缕灰雾。
   // empty tank: a dry wisp from the muzzle
   dryFire(pos, dir) {
     this._sprite(this.puffs, pos.x, pos.y, pos.z, dir.x * 0.8, dir.y * 0.8 + 0.3, dir.z * 0.8, DUST, 0.05, 0.22, 0.35, 0.35, 5, 0.3, P_DUST, 0.02, 1);
   }
 
   // ---- charger
+  // 【蓄力狙组】chargeGlow 逐帧(k = 蓄力进度):枪口辉光随 k 变大变白 + 火花向枪口汇聚;
+  //  chargeFull 满蓄瞬间一次性爆星芒;laserDot 是即时模式的激光点(glow + 墨点 mark);
+  //  beamImpact/beamTrail 是发射后的落点爆发与沿线雾雨。
   chargeGlow(pos, color, k) {
     const col = this._color(color, this._col);
     const flick = 0.85 + 0.15 * Math.sin(this._time * 40);
@@ -1702,6 +1851,7 @@ export class FX {
       this._sprite(this.glows, pos.x + _v1.x * r, pos.y + _v1.y * r, pos.z + _v1.z * r, -_v1.x * r / 0.17, -_v1.y * r / 0.17, -_v1.z * r / 0.17, this._colB, 0.05, 0.02, 0.17, 1, 0, 0, G_SOFT + 1, 0.03, 0);
     }
   }
+  // 【满蓄瞬间】一次性爆闪:星芒+对相机细环+八向溅星。
   chargeFull(pos, color) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.5).multiplyScalar(3.2);
@@ -1715,6 +1865,7 @@ export class FX {
       this._sprite(this.glows, pos.x, pos.y, pos.z, _v1.x * 2.2, _v1.y * 2.2, _v1.z * 2.2, this._colB, 0.12, 0.05, 0.3, 1, 3, 0, G_STAR + 1, 0, 2);
     }
   }
+  // 【激光点】蓄力瞄准时激光落点(即时模式,每帧调):脉动星芒 + 小墨点 mark。
   // charger laser sight hitting a surface (immediate)
   laserDot(pos, normal, color, k = 0.5) {
     const col = this._color(color, this._col);
@@ -1724,6 +1875,7 @@ export class FX {
     this._sprite(this.glows, _v2.x, _v2.y, _v2.z, 0, 0, 0, this._colB, (0.08 + 0.1 * k) * pulse, (0.08 + 0.1 * k) * pulse, Math.max(0.03, this._dt * 1.6), 1, 0, 0, G_STAR + 1 + 2 * k, 0, 0);
     this.mark(_v2, normal, col, 0.12 + 0.12 * k, R_BLOT, 0.5, 0, 1, 0.3);
   }
+  // 【光束落点】蓄力弹着点:双辉光 + 双环 + 沿法线的锥形喷滴,charge 越大越猛。
   beamImpact(pos, normal, color, charge = 1) {
     const col = this._color(color, this._col);
     const c = clamp(charge, 0, 1);
@@ -1741,6 +1893,7 @@ export class FX {
       this._spawnDrop(_v2.x, _v2.y, _v2.z, _v1.x * sp, _v1.y * sp, _v1.z * sp, col, 0.03 + rand() * 0.04, 1.1, 1, 1, 0);
     }
   }
+  // 【光束雾雨】沿已发射光束的 from→to 每 0.75m 撒雾与细滴(charge 影响雾量)。
   // mist + drizzle along a fired charger beam
   beamTrail(from, to, color, charge = 1) {
     const col = this._color(color, this._col);
@@ -1759,6 +1912,8 @@ export class FX {
   }
 
   // ---- roller: wet spray flung off the drum front while rolling (call per frame; k = speed / roll speed)
+  // 【滚筒湿喷】滚动时每帧调用(k = 速度倍率):滚筒前沿按宽度甩出一片墨滴(三成上色),
+  //  两侧概率性扬起雾团。
   rollerSpray(pos, fwd, width, color, k = 1) {
     const col = this._color(color, this._col);
     const rx = fwd.z, rz = -fwd.x;
@@ -1775,6 +1930,7 @@ export class FX {
       this._sprite(this.puffs, pos.x + rx * s * width * 0.5, pos.y + 0.15, pos.z + rz * s * width * 0.5, rx * s * 0.8 + fwd.x, 0.5, rz * s * 0.8 + fwd.z, this._colB, 0.1, 0.35, 0.3, 0.28, 4);
     }
   }
+  // 【甩墨帘】滚筒挥击:flick 扇形雾帘——按偏航角展开一片会落地染色的滴雨(spreadDeg 控宽)。
   // roller flick: a wide curtain of spray (droplets that paint where they land)
   flickCurtain(pos, dir, color, spreadDeg = 50) {
     const col = this._color(color, this._col);
@@ -1797,18 +1953,23 @@ export class FX {
   }
 
   // ---- bombs
+  // 【炸弹组】dangerRing 是即时模式的危险区圈(每帧重画,引线越近脉冲越快,片元里 vT = k
+  //  驱动);beepPulse 滴答闪光; bounceSplash 落地弹跳水花;爆炸本体走通用 explosion()。
   dangerRing(pos, normal, color, radius = 3.1, k = 0) { this.mark(pos, normal, color, radius, R_DANGER, 0.95, k, 1, 0.37); }
+  // 【滴答脉冲】炸弹蜂鸣时的发光心跳(k 越大越亮,地面配一圈扩散细环)。
   beepPulse(bombPos, groundPos, normal, color, radius = 3.1, k = 0) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.3).multiplyScalar(3 + 3 * k);
     this._sprite(this.glows, bombPos.x, bombPos.y, bombPos.z, 0, 0, 0, this._colB, 0.35, 0.8 + 0.4 * k, 0.14, 1, 0, 0, G_SOFT + 2 + 3 * k, 0);
     if (groundPos) this._ringRaw(groundPos, normal || UP, col, radius, 0.32, R_THIN, 0.55 + 0.35 * k, 1.2);
   }
+  // 【炸弹飞行尾迹】飞行中概率甩墨粒+小雾团。
   bombTrail(pos, vel, color) {
     const col = this._color(color, this._col);
     if (rand() < 0.5 * this.q + 0.2) this._spawnDrop(pos.x, pos.y, pos.z, vel.x * 0.1 + (rand() - 0.5) * 0.6, vel.y * 0.1, vel.z * 0.1 + (rand() - 0.5) * 0.6, col, 0.02 + rand() * 0.02, 0.8, 1, 1.2, 0);
     if (rand() < 0.35) { this._colB.copy(col).lerp(_white, 0.45); this._sprite(this.puffs, pos.x, pos.y, pos.z, 0, 0.2, 0, this._colB, 0.06, 0.2, 0.25, 0.22, 4); }
   }
+  // 【落地弹跳】炸弹触地再弹起时的小皇冠+涟漪。
   bounceSplash(pos, normal, color) {
     const col = this._color(color, this._col);
     this._crown(pos, normal, col, 6, 2, 0.03);
@@ -1817,6 +1978,9 @@ export class FX {
   }
 
   // ---- splatling
+  // 【旋转枪组】spinUp 逐帧(k = 转速 0..1,streaming = 是否在持续射击):枪口辉光随转速
+  //  增强变白,墨滴沿旋转切线方向从旋转的枪管束上甩出(径向 rx/rz + 切向 tx/ty/tz 两基);
+  //  spinFull 满速瞬间一次性爆闪+环+甩墨。
   // Spin-up / stream (call every frame; k = spin 0..1): a hot glow in the barrel mouth that grows and whitens with the
   // spin, and ink slung off the spinning barrel cluster — droplets leave tangentially (the barrels turn about the aim
   // axis), more and faster as it winds up; while streaming they peel off steadily and carry forward with the stream.
@@ -1841,6 +2005,7 @@ export class FX {
         col, 0.011 + rand() * 0.013 + 0.008 * kk, 0.75, 1, 1.5, rand() < 0.55 ? F_QUIET : 0);
     }
   }
+  // 【满速瞬间】旋转枪转满的一次性脆响:热闪 + 绕枪管轴细环 + 一整圈切线甩墨。
   // Spun up to full: one crisp cue — a hot flash, a thin ring snapping out around the barrel axis and a crown of ink
   // flicked off the barrels all at once.
   spinFull(pos, dir, color) {
@@ -1863,6 +2028,8 @@ export class FX {
   }
 
   // ---- dualies dodge roll
+  // 【双枪翻滚组】三段式:dodgeSplash 起滚瞬间(向后+两侧喷墨+低墨壳+涟漪)、dodgeSkid
+  //  滚中每帧(k = 进度,两侧滑痕喷雾随 f = 1-k 衰减)、dodgePlant 落定扎根(顺动量一坨+涟漪)。
   // Push-off (once, at the start): ink slapped back against the roll and out to the sides, a low crown sheet at the
   // feet, a ripple through the ink. The runner paints the trail stripe under the roll; this is only what flies.
   dodgeSplash(pos, dir, color) {
@@ -1912,6 +2079,9 @@ export class FX {
   }
 
   // ---- slosher
+  // 【泼桶组】sloshTrail 墨团飞行中每 ~0.5m 调用(head = 团头更粗);sloshImpact 团头拍下:
+  //  宽皇冠墨壳 + 沿 dir 的涌动墨 + 重滴落地成卫星 splat + 深涟漪(叠加在 weapons.js 的
+  //  burst+ring 之上,提供"重量感")。
   // A wave glob in flight sheds glossy drops (no mist: it is a heavy pour, not a spray). Call every ~0.5 m.
   sloshTrail(pos, vel, color, head = false) {
     const col = this._color(color, this._col);
@@ -1947,6 +2117,9 @@ export class FX {
   }
 
   // ---- Tidal Slam
+  // 【大招·潮汐猛击】四段式:slamLaunch 起跳(环+涟漪+上喷)、slamCharge 顶点悬停每帧
+  //  (能量火花向身体汇聚)、slamFall 下坠(体后速度拉丝)、slamWave 落地——在通用 explosion
+  //  之外追加:错开时序的地面双环(_after 0.1s 二段)、尘环、成排重涂墨滴、短墨泉。
   slamLaunch(pos, color) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.02, pos.z);
@@ -1962,6 +2135,7 @@ export class FX {
     this._colB.copy(col).lerp(_white, 0.35);
     for (let i = 0; i < 3; i++) this._sprite(this.puffs, pos.x, pos.y + 0.3, pos.z, (rand() - 0.5) * 2, 1.5 + rand(), (rand() - 0.5) * 2, this._colB, 0.3, 0.9, 0.5, 0.32, 3);
   }
+  // 【悬停蓄力】顶点悬停每帧:核心辉光 + 一圈向身体汇聚的星火花(半径 1.2-1.8m)。
   // hovering at the apex: energy gathering around the body (per frame, k 0..1)
   slamCharge(pos, color, k = 0.5) {
     const col = this._color(color, this._col);
@@ -1975,6 +2149,7 @@ export class FX {
       this._sprite(this.glows, pos.x + _v1.x * r, pos.y + _v1.y * r * 0.7, pos.z + _v1.z * r, -_v1.x * r / 0.22, -_v1.y * r * 0.7 / 0.22, -_v1.z * r / 0.22, this._colB, 0.14, 0.05, 0.22, 1, 0, 0, G_STAR + 1, 0.03, 2);
     }
   }
+  // 【下坠拉丝】俯冲时每帧在体后生成的极速短寿滴(F_NOCOL 不碰撞,纯视觉速度线)。
   // plummeting: speed streaks trailing above the body (per frame)
   slamFall(pos, color) {
     const col = this._color(color, this._col);
@@ -1986,6 +2161,7 @@ export class FX {
     }
   }
   // extra impact layers on top of explosion(): staggered ground waves, a dust ring, heavy painting gloops, a short geyser
+  // 【落地冲击波】在通用 explosion 之上追加的猛击专属层(见组头注)。
   slamWave(pos, color, radius = 5.2) {
     const col = this._color(color, this._col);
     const R = radius;
@@ -2007,6 +2183,8 @@ export class FX {
   }
 
   // ---- Ink Tempest
+  // 【大招·墨风暴】stormStart 云团炸开+核心闪光+对相机细环;rainSheet 云下每帧的加长亮
+  //  雨丝(远地图可读);stormPuddle 雨滴落点涟漪+微皇冠;stormFlash 云内电闪。
   stormStart(pos, color, radius = 3.4) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.2);
@@ -2019,6 +2197,7 @@ export class FX {
     this._toCam(pos, _v4);
     this._ringRaw(pos, _v4, col, radius * 1.4, 0.3, R_THIN, 0.8, 1.3);
   }
+  // 【云下亮雨】风暴云下方每帧的加长高速雨丝(速度 19-23,拉得很长,远距可读)。
   // extra long, bright rain streaks under a storm cloud so the downpour reads from across the map (call per frame)
   rainSheet(pos, radius, color, dt = this._dt) {
     const col = this._color(color, this._col);
@@ -2029,6 +2208,7 @@ export class FX {
       this._spawnDrop(pos.x + Math.cos(a) * r, pos.y - 0.4 - rand() * 0.5, pos.z + Math.sin(a) * r, 0.35, -19 - rand() * 4, 0.12, this._colB, 0.022 + rand() * 0.012, 1.0, 1, 5.5, F_QUIET);
     }
   }
+  // 【雨滴落点】单滴雨砸到墨面:小涟漪 + 三分之一概率的微皇冠。
   stormPuddle(pos, normal, color) {
     const col = this._color(color, this._col);
     _v2.copy(pos).addScaledVector(normal || UP, 0.01);
@@ -2036,6 +2216,7 @@ export class FX {
     this._ripple(_v2, 0.004 + rand() * 0.003, 0.09, 0.8, 0.5, normal || UP, this._colB);
     if (rand() < 0.35) this._crown(_v2, normal || UP, col, 2, 1.4, 0.02, F_QUIET);
   }
+  // 【云内电闪】风暴云里随机位置的一次短闪柔光。
   // a flicker inside the cloud
   stormFlash(pos, color, radius = 3.4) {
     const col = this._color(color, this._col);
@@ -2044,6 +2225,10 @@ export class FX {
   }
 
   // ---- super jump
+  // 【超级跳组】superJumpCharge 蓄力每帧(k = 进度):上升螺旋火花+环飞滴+核心辉光;
+  //  superJumpLaunch 起跳(光柱+双环+喷滴);superJumpTrail 飞行拖尾;jumpMarker 落点标记
+  //  (即时模式的地面十字 + 光柱,全场可见);superJumpLand 落地(在 explosion 同等量级的
+  //  环+皇冠+墨壳+涟漪+尘)。
   superJumpCharge(pos, color, k = 0.5) {
     const col = this._color(color, this._col);
     const q = Math.max(0.5, this.q);
@@ -2064,6 +2249,7 @@ export class FX {
     this._sprite(this.glows, pos.x, pos.y + 0.45, pos.z, 0, 0, 0, this._colB, 0.7 + 0.5 * k, 0.7 + 0.5 * k, Math.max(0.03, this._dt * 1.6), 0.7, 0, 0, G_SOFT + 2 * k, 0, 0);
     if (rand() < 5 * this._dt) this._ringRaw(_v2.set(pos.x, pos.y + 0.02, pos.z), UP, col, 1.1 + 0.4 * k, 0.35, R_THIN, 0.7, 1);
   }
+  // 【起跳】超级跳发射:光柱拔地 + 双环 + 全向喷滴 + 底部柔光。
   superJumpLaunch(pos, color) {
     const col = this._color(color, this._col);
     this._colB.copy(col).multiplyScalar(1.3);
@@ -2085,6 +2271,7 @@ export class FX {
     this._colB.copy(col).multiplyScalar(4);
     this._sprite(this.glows, pos.x, pos.y + 0.6, pos.z, 0, 0, 0, this._colB, 1.2, 2.4, 0.22, 1, 0, 0, G_SOFT + 4, 0);
   }
+  // 【飞行拖尾】超级跳飞行中每帧:拖尾滴 + 核心辉光 + 概率雾团。
   superJumpTrail(pos, vel, color) {
     const col = this._color(color, this._col);
     let n = Math.max(1, Math.round(2 * this.q));
@@ -2093,6 +2280,7 @@ export class FX {
     this._sprite(this.glows, pos.x, pos.y, pos.z, 0, 0, 0, this._colB, 0.55, 0.3, 0.16, 0.9, 0, 0, G_SOFT + 1.5, 0);
     if (rand() < 0.5) { this._colB.copy(col).lerp(_white, 0.35); this._sprite(this.puffs, pos.x, pos.y, pos.z, 0, 0.2, 0, this._colB, 0.2, 0.55, 0.45, 0.3, 3); }
   }
+  // 【落点标记】全场可见的落地预告(即时模式):地面目标环 + 呼吸光柱。
   // landing target seen by everyone (immediate): ground reticle + light pillar
   jumpMarker(pos, color, t = 0) {
     const col = this._color(color, this._col);
@@ -2101,6 +2289,7 @@ export class FX {
     this._colB.copy(col).multiplyScalar(1.5);
     this.pillar(_v2, this._colB, 0.5, 9, 0.55 + 0.15 * Math.sin(this._time * 6), 0.4);
   }
+  // 【超级跳落地】与爆炸同量级的一整套:双环 + 大皇冠 + 墨壳 + 深涟漪 + 闪光 + 尘环。
   superJumpLand(pos, color) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.02, pos.z);
@@ -2116,12 +2305,14 @@ export class FX {
     this._dustRing(_v2, _sc, 8, 3);
   }
 
+  // 【鱿鱼幽灵】被击杀者的鱿魂从爆墨里飘起来(puff 池的幽灵剪影,长寿命+摇摆+浮力)。
   // the victim's squid ghost floating up out of the splat
   ghost(pos, color) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.3);
     this._sprite(this.puffs, pos.x, pos.y + 0.35, pos.z, 0, 0.5, 0, this._colB, 0.55, 0.85, 1.5, 0.8, 1.2, 0.9, P_GHOST, 0.18, 0, 0.35, 0.6);
   }
+  // 【落水】大件掉海里:白冠大水花+双涟漪环(第二环走 _after 延迟)+溅盘+泡沫雾。
   // falling into the sea
   waterSplash(pos, size = 1) {
     _v2.set(pos.x, this.waterY + 0.02, pos.z);
@@ -2137,6 +2328,7 @@ export class FX {
       this._spawnDrop(pos.x + (rand() - 0.5) * 0.4, this.waterY + 0.1, pos.z + (rand() - 0.5) * 0.4, _v1.x * sp, _v1.y * sp, _v1.z * sp, FOAM, 0.05 + rand() * 0.05, 1.6, 1, 1.4, F_NOCOL);
     }
   }
+  // 【小物落水】子弹/炸弹等落海:小涟漪+微型白冠。
   // something small hitting the sea (shots, bombs)
   waterPlop(pos, size = 0.3) {
     _v2.set(pos.x, this.waterY + 0.02, pos.z);
@@ -2144,6 +2336,7 @@ export class FX {
     this._crown(_v2, UP, WATER, 4 + size * 8, 1.8 + size * 2, 0.03, F_NOCOL);
   }
 
+  // 【大招充能满】角色周身环绕的星芒(每个角色 ~10-14Hz 调用),高度内随机取点+绕行切向速度。
   // special gauge full: glints swirling around the character (call at ~10–14 Hz per character)
   specialSparkle(pos, color, height = 1.5) {
     const col = this._color(color, this._col);
@@ -2155,6 +2348,7 @@ export class FX {
       this._sprite(this.glows, pos.x + Math.cos(a + 2) * r * 0.8, pos.y + y * 0.6, pos.z + Math.sin(a + 2) * r * 0.8, 0, 0.8, 0, this._colB, 0.07, 0.03, 0.6, 1, 0.5, 0, G_SOFT + 1, 0.05, 0);
     }
   }
+  // 【敌墨侵蚀】站在敌墨里:脚下黏泡噼啪(1~2 个气泡 + 概率小滴上弹)。
   // standing in enemy ink: sticky bubbles popping at the feet
   enemyInkSizzle(pos, color) {
     const col = this._color(color, this._col);
@@ -2168,6 +2362,7 @@ export class FX {
   }
 
   // ---- ambient
+  // 【环境组】与玩法无关的氛围点缀:海浪拍舷(seaSpray)、飘羽(feather)、湿墨太阳炫光(glint)。
   // a wave slapping the deck edge. pos: on the wall at the waterline; outward: unit horizontal normal pointing out to sea.
   // The sheet of spray has to clear the deck edge (1.6 m) and the railing (+1.05 m) to be seen from the deck.
   seaSpray(pos, outward, strength = 1) {
@@ -2192,9 +2387,11 @@ export class FX {
     this._ringRaw(_v2, UP, FOAM, 0.9 * s, 0.55, R_DISC, 0.5, 1);
     this._after(0.18, OP_RING, _v2, UP, FOAM, 2.4 * s + 0.6, 0.9, R_RIPPLE);
   }
+  // 【羽毛】慢悠悠飘落的单根羽毛(长寿命+大摇摆+负浮力翻转,寿命 11-15s)。
   feather(pos) {
     this._sprite(this.puffs, pos.x, pos.y, pos.z, (rand() - 0.5) * 0.4, -0.25, (rand() - 0.5) * 0.4, FEATHER, 0.24, 0.24, 11 + rand() * 4, 0.97, 1.6, -0.7, P_FEATHER, 0.5, 1.8, 0.9, 1.5);
   }
+  // 【湿墨炫光】湿墨面/ glossy 面上的太阳一闪(星芒样式)。
   // sun glint on wet ink (or any glossy surface)
   glint(pos, color, size = 0.12) {
     const col = this._color(color, this._col);
@@ -2203,6 +2400,8 @@ export class FX {
   }
 
   // =================================================================== frame
+  // 【帧循环】每帧唯一入口:钳制 dt(防卡顿螺旋)、刷新时间与各着色器 uTime、相机相关
+  // uniform(滴粒的太阳方向要转到视图空间;尘粒盒子跟随相机),然后依次推进调度器与六个池。
   update(dt, camera) {
     dt = Math.min(dt || 0, 0.05);
     this._dt = dt > 0 ? dt : this._dt;
@@ -2229,12 +2428,15 @@ export class FX {
     this._updateBeams(dt);
   }
 
+  // 【清场】所有池计数归零(场景切换/重开时用);缓冲内容不必清,instanceCount = 0 即不画。
   clear() {
     this.dN = 0; this.dGeo.instanceCount = 0;
     for (const p of [this.puffs, this.glows, this.rings, this.shells, this.beams]) { p.n = 0; p.geo.instanceCount = 0; }
     this.marks.n = 0; this.pillars.n = 0; this._sqN = 0;
   }
 
+  // 【光照同步】主题切换时由 fx.setLighting(env.getSkyColors()) 调用:滴粒/墨壳的法线光照
+  //  与尘粒颜色全靠这套 uniform;注意滴粒的太阳方向是每帧在 update 里转视图空间的,这里只存世界值。
   // Sync the droplet/shell lighting with the environment: fx.setLighting(env.getSkyColors()).
   // Accepts { sunDir, sun|sunColor, sunIntensity, zenith|sky, ground }.
   setLighting(o = EMPTY) {
@@ -2249,9 +2451,12 @@ export class FX {
   }
   setSunDir(v) { this._light.sunDir.copy(v).normalize(); }
 
+  // 【统计】各池存活数/碰撞预算用量/调度队列长度,供 HUD 调试面板与性能审计。
   stats() {
     return { drops: this.dN, puffs: this.puffs.n, glows: this.glows.n, rings: this.rings.n, shells: this.shells.n, beams: this.beams.n, checks: this._checks, sched: this._sqN, caps: { drops: this.dCap, puffs: this.puffs.cap, glows: this.glows.cap, rings: this.rings.cap } };
   }
+  // 【三角形预算】当前实际提交的三角形总数(性能审计用):滴粒/puff/glow/环 各 2 三角形
+  //  ×实例数,墨壳/光柱按各自几何的三角形数 ×实例数,尘粒可见时再加。
   // Triangles currently submitted by the FX meshes (for budget audits).
   triangles() {
     const per = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
@@ -2260,6 +2465,7 @@ export class FX {
       + (this.motes.visible ? this.motes.geometry.instanceCount * 2 : 0);
   }
 
+  // 【销毁】摘除 FX 组节点并遍历释放全部几何体与材质(切场景/重开时由 boot 调用)。
   dispose() {
     this.scene.remove(this.root);
     this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });

@@ -7,6 +7,25 @@
 //
 // Conventions: metres, Y up, `pos` = base point, rotY turns local +Z (the "front"). Wall-mounted pieces treat local
 // z = 0 as the wall face and project toward +Z. Signage uses 3D channel / flat painted letters from a stroke font.
+
+// ============================================================ 中文导读 ============================================================
+// 【文件性质】Cargo(货运码头)关卡的关卡专属道具包 + 摆位表,由 PR #8"Kelpline Terminal"重建移植而来。
+// 【两大职责】
+//   1) register(D, H):向道具注册表 D 登记本关全部道具构建函数(类型前缀 cargo_),契约与 props-marina-dock.js
+//      相同——H 携带 THREE 与整套 kit 助手;零件并入 kit 的材质桶(paint/gloss/metal/wood/rubber/glow 等),
+//      小零件经 H.noShadow 走不投影路径,从而减少合并网格数与 draw call。
+//   2) PLACEMENTS:布景摆位表(先写半个场地,再按 (x,z) → (-x,-z) 镜像,除非该条 mirror: false)。
+// 【碰撞约定】实体道具向关卡交出碰撞盒(B.col),不可上墨;导航与物理都依赖这些盒子。部分高空钢构
+//   标为 perch(可站立行走、永不上墨的栖息点),标 roof 的则是"禁区顶"(玩家不可停留)。
+// 【坐标约定】米制,Y 轴向上,pos 为基点,rotY 旋转局部 +Z(即道具"正面")。壁挂件以局部 z = 0 为墙面、
+//   向 +Z 伸出。标识文字用笔画字体生成 3D 槽型字或平面喷漆字。
+// 【全文件结构速览】
+//   调色板 K → 几何助手(GB 构建器/棱台盒/横梁/子道具组合/斜纹裁剪) → 笔画字体(ribbon/disc/glyph/letters)
+//   → 小组件(泛光灯 flood、扶手 handrail) → 各道具:岸桥 K7 → ISO 集装箱 → 钢楼梯 → 运营楼 →
+//   冷藏箱插座架 → 舱口盖 → 卡闸 → 车辆(挂车底盘/码头牵引车/正面吊/跨运车) → 堆场件(绑扎笼/码头边/
+//   高杆灯/平板架/照明塔/告示牌/工棚) → 皮卡/叉车/墙后堆场/舷梯/岸电亭/起重机轨道 → 集装箱船(船体放样)
+//   → 摆位表(自动挂装 + 手写清单 + 整体转向)。
+
 import { LOCAL, ROT_RAD, toWorld } from './layout.js';
 
 const P = Math.PI;
@@ -18,6 +37,8 @@ export function register(D, H) {
   const NS = (m) => (m === 'glow' || m === 'blob' ? m : H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ palette
+  // 【调色板】码头主题色:起重机黄、码头蓝、风化混凝土、低饱和集装箱涂装;键名即用途(crane 吊机黄、
+  // 低饱和集装箱涂装等;键名即用途(crane 吊机黄、hull 船体色、galv 镀锌银等)。
   // terminal steel: crane yellow, terminal blue; weathered concrete; muted container liveries
   const K = {
     crane: '#d9a93c', craneDk: '#b98b2c', craneLt: '#e6be5e', blue: '#2f5b8c', blueDk: '#23456b', blueLt: '#4a78aa',
@@ -29,9 +50,13 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ geometry helpers
+  // 【几何助手层】零依赖的手工 BufferGeometry 构建工具:GB 逐面累积顶点/法线/颜色,再整体转成
+  // BufferGeometry;配合下方 tpl 缓存,相同参数的部件全关卡只建一次网格。
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
+    // 【加点】同时写入位置/法线/UV/顶点色(灰度 r=g=b),返回顶点索引;所有面共用这个最小原语
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    // 【三角面】按棱边叉积求法线,与既有顶点法线点积判向:方向相反则翻转为反向索引,保证平面正面朝外
     tri(a, b, c) {
       const P = this.p, N = this.n;
       const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
@@ -64,14 +89,18 @@ export function register(D, H) {
       return g;
     }
   }
+  // 【模板缓存】tpl(key, fn):同名几何只构建一次,后续直接复用——本关大量重复零件(箱角件、斜纹、
+  // 字体笔画)靠它把内存与构建时间压到常数级。kf 把参数序列化成缓存键的一部分。
   const TPL = new Map();
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
   const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
 
-  // plain (unbevelled) box for small / flush parts: 12 triangles
+  // 小零件用的无倒角方盒(单位立方体缩放),12 三角面
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
+  // 【pbox】往桶里加一个 w×h×d 的方盒:几何体共享单位盒,尺寸全靠缩放,省显存
   const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  // 【棱台盒】底面 w0×d0 在 y=0、顶面 w1×d1 在 y=h 的平口收分盒(四条梯形侧面)——收分腿、料斗、驾驶室
   // frustum box (bottom w0 × d0 at y = 0, top w1 × d1 at y = h), flat faces — tapered legs, hoppers, cabs
   const frustumGeo = (w0, d0, w1, d1, h, top = true) => tpl(['fr', w0, d0, w1, d1, h, top].map(kf).join('|'), () => {
     const g = new GB(), b = [[-w0 / 2, 0, -d0 / 2], [w0 / 2, 0, -d0 / 2], [w0 / 2, 0, d0 / 2], [-w0 / 2, 0, d0 / 2]];
@@ -80,7 +109,8 @@ export function register(D, H) {
     if (top) g.face([t[0], t[1], t[2], t[3]], [0, 1, 0]);
     return g.geo();
   });
-  // straight beam between two points (square section w × h, 'up' hint for the section's vertical)
+  // 【beam 斜横梁】先 push 一个"中点 + 偏航 + 俯仰"的临时变换,再在局部原点放一根长 L 的方梁,pop 还原;
+  // 任何两点间的直梁都无需手工算旋转矩阵
   function beam(B, mat, c, a, b, w, h = w) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz);
     const yaw = Math.atan2(dx, dz), pitch = -Math.atan2(dy, Math.hypot(dx, dz));
@@ -89,10 +119,12 @@ export function register(D, H) {
     B.pop();
   }
   const rodT = (B, mat, c, a, b, r, radial = 6) => B.tube(mat, c, [P3(...a), P3(...b)], r, { radial });
-  // compose a prop type as pure dressing (its colliders dropped)
+  // 【subNC 纯装饰组合】先记录碰撞盒数量,组合完再截断回该数量——即丢弃子道具的碰撞,只做外观
   function subNC(B, type, x, y, z, ry, opts = {}) { const n0 = B.cols.length; sub(B, type, x, y, z, ry, opts); B.cols.length = n0; }
+  // 【colBox】以"中心 + 宽高深"快捷方式提交一个碰撞盒
   const colBox = (B, x, y, z, w, h, d, o) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
-  // compose another prop type inside this one (colliders re-mapped into this prop's frame)
+  // 【sub 子道具组合】在本道具内部以 push/pop 变换调用另一个道具的 build,然后把它产生的碰撞盒
+  // 逐个旋平移回本道具的坐标系(角点绕 rotY 旋转后取包围盒)——碰撞始终跟随可见几何
   function sub(B, type, x, y, z, ry, opts = {}) {
     const def = D[type];
     if (!def) return;
@@ -112,6 +144,8 @@ export function register(D, H) {
       B.cols[i] = b.length > 6 ? [x0, b[1] + y, z0, x1, b[4] + y, z1, b[6]] : [x0, b[1] + y, z0, x1, b[4] + y, z1];
     }
   }
+  // 【clipPoly Sutherland–Hodgman 裁剪】把多边形逐条边(左/右/下/上)裁进矩形窗口;斜纹条纹必须先裁
+  // 进面板范围,不能越界
   // diagonal hazard stripes on a flat panel facing +Z (w × h centred at x, y; z = panel face), stripes clipped to the panel
   function clipPoly(poly, x0, y0, x1, y1) {
     const edges = [[(p) => p[0] >= x0, (a, b) => [x0, a[1] + (b[1] - a[1]) * (x0 - a[0]) / (b[0] - a[0])]], [(p) => p[0] <= x1, (a, b) => [x1, a[1] + (b[1] - a[1]) * (x1 - a[0]) / (b[0] - a[0])]],
@@ -128,6 +162,8 @@ export function register(D, H) {
     }
     return out;
   }
+  // 【hazard 斜纹警示带】底层黄色面板 + 上面一层按 pitch 平移的平行四边形黑条纹(经 clipPoly 裁边);
+  // 条纹层抬高 5 mm 防 z-fighting,并按模板缓存
   const hazardGeo = (w, h, pitch) => tpl(['hz', w, h, pitch].map(kf).join('|'), () => {
     const g = new GB(), sw = pitch / 2;
     for (let k = -Math.ceil(h / pitch) - 1; k * pitch < w + h; k++) {
@@ -143,8 +179,11 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ stroke font
+  // 【笔画字体】整关所有标识文字的来源:圆头粗体无衬线,大写高度为 1,用中心线笔画 + 圆头端帽拼字;
+  // 支持凸起的 3D 槽型字(带倒角前缘)或平面喷漆字(flat),全部由 GL 字模表驱动,无贴图。
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + joins, bevelled front, flat back.
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  // 【字模原语】EA = 椭圆弧采样点列;LOOP = 闭合椭圆环(圆角 O/0/8 等字用);两者只是数据,扫掠在下方
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
   const GL = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
@@ -193,6 +232,8 @@ export function register(D, H) {
   };
   const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
+  // 【ribbon 笔画扫掠】把一条折线(开或闭)扫成有厚度的笔画截面:每个采样点求双侧法线,按半宽 hw 与
+  // 倒角 b 生成前表面/斜面/侧墙几圈顶点,再段间连四边形;转角处用法线均值 + 系数 k 做外扩,圆角自然
   function ribbon(g, pts, closed, hw, b, d, z0) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
     const N = pts.map((p, i) => {
@@ -220,6 +261,7 @@ export function register(D, H) {
       for (let j = 0; j < np; j += 2) g.quad(A[j], A[j + 1], Bq[j + 1], Bq[j]);
     }
   }
+  // 【disc 圆盘/端帽】笔画端点与拐点的圆头帽(扇形填充 + 可选斜面/侧墙);扇形角向由调用者给出
   function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
     const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
@@ -237,6 +279,9 @@ export function register(D, H) {
       if (walls) g.quad(wt[k], wb[k], wb[j], wt[j]);
     }
   }
+  // 【glyph 单字网格】把 GL 字模里每条笔画做 ribbon 扫掠:闭合成环的直接扫,开放折线在夹角突变处
+  // (>0.6 rad)断开分段扫,端点补 disc 圆帽、拐点补 disc 圆节;返回几何与字宽推进量 adv。结果按
+  // 字符+笔画粗细+厚度缓存——同一字符全关卡只扫一次
   function glyph(ch, wt, dep, bev, ds = 10) {
     return tpl(['kgl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -275,7 +320,8 @@ export function register(D, H) {
     });
   }
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
-  // a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true); returns width
+  // 【letters 排字】在当前坐标系里排一行朝 +Z 的字:默认凸起槽型字(gloss),flat: true 时为平面喷漆;
+  // lit 选项再叠一层发光面模拟内透光招牌;按 align 居中/左/右,返回整行宽度
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
@@ -298,7 +344,8 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ small kit
-  // glowing flood head (faces local -Y by default: tilt with rx), housing + lens
+  // 【小组件】被多个道具复用的两类装饰件:泛光灯头与扶手。
+  // 【flood 泛光灯头】灯体朝局部 -Y(用 rx 俯仰调照射方向):外壳 + 发光灯面 + 五条散热鳍
   function flood(B, x, y, z, o = {}) {
     B.push(x, y, z, o.ry ?? 0, o.rx ?? 0);
     B.box(NS('paint'), o.c ?? K.charcoal, 0.56, 0.2, 0.4, 0, 0, 0, { r: 0.04 });
@@ -306,7 +353,8 @@ export function register(D, H) {
     for (let k = -2; k <= 2; k++) pbox(B, NS('paint'), shade(o.c ?? K.charcoal, 0.8), 0.02, 0.06, 0.36, k * 0.09, 0.11, 0);
     B.pop();
   }
-  // handrail run between two points (posts every ~1.2 m, top + knee rail), for catwalks / stairs
+  // 【handrail 扶手】两点间的标准栏杆:立杆每约 1.3 m 一根,顶部扶手 + 中部膝杆,可选踢脚板;
+  // 给走道、楼梯、高架平台复用
   function handrail(B, a, b, h = 1.0, c = K.crane, o = {}) {
     const L = Math.hypot(b[0] - a[0], b[2] - a[2]), n = Math.max(1, Math.round(L / (o.every ?? 1.3)));
     for (let i = 0; i <= n; i++) {
@@ -319,16 +367,23 @@ export function register(D, H) {
   }
 
   // ================================================================================================ ship-to-shore crane
+  // 【岸桥 K7】全场视觉与玩法的核心:中央集装箱岸桥,轨道在 x=±G(海侧 +X),支腿在 z=±LZ;
+  // 局部坐标即世界坐标(只放在原点,摆位 mirror: false)。碰撞:4 根支腿(高,禁区顶) + 4 条台车走行
+  // 矮盒(1.2 m,码头面掩体);全部高空钢构是 perch——可站立、永不上墨(见 build 末尾的碰撞块)。
   // Central STS gantry crane "K7": rails at x = ±G (waterside +X), legs at z = ±LZ. Local frame = world (placed once at the
   // origin, mirror: false). Colliders: 4 legs (tall, off-limits tops) + 4 bogie runs (1.2 m: low cover in the apron lanes);
   // the overhead steel is a perch (walkable, never inkable — see the collider block at the end of build).
   D.cargo_crane = {
+    // 【吊机编号/参数】gauge 半轨距 21 m,lz 腿距 6 m;o.boom 为仰起角(度),0 = 放平伸向船上;
+    // o.coarse 用于场外远景副本 K6(整体标 roof 禁区,不做 perch);o.trolley 小车位置;num 喷涂编号
     desc: 'Ship-to-shore gantry crane (crane-yellow box girders): four tapered portal legs on rail bogies (rails at x = ±21, legs at z = ±6), portal beams + tie beams at 17 m, twin trolley girders from the backreach (machinery house, x -33) to the boom tip over the ship (x +56), A-frame with forestays, trolley with hanging operator cab, spreader holding a 40\' box over the middle, floodlights, warning beacons, CARGO lettering. Colliders: legs + bogie runs; the overhead steel (portal beams + walkways, tie beams, girders + walkways, trolley, cab, machinery house, chords) is a perch: walkable, never inkable (o.coarse: off-limits roofs instead).',
     params: { gauge: 'half gauge (21)', lz: 'leg z (6)' }, variants: 1, mount: 'ground',
     build(B, o) {
       B.aoBase = null;
       const G = o.gauge ?? 21, LZ = o.lz ?? 6, Y0 = 1.5, YP = 17, YG = 18.6, GH = 1.8, GZ = 2.7, c = K.crane, cd = K.craneDk;
       // ---- bogies + legs
+      // 【台车 + 支腿】四角:均衡梁上两台八轮转向架(端部缓冲块、外侧驱动电机齿轮箱),均衡梁端头
+      // 贴斜纹警示带;支腿为收分棱台 + 三道加劲环 + 斜纹带 + 检修门 + 编号字;腿顶是埋进门梁下的禁区顶
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
         const x = sx * G, z = sz * LZ;
         // equaliser beam + two bogie frames, 4 wheels each, buffers at the ends
@@ -368,6 +423,7 @@ export function register(D, H) {
         B.col(x - 0.5, 0, z - 3.6, x + 0.5, 1.2, z + 3.6);
       }
       // ---- power cable reel on the −X sill (one per crane): drum, spokes, cable dropping into the quay's cable trench
+      // 【电缆卷盘】−X 侧大梁上的供电电缆卷筒:两侧护板 + 筒体 + 六根辐条 + 中心轴,电缆下垂入码头电缆沟
       {
         const rx = -G - 1.3, ry = 3.4, rz = -LZ + 1.2, R0 = 1.15;
         B.cyl('paint', K.blueDk, R0, 0.12, rx - 0.42, ry, rz, { rz: HP, seg: 20 });
@@ -381,6 +437,8 @@ export function register(D, H) {
         pbox(B, 'paint', c, 1.2, 0.3, 0.3, rx + 0.9, 3.4, rz - 1.3);
       }
       // ---- portal beams (along z on each rail) + tie beams (along x at each leg pair) + knee braces
+      // 【门梁/联系梁】17 m 高处:两根纵向门梁(外侧带走道 + 扶手)、两根横向联系梁(带膝撑),
+      // 联系梁外侧朝向两个基地喷大号 CARGO 与编号
       for (const sx of [-1, 1]) {
         const x = sx * G;
         B.box('paint', c, 1.3, 1.6, LZ * 2 + 1.6, x, YP + 0.8, 0, { r: 0.08 });
@@ -401,7 +459,11 @@ export function register(D, H) {
       }
       // ---- trolley girders (backreach → boom hinge), the boom (tapers to the tip; o.boom = raised angle °, 0 = down
       //      over the ship), bracing, walkways, hinge, A-frame + boom hoist ropes / forestays
+      // 【小车大梁 + 仰起大梁】双箱梁从后伸(x −33,机房在后)到海侧铰点;每侧梁内嵌一块收分板作大梁
+      // (o.boom 度仰起,顶面线由 onBoom 参数化),带走道、扶手、SWL 65 T 载重字与 CARGO 大字
       const X0 = -33, X1 = 56, XH = G + 2, bA = ((o.boom ?? 0) * PI) / 180, bc = Math.cos(bA), bs = Math.sin(bA), BL = X1 - XH;
+      // 【onBoom】大梁顶面线的参数化:从铰点向外 d 米(可附 dy 抬高)处的世界坐标——A 字架拉索、
+      // 障碍灯等所有"挂在大梁上"的零件都用它定位,保证与可见钢构严格对齐
       const onBoom = (d, dy = 0) => [XH + d * bc - dy * bs, YG + GH + d * bs + dy * bc - GH];   // boom point d m out (girder top line)
       for (const sz of [-1, 1]) {
         const z = sz * GZ;
@@ -433,6 +495,8 @@ export function register(D, H) {
       B.pop();
       for (const x of [-G, G]) pbox(B, 'paint', c, 1.0, 0.6, GZ * 2 + 1.0, x, YG + GH + 0.3, 0);
       // ---- A-frame (over the waterside legs) + forestays to the boom + backstays
+      // 【A 字架】海侧腿上的人字架:两根斜梁汇于塔顶(33 m),前后拉索分别拉住大梁与后伸段;
+      // 塔顶 + 大梁端 + 后伸端各有一盏红色航空障碍灯(错相位闪烁)
       const AX = 15, AY = 33;
       for (const sz of [-1, 1]) {
         const z = sz * (GZ + 0.2);
@@ -447,6 +511,7 @@ export function register(D, H) {
       { const [tx2, ty2] = onBoom(BL - 0.6, 0.3); B.blink('#ff4030', tx2, ty2 + GH, 0, { size: 0.14, rate: 0.5, phase: 1.2, lo: 0.4, hi: 6 }); }
       B.blink('#ff4030', X0 + 0.6, YG + GH + 4.4, 0, { size: 0.12, rate: 0.5, phase: 2.2, lo: 0.4, hi: 6 });
       // ---- machinery house on the backreach
+      // 【机房】后伸段根部的白色设备间:箱体 + 黄顶盖 + 两侧散热百叶 + CARGO 蓝字 + 通风口
       const MX = X0 + 5.2;
       B.box('paint', K.white, 9.6, 3.8, 7.4, MX, YG + GH + 1.9, 0, { r: 0.1 });
       B.box('paint', c, 9.8, 0.3, 7.6, MX, YG + GH + 3.95, 0, { r: 0.06 });
@@ -458,6 +523,8 @@ export function register(D, H) {
         B.pop();
       }
       // ---- trolley over the middle, operator cab below it, ropes + spreader + hanging 40' box
+      // 【小车总成】o.trolley 控制横移位置;司机室吊在 −Z 侧(前玻璃 + 地板玻璃);四根钢丝绳下到
+      // 吊具(spreader:伸缩梁 + 扭锁角件 + 导板),吊具下挂一只完整建模的 40 尺箱(TIDEBANK 涂装)
       const TX = o.trolley ?? 0;
       B.box('paint', c, 5.4, 1.2, GZ * 2 + 1.6, TX, YG + GH + 0.6, 0, { r: 0.08 });
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) B.cyl('metal', K.greyDk, 0.35, 0.3, TX + sx * 1.9, YG + GH + 0.1, sz * GZ, { rx: HP, seg: 12 });
@@ -487,6 +554,7 @@ export function register(D, H) {
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) flood(B, sx * (G - 0.9), YP - 0.2, sz * (LZ + 1.3), { rx: -0.5 * sz, ry: 0, glow: 1.6 });
       for (let x = 26; x <= 50; x += 8) for (const sz of [-1, 1]) flood(B, x, YG - 0.15, sz * GZ, { glow: 1.4 });
       // ---- stair tower up the landside leg at (-G, -LZ) (visual; starts above head height)
+      // 【爬梯塔】陆侧腿外侧之字形楼梯(6 段折返爬梯,起点在头顶高度以上,纯视觉),配护笼立杆
       {
         const x = -G - 1.9, z = -LZ;
         for (let k = 0; k < 6; k++) {
@@ -505,6 +573,10 @@ export function register(D, H) {
       //      girders is open to the Landing, the walkways' ends and the girder ends are open drops). The legs keep their
       //      off-limits tops (buried under the portal beams). K6 (outside the arena, o.coarse) stays off-limits.
       //      The hanging box stays collision-free (it would otherwise roof over the Landing).
+      // 【高空碰撞——perch 设计要点】K7(场内的这座)所有可踩钢构标 { perch: true }:能站能走、永不上墨、
+      // 不提供掩体——是滑索/特殊技送上来的高点 vantage,也是活靶。每个顶面都与可见钢构对齐,两端开放可
+      // 跳下;支腿保留禁区顶(埋在门梁下)。o.coarse 的场外副本 K6 则全部标 roof(禁区)。吊着的集装箱
+      // 特意不加碰撞,否则会把中场 Landing 整个盖住。
       const P = o.coarse ? { roof: true } : { perch: true }, RL = { rail: true };
       const rng = (a, b) => (a < b ? [a, b] : [b, a]);
       for (const sx of [-1, 1]) {
@@ -538,11 +610,13 @@ export function register(D, H) {
   };
 
   // ================================================================================================ ISO containers
+  // 【ISO 集装箱族】containerBody 是所有箱子的共用建模核心:箱身要么是关卡色块(堆场上的堆叠箱,
+  // 表面可上墨)、要么是完整建模的散箱(o.bottom,如吊具下的吊箱/挂车上的箱子)。局部坐标:长度沿
+  // 局部 Z(−L/2…+L/2),门端在 +Z,底面 y=0。所有装饰件贴着箱面(≤4 cm 凸出),避免与关卡块错位。
   // Container dressing around a box whose body is a level block (corrugated container pattern) or, for loose boxes
-  // (o.bottom), a modelled body. Local frame: length along local Z (−L/2 … +L/2), door end at +Z, bottom at y = 0.
-  // Corner posts + castings (with the oval twistlock holes), top / bottom side + end rails, forklift pockets on 20',
-  // the door end (two leaves, four locking bars with cams + handles, hinges, CSC plate, owner code), or for reefers the
-  // machinery end at −Z (grille, fan, control box, power cable). Everything hugs the block faces (≤ 4 cm proud).
+  // 【containerBody 集装箱本体】角柱 + 角件(带扭锁孔)、上下侧梁/端梁(顶梁带一道掉漆亮边)、
+  // 20 尺箱的叉槽、门端(双门扇/锁杆/凸轮/把手/铰链/CSC 铭牌/箱主代码),冷藏箱则在 −Z 端建
+  // 机组端(格栅/冷凝风扇/控制盒/电缆);o.logo 仅散箱喷涂,堆叠箱的涂装由关卡块面上的壁画承担
   function containerBody(B, x, y, z, len, color, o = {}) {
     const L = len === 20 ? 6.06 : 12.19, W = 2.44, Hh = o.h ?? 2.6, c = color, dk = shade(c, 0.8), dk2 = shade(c, 0.6);
     B.push(x, y, z, o.ry ?? 0);
@@ -574,6 +648,8 @@ export function register(D, H) {
     }
     if (len === 20) for (const sx of [-1, 1]) for (const pz of [-1.03, 1.03]) pbox(B, NS('paint'), K.ink, 0.02, 0.1, 0.36, sx * (W / 2 + 0.036), 0.1, pz);
     // door end
+    // 【堆叠箱 vs 散箱的门端区别】堆叠箱的端面就是关卡色块本身(可上墨),所以只做凸出的五金件
+    // (门缝/锁杆/凸轮/把手/铰链/铭牌),墨可以从五金之间露出来;散箱才建模完整的门扇
     // (a stack box's end is its level block's face — inkable — so its door leaves are that face itself: only the hardware
     //  (seam, locking bars, cams, handles, hinges, plate) stands proud of it, and ink shows between. Loose boxes get the
     //  modelled leaves.)
@@ -602,6 +678,8 @@ export function register(D, H) {
       B.pop();
     };
     // reefer machinery end: recessed aluminium panel, evaporator grille, condenser fan, control box, cable to a plug
+    // 【冷藏机组端】内凹铝板(散箱才有整体板,堆叠箱只立格栅/风扇/控制盒)、蒸发器百叶、冷凝风扇
+    // (毂 + 四叶)、带指示灯的电控盒、下垂的电源电缆与插头
     const reeferEnd = (zs) => {
       B.push(0, 0, zs * (L / 2 + 0.004), zs > 0 ? 0 : PI);
       // (a stack reefer's machinery end is its block face: no solid panel over it — grille slats, fan, control box only)
@@ -619,6 +697,7 @@ export function register(D, H) {
     };
     if (o.reefer) { reeferEnd(o.doorAt > 0 ? -1 : 1); doorEnd(o.doorAt > 0 ? 1 : -1); } else doorEnd(o.doorAt ?? 1);
     // painted logo (loose boxes only; stack boxes carry theirs as murals on the block faces)
+    // 【箱侧涂装】仅散箱喷涂(堆叠箱的侧面图案是关卡块上的壁画);两侧镜像各喷一行 logo
     if (o.logo) for (const sx of [-1, 1]) {
       B.push(sx * (W / 2 + 0.035), 0, 0, sx * HP);
       letters(B, o.logo, { h: o.logoH ?? (len === 20 ? 0.42 : 0.62), x: 0, y: Hh * 0.46, z: 0, c: o.logoC ?? K.white, flat: true, wt: 0.2, track: 0.14 });
@@ -627,6 +706,8 @@ export function register(D, H) {
     B.pop();
   }
   D.cargo_box = {
+    // 【堆叠箱装饰】包在关卡色块外的纯装饰:参数 len(20/40)、color、door(±1 选门端)、
+    // reefer(冷藏)、code(箱主代码);pos = 底面中心,局部 Z = 箱长
     desc: 'Container dressing for a stack box (the body is a level block): corner posts + castings, rails, forklift pockets, door end (locking bars, cams, hinges, CSC plate, owner code) at +Z or a reefer machinery end — hardware only over the block face, so ink on the end shows. pos = bottom centre, local Z = length.',
     params: { len: '20 | 40', color: 'box paint', door: '+1 door at local +Z, -1 at −Z', reefer: 'bool', code: 'owner code' }, variants: 1, mount: 'ground',
     build(B, o) {
@@ -635,6 +716,7 @@ export function register(D, H) {
     },
   };
   D.cargo_loosebox = {
+    // 【散箱】完整建模的单个集装箱(箱体 + 全部装饰 + 侧标),典型用法是摆在挂车底盘上;pos = 底面中心
     desc: 'A complete loose container (modelled body + dressing), e.g. on a trailer chassis. pos = bottom centre, local Z = length, door at +Z.',
     params: { len: '20 | 40', color: 'paint', logo: 'side lettering', logoC: 'lettering colour' }, variants: 1, mount: 'ground',
     build(B, o) {
@@ -644,6 +726,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ steel stairs
+  // 【钢楼梯】给 layout 楼梯(带踏步面的坡道)加的服装:坡顶两缘的槽钢梯梁、黄色立杆 + 扶手 + 膝杆、
+  // 顶端踏步板、底端斜纹踢脚板。局部 +Z 从低端 (0,0,0) 指向高端 (0,rise,run),宽 W 居中。不设碰撞
+  // (装饰件都在坡道自身碰撞宽度之外)。
   // Dressing for a layout stair (ramp with the treads surface): channel stringers over the ramp's top edges, stanchions
   // with a crane-yellow handrail + knee rail, landing plate at the top, hazard-striped kick plate at the foot.
   // Local +Z runs from the foot (0,0,0) up to (0, rise, run); width W centred. Non-colliding (outside the walking width
@@ -676,6 +761,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ ops building
+  // 【运营楼】Terminal Operations 大楼:pos = 后墙内侧面中心(z=0,竞技场朝 +Z);前方是出生块
+  // (x ±9、深 8、2.4 m + 天台)。本道具负责:出生块的前后立面(玻璃幕墙 + 百叶、雨棚门、标识、灯、
+  // 空调、落水管)、天台套件(压顶、旗杆/CCTV、楼梯口)、墙后两层的办公楼与 20 m 控制塔(在场外,有碰撞)。
   // Terminal Operations building. pos = centre of the back wall's inner face (z = 0 there, arena toward +Z); the spawn
   // block (x ±9, depth 8, 2.4 m + deck) sits in front of it. Dresses the block (front + side facades: glazing with
   // blinds, doors under canopies, signage, lights, AC, downpipes), the roof deck (edge trims, flag + CCTV poles, stair
@@ -744,6 +832,9 @@ export function register(D, H) {
       letters(B, 'TERMINAL', { h: 0.46, x: 6.2, y: 0.12, z: 0, c: K.blueDk, dep: 0.06, wt: 0.2, track: 0.14, lit: 0.9, litC: '#dfe9ff' });
       B.pop();
       // ================= behind the wall: two-storey office (z −0.6 … −11), roof kit, control tower
+      // 【墙后办公楼 + 控制塔】两层办公楼(竞技场可见面是连续玻璃带 + TERMINAL OPERATIONS 字),
+      // 天台有机组/通风管/卫星天线(sub 组合通用 dish 道具);控制塔:圆柱塔身、环廊、斜玻璃瞭望室
+      // (lathe 放样)、天线桅杆 + 障碍灯、K4 编号。两者都交 roof 禁区碰撞
       const BZ0 = -0.6, BZ1 = -11, OH = 8.2;
       B.box('paint', panel, 26, OH, BZ0 - BZ1, 0, OH / 2, (BZ0 + BZ1) / 2, { r: 0.12 });
       B.box('paint', trim, 26.3, 0.35, BZ0 - BZ1 + 0.3, 0, OH + 0.1, (BZ0 + BZ1) / 2, { r: 0.05 });
@@ -783,6 +874,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ reefer rack
+  // 【冷藏插座架】横跨冷藏箱巷道(pos = 巷道中点贴地,局部 Z 沿巷道,宽 W = 两侧冷藏箱排间距):
+  // 每约 6 m 一对 H 形立柱(碰撞,禁区顶)、猫道格栅下方的槽钢 + 横梁(猫道面 2.6 m)、5.7 m 顶框
+  // 带电缆桥架、CEE 插座盒 + 下垂插到冷藏箱的电缆、猫道下巷道灯、顶框泛光灯、R2 端牌。
   // Plug-in rack over the reefer alley (pos = centre of the alley at ground, local Z along the alley, length L, width W
   // between the reefer rows): column pairs every ~6 m at the alley edges (colliders), channel stringers + cross members
   // under the grate catwalk (catwalk top 2.6), top frame at 5.7 with cable trays, CEE socket boxes + plugged cables
@@ -844,6 +938,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ hatch covers
+  // 【舱口盖】盖在舱口盖色块上的服装(pos = 底面中心;w 沿 X,d 沿 Z,h 高):侧面竖向加强筋、底缘
+  // 法兰、顶部密封槽、齐平的集装箱插座板、角部吊耳、舱盖编号 + NO STANDING 喷涂、角部斜纹、底缘
+  // 系固栓。全部贴平(≤4 cm);角部斜纹刻意做窄,让侧面的可上墨色块露出来。
   // Dressing on a hatch-cover block (pos = bottom centre; w along X, d along Z, h tall): vertical web stiffeners on the
   // sides, bottom flange, top gasket channel, container-socket plates (flush), pad-eyes at the corners, hatch number
   // + NO STANDING stencils, hazard stripes on the corners, cleats along the lower edge. All flush (≤ 4 cm).
@@ -877,6 +974,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ truck gate
+  // 【4 号卡闸】闸区中心在 pos(竞技场朝 +Z,车道沿 Z):两座岛式岗亭(x ±3.1,碰撞)、四根立柱上的
+  // 大雨棚(5.4 m,不可达)、GATE 4 挑檐字(双面)、红绿车道信号 + OCR 摄像头、扬起状态的道闸杆、
+  // 限高杆、后墙上的电动平移闸门。
   // Gate 4 (pos = centre of the gate area at ground, arena toward +Z; lanes run along Z): booth cabins on the two
   // islands (x ±3.1 from pos, colliders), canopy on four columns over all lanes (5.4 m, not reachable), GATE 4 fascia,
   // lane signals, OCR camera heads, raised boom barriers, height gauge, sliding gate leaves on the back wall.
@@ -938,6 +1038,8 @@ export function register(D, H) {
   };
 
   // ================================================================================================ vehicles
+  // 【车辆区】码头作业车辆系列共用的轮胎建模 + 四种载具。tyre:车胎用 kit 的 TIRE 轮廓 lathe 放样
+  // (按半径/宽度缩放),叠轮毂 + 轴盖。
   const tyre = (B, x, y, z, R, w) => {
     B.lathe('paint', '#25272c', TIRE.map(([r, yy]) => [r * (R / 0.33), yy * (w / 0.2)]), x, y, z, { seg: 12, closed: true, rz: HP });
     B.cyl('metal', K.greyDk, R * 0.55, w * 0.92, x, y, z, { rz: HP, seg: 10 });
@@ -945,6 +1047,8 @@ export function register(D, H) {
   };
   // skeletal trailer chassis under a level box (the box sits at deck height) — pos = centre under the box, local Z =
   // length, kingpin end at +Z. Colliders: rear bogie + landing legs (squids can slip under the middle).
+  // 【骨架挂车底盘】载一个关卡色块箱(箱在 1.35 m 台面上):双主梁 + 横梁 + 扭锁座、鹅颈 + 牵引销、
+  // 支腿、后部双轴双胎转向架(挡泥板、保险杠、尾灯)。碰撞只有后桥区 + 支腿——乌贼可以从中部底下钻过
   D.cargo_chassis = {
     desc: 'Skeletal container chassis (pos = centre on the ground, local Z = length, kingpin end +Z, deck at 1.35): main beams, cross members, twistlock bolsters, landing legs, tandem rear bogie with dual wheels, lights, mudflaps. Colliders: bogie + legs.',
     params: { len: '20 | 40', deck: 'm (1.35)', c: 'frame paint' }, variants: 1, mount: 'ground',
@@ -974,6 +1078,8 @@ export function register(D, H) {
   };
   // terminal tractor (yard tug): offset one-man cab, short hood, fifth-wheel ramp, big wheels, beacon. pos = centre,
   // local +Z = front. Collider: the whole body.
+  // 【码头牵引车(场站拖车)】偏置单人驾驶室、短机罩、尾部第五轮接合坡、四只大轮、排气烟囱 + 琥珀
+  // 色警示灯;整个车身一个碰撞盒 + 驾驶室禁区顶
   D.cargo_tractor = {
     desc: 'Terminal tractor (yard tug): offset cab, short hood, fifth-wheel ramp at the rear, 4 big wheels, amber beacon, exhaust stack. pos = ground centre, front +Z. Collider: body.',
     params: { c: 'body paint' }, variants: 1, mount: 'ground',
@@ -1006,6 +1112,10 @@ export function register(D, H) {
   // reach stacker: big front drive wheels, counterweight at the rear, cab, telescopic boom rising from the rear over the
   // cab with the spreader at the tip (boom raised, spreader empty). pos = centre, front +Z. Collider: body + cab (roofs);
   // the boom arm + spreader are a perch.
+  // 【正面吊(堆场高吊)】大前驱轮 + 后轮转向、尾部配重、侧置玻璃驾驶室、从尾部越过驾驶室扬起的
+  // 伸缩臂(臂根铰点 + 内伸缩段 + 端部吊具),吊具悬空伸向 Landing 上空。
+  // 【perch 碰撞】吊臂顶面按 0.3 m 步长铺成阶梯状栖息面(每级比顶线低 10 cm,脚部探测会自然滑到
+  // 斜钢面上),伸缩段、端头、吊具依次相接,可一路走到端头跳下;车身与驾驶室保留 roof 禁区顶
   D.cargo_reachstacker = {
     desc: 'Reach stacker (front +Z): chassis with big front drive wheels + rear steer wheels, counterweight, side cab, telescopic boom raised over the cab with a rotating spreader at the tip, beacons, CARGO branding. Colliders: body + cab (off-limits roofs); the boom arm, tip head and spreader are a perch (walkable, never inkable).',
     params: { c: 'paint (crane yellow)', boom: 'boom angle rad (0.5)' }, variants: 1, mount: 'ground',
@@ -1042,6 +1152,8 @@ export function register(D, H) {
       // the boom arm is a PERCH (walkable, never inkable — a Zipline / special gets you up there): stepped along its top
       // line (0.3 m steps), then the telescopic section, the tip head and the
       // spreader out over the Landing — walk out to the end and drop off. Body + cab keep their off-limits roofs.
+      // 【吊臂栖息碰撞的实现】at(d,h) 给出吊臂顶线上"外伸 d、抬高 h"处的 (y,z);seg 段把每一级台阶
+      // 顶面中点再压低 0.1 m——平面脚部探针会骑到前方台阶上,脚最终落在斜钢面几厘米范围内
       {
         const sa = Math.sin(ang), ca = Math.cos(ang), P = { perch: true };
         const at = (d, h) => [py + d * sa + h * ca, pz + d * ca - h * sa];   // (y, z) on the boom's top line, d out
@@ -1058,6 +1170,10 @@ export function register(D, H) {
   // straddle carrier (1-over-2): two sills with four wheels each (colliders), two legs per side, top frame + engine
   // housing, cab on the front-left top, hoist ropes + spreader resting on the box it straddles. pos = centre on the
   // ground, local Z = length, front +Z; inner clearance 3.1 m.
+  // 【跨运车(1 过 2 型)】两侧门架:底梁各 4 轮(碰撞,1.3 m 掩体)、每侧两根收分腿、9 m 顶框 +
+  // 发动机舱 + 前左驾驶室,钢丝绳吊着吊具停在被跨箱子上方(内净宽 3.1 m,被跨的是关卡色块)。
+  // 【perch 碰撞】顶框纵梁/横梁、发动机舱、驾驶室顶都是可走的栖息面;吊具贴着箱顶也可踩——它盖住
+  // 的箱顶不再是"可上墨却踩不到"的面;框架中孔直通下面的箱子
   D.cargo_straddle = {
     desc: 'Straddle carrier (front +Z): sills with 4 wheels each side (colliders, 1.3 m cover), two legs per side, top frame at 9 m with engine housing, front cab, hoist ropes and spreader resting on the box beneath (the box is a level block). Top frame, engine housing, cab roof and the spreader are a perch (walkable, never inkable).',
     params: { c: 'paint', spread: 'spreader y (2.6)' }, variants: 1, mount: 'ground',
@@ -1107,7 +1223,10 @@ export function register(D, H) {
   };
 
   // ================================================================================================ yard kit
+  // 【堆场小件区】绑扎笼、码头边、高杆灯、平板架、照明塔、告示牌、工棚等一批布景小道具。
   // lashing cage: galvanised mesh stillage on skids full of lashing bars + turnbuckles (collider = cover, 1.2 m)
+  // 【绑扎笼】滑架上的镀锌网格式料笼,装满绑扎杆 + 花篮螺栓(碰撞 = 1.2 m 掩体);
+  // variant 1 变成装满扭锁的料斗
   D.cargo_cage = {
     desc: 'Lashing-gear cage (2.4 × 1.2 × 1.2, collider): galvanised frame on forklift skids, mesh sides, lashing bars + turnbuckles inside, stencilled bay number. variant 1 = twistlock bin (1.2 × 1.0 × 0.9) full of cones.',
     params: {}, variants: 2, mount: 'ground',
@@ -1128,10 +1247,13 @@ export function register(D, H) {
       }
       B.push(0, h * 0.55, d / 2 + 0.005); pbox(B, NS('paint'), K.hazY, 0.5, 0.2, 0.01, 0, 0, 0); letters(B, v ? 'TL' : 'L4', { h: 0.12, x: 0, y: -0.06, z: 0.008, c: K.ink, flat: true, wt: 0.22 }); B.pop();
       B.col(-w / 2, 0, -d / 2, w / 2, h, d / 2, { rail: true }); B.blob(w + 0.4, d + 0.4);   // bar mesh: see-through
+      // 【碰撞】{ rail: true } = 纯掩体/栏杆型碰撞;B.blob 另铺一块不可上墨区——网格栏杆是透眼的
     },
   };
   // quay edge run along local +X (deck edge at z = 0, water +Z): capping beam steel edge angle, tee-head bollards
   // (colliders, 0.75 m), cone fenders with front panels on the face, recessed ladders, yellow edge paint
+  // 【码头边沿】沿局部 +X 铺设(pos 为起点、甲板边在 z=0、水在 +Z):钢包边角钢 + 黄色边线、
+  // T 头系缆桩(碰撞,0.75 m 矮掩体)、鼓形护舷 + 前脸钢板、 recessed 爬梯;各段用参数表给出桩/护舷/梯位
   D.cargo_quayedge = {
     desc: 'Quay edge along +X (edge at z = 0, water +Z): steel edge angle, painted yellow edge band, tee-head bollards at `bollards` (colliders), cone fenders + steel panels on the face at `fenders`, recessed ladders at `ladders`.',
     params: { length: 'm', bollards: '[s]', fenders: '[s]', ladders: '[s]' }, variants: 1, mount: 'ground',
@@ -1168,6 +1290,8 @@ export function register(D, H) {
     },
   };
   // high-mast lighting tower (outside the arena): 26 m tapered pole, service ring with a crown of floodlights
+  // 【高杆灯】(场外):26 m 收分钢杆 + 顶部环形灯架 + 一圈 8 盏泛光灯(发光面),顶上有红色障碍灯;
+  // 碰撞 = 基座 + 整杆(roof 禁区)
   D.cargo_mast = {
     desc: 'High-mast lighting tower: tapered galvanised pole on a plinth, headframe ring with a crown of floodlights (glow), obstruction lamp. Collider: plinth + pole.',
     params: { h: 'm (26)' }, variants: 1, mount: 'ground',
@@ -1193,6 +1317,8 @@ export function register(D, H) {
 
   // flat rack (40'): low steel platform with folding end walls up (floor top 0.65 walkable, end walls 2.6), lashed
   // timber cargo on it. pos = centre, length along local Z. Colliders: floor + both end walls + the cargo stack.
+  // 【平板架(40 尺)】低钢平台 + 立起的折叠端墙(木地板面 0.65 m 可走),中部是绑扎好的木箱货
+  // (碰撞);铁链 + 绑带交叉加固;箱面喷 THIS WAY UP
   D.cargo_flatrack = {
     desc: 'Flat-rack container (length along local Z): steel floor with timber decking (0.65, walkable), end walls up with corner posts + castings, lashed crated cargo in the middle (collider), chains + straps. Colliders: floor, end walls, cargo.',
     params: { len: '20 | 40', c: 'paint', cargo: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -1228,6 +1354,7 @@ export function register(D, H) {
     },
   };
   // mobile lighting tower: towable trailer, stabiliser legs, telescopic mast with a four-lamp head (glow at dusk)
+  // 【移动照明塔】可拖挂的灯塔:单轴拖斗 + 牵引杆 + 四条支腿,三段伸缩杆升到 7 m,顶端四灯头(黄昏发光)
   D.cargo_lighttower = {
     desc: 'Towable lighting tower: box body on a single-axle trailer with drawbar, four stabiliser legs, telescopic mast (6.5 m) with a four-lamp head. Collider: body.',
     params: { c: 'body paint (crane yellow)' }, variants: 1, mount: 'ground',
@@ -1247,6 +1374,9 @@ export function register(D, H) {
     },
   };
   // terminal safety board on two posts: CARGO TERMINAL · PPE pictograms + text (both faces)
+  // 【告示牌】两根镀锌立柱 + 双面白板(蓝头带):variant 0 = HARD HAT AREA(安全帽图标 + PPE 文字)、
+  // 1 = BERTH 4 / 20 KM/H(红圈限速 + 让行跨运车)、2 = MUSTER POINT(绿色集合点,绿色头带);
+  // PPE 图标用圆盘 + 小方体拼出象形符号
   D.cargo_signboard = {
     desc: 'Terminal notice board on two galvanised posts (faces ±Z): blue header, PPE pictograms (hard hat, hi-vis, boots), text lines. variant 0 = HARD HAT AREA, 1 = BERTH 4 / 20 KM/H, 2 = MUSTER POINT (green). Collider: posts.',
     params: {}, variants: 3, mount: 'ground',
@@ -1283,6 +1413,8 @@ export function register(D, H) {
   };
   // welfare / lashers' cabin on a level box (the box's side face at local z = 0, pos = bottom centre of that face):
   // door with a step, windows with blinds, AC unit, LASHING GANG sign, a bench and a bin outside
+  // 【工棚(绑扎组小屋)】挂在一个关卡色块箱的侧面(该侧面为局部 z=0,pos = 面底中心):
+  // 门 + 钢台阶(唯一碰撞)、带栏杆/百叶/内透光的窗、空调外机、LASHING GANG 标牌
   D.cargo_cabin = {
     desc: 'Site-cabin fittings on a container side face (face at z = 0, pos = bottom centre): door + steel step, two windows with bars + lit blinds, AC unit, LASHING GANG sign, cable entry. Non-colliding except the step.',
     params: { w: 'face width (6.06)', sign: 'text' }, variants: 1, mount: 'wall',
@@ -1310,6 +1442,8 @@ export function register(D, H) {
 
   // terminal service pickup (front +Z): cab + open bed with a toolbox and cones, amber light bar, CARGO door mark.
   // Collider: body (1.5) + cab (1.95 roof, off limits).
+  // 【公务皮卡】白色车身 + 玻璃驾驶室 + 琥珀色长条警灯,后斗里工具箱 + 三只锥桶(subNC 组合 cone),
+  // 车门喷 CARGO TERMINAL;碰撞 = 车身 + 驾驶室顶(禁区)
   D.cargo_pickup = {
     desc: 'Terminal service pickup (front +Z): white body, cab with glazing + amber light bar, open bed with a toolbox and cones, CARGO TERMINAL door mark, hi-vis side stripe. Colliders: body + cab (roof).',
     params: { c: 'body paint' }, variants: 1, mount: 'ground',
@@ -1341,6 +1475,8 @@ export function register(D, H) {
   };
   // container forklift (front +Z): mast + forks raised with a lashing-cage pallet, counterweight, cab cage, amber beacon.
   // Collider: body (1.6) + mast (roof).
+  // 【集装箱叉车】大前小后四轮、尾部配重、护笼驾驶室,双门架货叉升到 o.lift 高度,叉着一只扭锁料斗
+  // (subNC 组合 cargo_cage variant 1,不带碰撞);碰撞 = 车身 + 门架禁区顶
   D.cargo_forklift = {
     desc: 'Heavy forklift (front +Z): body with counterweight, protective cab cage, twin-mast with raised forks carrying a twistlock bin, big front tyres, beacon. Colliders: body + mast (roof).',
     params: { c: 'paint', lift: 'fork height (1.3)' }, variants: 1, mount: 'ground',
@@ -1369,6 +1505,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ beyond the back wall
+  // 【后墙外的码头(远景)】每个基地后墙之外延续的码头布景(纯视觉):码头板、运营楼两侧 1–4 层高的
+  // 集装箱堆块、一台 RTG 龙门吊、闸口外排队的卡车、码头边围栏。pos = 后墙外侧面中心(局部 +Z 朝
+  // 竞技场,堆场向 −Z 延伸)。用确定性伪随机(shipRng)摆箱,保证每次进图一致。
   // The terminal carries on behind each base (outside the arena, visual only): the pier slab, container blocks either
   // side of the ops building (1–4 high), an RTG crane over one block, a truck queuing at the gate, perimeter fence.
   // pos = centre of the back wall's outer face (local +Z = toward the arena, the yard runs toward −Z).
@@ -1382,6 +1521,8 @@ export function register(D, H) {
       pbox(B, NS('paint'), '#bdb8ad', 48, 1.2, DZ, 0, -0.6, -DZ / 2);
       for (const sx of [-1, 1]) pbox(B, NS('paint'), '#8f8a80', 0.3, 0.3, DZ, sx * 23.85, 0.15, -DZ / 2);
       // container blocks: rows along z, 40' boxes, tiers by a skyline profile (tallest in the middle of each block)
+      // 【堆块生成】block(x0, 行数, z0, 列数, 最大层数):每格层高由"中间高两边低的天际线轮廓 −
+      // 随机抖动"决定;每箱画三块(箱身 + 底暗影 + 端面)做出堆叠体积感
       const pal = ['#a8583f', '#3d5f8c', '#3f8580', '#c99a3c', '#858c93', '#56794f', '#e4e2da', '#7d3f45', '#34435f', '#c47440', '#b9b3a7'];
       const block = (x0, nRows, z0, nBays, maxT) => {
         for (let r = 0; r < nRows; r++) for (let b = 0; b < nBays; b++) {
@@ -1399,6 +1540,8 @@ export function register(D, H) {
       block(-24.0 + 0.2, 4, -2.5, 2, 3);
       block(-12.7, 10, -13.5, 1, 3);
       // RTG gantry over the left block: four legs on rubber-tyred bogies, girders at 19 m, trolley, cab
+      // 【RTG 龙门吊】左侧堆块上方的轮胎式龙门吊:四轮腿 + 19 m 双梁 + 小车 + 吊绳 + 落地吊具,
+      // 梁上喷 RTG 22,顶部警灯 + 泛光灯
       {
         const x0 = -24.0, x1 = -13.4, zc = -9.0, YT = 19, rc = '#3e6fa8', wc = K.white;
         for (const x of [x0, x1]) for (const dz of [-3.2, 3.2]) {
@@ -1418,11 +1561,13 @@ export function register(D, H) {
         B.box('paint', K.crane, 2.3, 0.35, 6.1, (x0 + x1) / 2 + 1.5, 12.0, zc, { r: 0.04 });
       }
       // off-limits colliders: the pier slab, the two stack blocks, the RTG legs
+      // 【禁区碰撞】码头板 + 三个堆块 + RTG 区域整体标 roof——场外不可停留,特殊技出去也会滑进海里
       B.col(-24, -1.2, -DZ, 24, 0, -0.6, { roof: true });
       B.col(13.9, 0, -27.5, 24, 10.4, -2.5, { roof: true });
       B.col(-23.8, 0, -27.5, -13.6, 7.8, -2.5, { roof: true });
       B.col(-12.7, 0, -26, 12.7, 7.8, -13.5, { roof: true });
       // truck queuing outside the gate, fence line along the pier edge behind the gate
+      // 【场外卡车】闸口外排队的红色牵引车 + 骨架挂,上面载着一只 KRAKEN 涂装的 40 尺散箱
       B.push(16.4, 0, -6.5, PI);
       B.box('paint', '#c9453b', 2.4, 2.6, 2.2, 0, 1.9, 4.5, { r: 0.12 });
       pbox(B, NS('gloss'), K.glassLt, 2.2, 1.0, 0.04, 0, 2.5, 5.62);
@@ -1436,6 +1581,9 @@ export function register(D, H) {
   // ship's accommodation ladder: from the ship's deck edge (local x = +run, y = rise) down to a landing platform on the
   // quay (pos = foot on the quay, local +X toward the ship), aluminium stringers, treads, stanchions + rope rails, a
   // safety net slung underneath. Collider: the landing platform only.
+  // 【舷梯(船员梯)】从船甲板边(局部 x=+run, y=rise)下到码头平台(pos = 码头落脚点,局部 +X 朝船):
+  // 铝梯梁 + 防滑踏步 + 立杆绳索扶手,底下张一张下垂的安全网,顶端挂救生圈;脚部用铁链 + CREW ONLY
+  // 牌封住(不对玩家开放),两侧绳索各铺一段 rail 型碰撞
   D.cargo_gangway = {
     desc: "Ship's accommodation ladder from the quay (pos = foot, local +X toward the ship) up to the ship's deck (run, rise): landing platform (collider), aluminium ladder with treads, stanchions + rope handrails, safety net underneath, a lifebuoy at the top.",
     params: { run: 'm (4.4)', rise: 'm (5.2)' }, variants: 1, mount: 'ground',
@@ -1467,6 +1615,8 @@ export function register(D, H) {
 
   // shore-power substation kiosk (front +Z): green steel housing on a plinth, louvres, hazard plates, a cable duct
   // into the quay, SHORE POWER lettering. Collider: body (roof).
+  // 【岸电亭】绿色钢结构箱变(前 +Z):混凝土底座 + 双开门 + 散热百叶 + 危险警示牌 + 引入码头电缆沟的
+  // 线槽,正面喷 SHORE POWER;碰撞 = 箱体(禁区顶)
   D.cargo_kiosk = {
     desc: 'Shore-power substation kiosk (2.6 × 1.6 × 2.3, front +Z): plinth, green steel housing with double doors, louvres, danger plates, cable duct, roof kit. Collider: body (roof).',
     params: {}, variants: 1, mount: 'ground',
@@ -1492,6 +1642,8 @@ export function register(D, H) {
   };
 
   // ================================================================================================ crane rail
+  // 【起重机轨道】嵌在码头面里的轨道(沿局部 +X,pos = 起点):钢轨头高出铺装 3 cm,底板 + 每 0.9 m
+  // 一对扣件;stop 时在起点放带橡胶缓冲块的止挡(碰撞)。
   D.cargo_rail = {
     desc: 'Crane rail set into the quay along +X (pos = start, on the deck): steel rail head proud of the paving by 3 cm on a sole plate, clips every 0.9 m, end stop with a rubber buffer at the start when `stop`.',
     params: { length: 'm (40)', stop: 'bool' }, variants: 1, mount: 'ground',
@@ -1509,12 +1661,18 @@ export function register(D, H) {
   };
 
   // ================================================================================================ container ship
+  // 【集装箱船】靠泊的大船(纯视觉,场外)。局部坐标:靠码头一侧船壳为 x=0 平面(船体向 +X 展开,
+  // 宽 Bm),船艏柱在 z=0,船体向 −Z 延伸(长 L),y = 码头面(海面 −1.6)。气胎护舷浮在空隙里(局部 −X),
+  // 缆绳下到码头系缆桩。下方是逐段放样的船体(hullHW 半宽函数 + hullGeo 壳体 + deckGeo 甲板)。
   // Laden box ship alongside the quay. Local frame: the hull side facing the quay is the plane x = 0 (ship extends to
   // +X, beam B), bow stem at z = 0, hull running aft toward -Z (length L), y = quay level (sea at -1.6). Pneumatic
   // fenders float in the gap on local -X; mooring lines run down to quay bollards at x = -o.gap + 0.6.
   const SEA = -1.6;
+  // 【shipRng 确定性伪随机】整数种子驱动的哈希随机序列——堆箱颜色/层高等"随机"布景每次进图完全一致
   const shipRng = (seed) => { let a = seed | 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
   // hull half-width at distance t aft of the stem and height y (fine entry at the waterline, flared bow above it)
+  // 【hullHW 船体半宽】距艏柱 t 处、高度 y 的船体半宽:水线附近进流段细长、水上外飘(flare),
+  // 过了平行中体(Lb)后保持满载半宽;整条船的轮廓由这一个函数定义
   function hullHW(t, y, Bm, Lb) {
     if (t >= Lb) return Bm / 2;
     const u = Math.max(0, t) / Lb, flare = Math.max(0, Math.min(1, (y - SEA) / 7.5));
@@ -1522,6 +1680,9 @@ export function register(D, H) {
     return Math.max(0.12, (Bm / 2) * Math.min(1, k * (0.93 + 0.12 * flare)));
   }
   // lofted hull shell between heights y0..y1 (sections every dz, finer at the bow); flat-shaded faces, both sides + stem
+  // 【hullGeo 船体壳放样】在 y0..y1 高度段之间放样:站距船首细(14 站进流段)、船尾粗(12 m),
+  // 每站取 3 个高度环,逐格 face 出面片(含艏柱前倾 rake 的修正与艏封板、尾封板);
+  // 吃水线以下 / 主船体 / 艏楼分三段调用拼出完整壳体,模板缓存
   const hullGeo = (Bm, L, Lb, y0, y1, stemRake, yr = -3.4) => tpl(['khull', Bm, L, Lb, y0, y1, stemRake, yr].map(kf).join('|'), () => {
     const g = new GB(), ts = [];
     for (let t = 0; t < Lb; t += Lb / 14) ts.push(t);
@@ -1544,6 +1705,7 @@ export function register(D, H) {
     return g.geo();
   });
   // deck plate (top of the hull outline at y), sampled exactly like the hull shell so the edges meet
+  // 【deckGeo 甲板】与壳体完全同一套采样(站距/半宽/艏倾一致),保证甲板边缘与船壳严丝合缝
   const deckGeo = (Bm, L, Lb, y, stemRake = 0.5, yr = -3.4) => tpl(['kdeck', Bm, L, Lb, y, stemRake, yr].map(kf).join('|'), () => {
     const g = new GB(), c = Bm / 2, ts = [], rk = stemRake * (y - yr);
     for (let t = 0; t < Lb; t += Lb / 14) ts.push(t);
@@ -1562,12 +1724,16 @@ export function register(D, H) {
     B.pop();
   }
   // sagging rope between two points
+  // 【rope 下垂缆绳】两点间按悬链近似下垂(4·t·(1−t) 抛物线),9 采样点扫成细管——护舷链与系泊缆共用
   function rope(B, a, b, sag, r = 0.045, c = K.rope) {
     const pts = [];
     for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(P3(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - sag * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t)); }
     B.tube(NS('paint'), c, pts, r, { radial: 5 });
   }
   D.cargo_ship = {
+    // 【船体分段】水线下红色防蚧包底 + 主船体色壳 + 艏楼壳,白色舷缘线,甲板/艏楼甲板;
+    // 锚与锚链孔、艏名、吃水数字、舷侧大船名、艏侧推标记、引航门;甲板货按 bays 堆 3–5 层 40 尺箱
+    // (bay 间布绑扎桥),尾楼 + 桥楼翼 + 烟囱;全部场外,只交 roof 禁区碰撞
     desc: 'Laden container ship alongside (quay-side hull plane at local x = 0, bow stem at z = 0, hull aft toward -Z): lofted flared bow + parallel midbody, boot-topping, anchors + hawse, forecastle with breakwater, winches, foremast; deck cargo in bays (3–5 tiers, lashing bridges), hull-side line name in big letters, bow name + draft marks, accommodation block + bridge wings + funnel near the stern, pneumatic fenders in the gap, mooring lines to quay bollards. Visual only (outside the arena).',
     params: { length: 'm (110)', beam: 'm (26)', hull: 'topsides colour', boot: 'boot-top colour', name: 'ship name', line: 'hull-side lettering', gap: 'quay gap m (3.5)', seed: 'cargo seed' },
     variants: 1, mount: 'ground',
@@ -1708,12 +1874,20 @@ export function register(D, H) {
 
 
 // ==================================================================================================== placements
+// 【摆位表】在泊位的局部坐标系(与 layout.js 一致)里手写,最后随泊位整体转向:pos 经 toWorld 变换、
+// rotY 加 ROT_RAD;`worldRot` 表示 rotY 已是世界角(与码头正交的散件),`world` 表示 pos + rotY 都不动
+// (如中场舱口盖)。只写 Alpha 半场(−Z);每条默认按 (x,z) → (−x,−z)、rotY + π 镜像出 Bravo 半场,
+// 除非 mirror: false。集装箱与楼梯的服装由 autoDressing() 从 layout 的局部件自动生成——几何与
+// 关卡块永远一致,不会漂移。
 // Authored in the berth's local frame (like layout.js) and turned with it at the end: pos → toWorld, rotY + ROT
 // (`worldRot`: rotY is already a world angle — loose kit parked square to the harbour; `world`: pos + rotY untouched).
 // Alpha half (−Z); every entry is mirrored (x,z) → (−x,−z), rotY + π, unless `mirror: false`.
 // Container + stair dressing is generated from the layout's local pieces (every stack box / stair), so the geometry
 // and its dressing never drift apart.
 const CODES = ['KRKU', 'TDBU', 'CRLU', 'KLPU', 'SLTU', 'HLBU', 'INKU', 'TIDU'];
+// 【autoDressing 自动服装】遍历 layout 的半场局部件:挂车箱(tag 'trailer')与堆叠箱(tag 'box:'/'boxx:')
+// 生成 cargo_box 摆位(朝向由箱长方向与门端推得,箱主代码由序号哈希生成),坡道楼梯生成 cargo_stair
+// 摆位(步距/落差点直接取自 layout 数据)——关卡块与服装始终同源
 function autoDressing() {
   const out = [];
   let k = 0;
@@ -1738,6 +1912,10 @@ function autoDressing() {
 }
 
 const Q = P / 4;
+// 【LOCAL_PLACEMENTS 半场摆位清单】手写的 Alpha 半场布景:K7 岸桥(仰臂 80°)居中场,两船泊两侧、
+// 船艏指向中场;岸桥轨道、后墙外远景 + K6 远吊机、运营楼 + 高杆灯、卡闸、码头边沿各段、冷藏插座架、
+// 舱口盖、卡车车道(底盘 + 牵引车 + 正面吊)、跨运车、绑扎笼、平板架、照明塔、锥桶/路障、公务车、
+// 舷梯、码头杂物、岸电亭、告示牌、工棚,末尾 ...autoDressing() 展开自动服装
 const LOCAL_PLACEMENTS = [
   // K7 at mid, idle between the two berths with its boom raised; the two ships alongside, bows pointing at mid
   { type: 'cargo_crane', pos: [0, 0, 0], rotY: 0, mirror: false, boom: 80 },
@@ -1837,6 +2015,9 @@ const LOCAL_PLACEMENTS = [
 
 // turn the berth: pos about the origin, rotY + ROT (see the note above). oboxCols: a turned prop hands the level
 // colliders turned with it (PropKit._xfCols) instead of world-axis boxes that would swell past the real shape.
+// 【PLACEMENTS 导出】把半场摆位整体转向到世界:world 项原样保留(只补 oboxCols),worldRot 项保留
+// rotY,其余 pos 走 toWorld、rotY 加 ROT_RAD;oboxCols 让转向后的道具把碰撞盒随自身旋转(PropKit._xfCols),
+// 而不是用会膨胀失真世界轴包围盒
 export const PLACEMENTS = LOCAL_PLACEMENTS.map((it) => {
   if (it.world) { const { world, ...q } = it; return { ...q, oboxCols: true }; }
   const { worldRot, ...q } = it;

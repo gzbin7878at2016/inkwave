@@ -1,3 +1,35 @@
+// ============================================================================
+// 【中文导读】武器与弹道系统 —— 每角色一个 WeaponRunner + 全场一个 Projectiles
+// ----------------------------------------------------------------------------
+// 【模块定位】本文件覆盖开火全链路的第 ④~⑧ 步(docs/ASSETS-WEAPONS.zh-CN.md §4):
+//   WeaponRunner 管"扳机→出弹"(按武器 kind 分派),Projectiles 管"出弹→涂地"
+//   (弹道对象池、命中结算、涂墨计分、渲染)。
+// 【开火全链路】input 意图 → actor 打包 winp → WeaponRunner.update 按 kind switch
+//   分派到内置实现(_auto/_charger/_roller/_bucket/_spinner/_twins/_brush/_dualies/
+//   _slosher/_splatling)或 MAIN_KITS[kind].update(kit 武器全接管)→ 各 fire* 构造
+//   弹道 → _push 入活跃列表并联机上报(nm.recProj)→ Projectiles.update 逐帧 _step 推进。
+// 【WeaponRunner 状态机】蓄力(charge/charging)、挥甩(flick)、滚刷(rolling)、蓄力
+//   爆发(burstT)、翻滚(dodge/dodgeT)、炮台锁定(turret/lockT)等字段按武器复用;
+//   busy()/firingPose()/moveSpeed() 把"开火中"暴露给 actor(移速惩罚、持枪姿态)。
+// 【Projectiles 对象池】this.list 为活跃弹、this.pool 为空闲弹;_new() 从池弹出并重置
+//   全部字段,弹死亡时 swap-pop(尾元素换到被删位)O(1) 摘除归还池中——热路径零分配。
+// 【_step 热路径】每弹每帧:积分推进(直线段→重力+阻力)→ 线段-胶囊扫掠命中角色
+//   (对受害者"视觉身体"判定,所见即所中)→ 副武器墨幕/大招物体拦截 → boss 命中球 →
+//   世界线段碰撞 → 沿途滴墨 → 寿命/落水收尾。
+// 【伤害结算】applyHit 是唯一下手点:联机时按 shouldApplyHit 三态路由(本地结算 /
+//   上报对方端 send / 丢弃 drop),本地直接 victim.damage();命中音、震动、击杀反馈在此汇总。
+// 【涂墨计分】_impact/_blastBurst/_explodeBomb 命中后调 G.paint.splat 落到 CPU 涂地网格,
+//   面积经 _credit 计入 owner.addTurf(大招期间的墨用 addTurfNoSpecial,涂地不回充大招槽)。
+// 【渲染:全场一个 InstancedMesh】所有弹道墨滴(弹头+卫星尾滴)共用一个 InstancedMesh
+//   (上限 MAX_BLOBS),每帧 _draw 全量重写实例矩阵/颜色/aShape;顶点着色器把单位球捏成
+//   "泪滴"(尾长随速度、液体晃动、压扁鼻头),Fresnel 边缘光保证浅色地面可读,距镜头约
+//   1.6 m 内抖动剔除(队友的弹从脸旁飞过也不糊画面)。蓄能光束与激光瞄准走另一套
+//   "相机朝向条带"(ribbon)着色器,与墨滴互不相干。
+// 【联机】本端弹在 _push 处上报;他端弹由 ghostProjectile/ghostBomb 重建为"幽灵弹"
+//   (只飞不伤人,涂地与命中以 owner 端结果为准),ghostFire 只补枪口表现。
+// 【配套阅读】docs/ASSETS-WEAPONS.zh-CN.md §4(开火全链路)、§0(三级可插拔总览)。
+//   本注释以代码实际行为为准。
+// ============================================================================
 // Weapons: per-actor WeaponRunner (fire logic for shooter/roller/charger/blaster/bucket/spinner/twins/brush +
 // upstream's dualies/slosher/splatling + bomb sub) and the global
 // Projectiles system (ink shots, blaster blobs, roller drops, bombs, storm clouds, charger beams, bomb arc preview).
@@ -28,12 +60,15 @@ const DEG = Math.PI / 180;
 // trigger('shoot', HAND_*) arg for dual wield (character.js reads .hand; valueOf keeps numeric readers at 1)
 const HAND_R = Object.freeze({ hand: 0, valueOf() { return 1; } }), HAND_L = Object.freeze({ hand: 1, valueOf() { return 1; } });
 
+// 【每角色武器运行器】一个 actor 一把主武器,一个 WeaponRunner 管它的扳机状态;
+//   actor 每帧调 update(dt, winp),末尾统一处理副武器(瞄准/投掷)输入。
 // ---------------------------------------------------------------------------------------------- per-actor runner
 export class WeaponRunner {
   constructor(actor) {
     this.a = actor;
     this.reset();
   }
+  // 【状态总重置】换武器/重生/死亡时清空全部开火状态与循环音效;kit 武器另有 reset 钩子接在这里
   reset() {
     this.cooldown = 0; this.charge = 0; this.charging = false; this.rolling = false;
     this.flick = -1; this.firingT = 0; this.emptyCd = 0; this.aimingSub = false;
@@ -60,6 +95,7 @@ export class WeaponRunner {
   onDeath() { this.reset(); }
   busy() { return this.charging || this.flick >= 0 || this.burstT > 0 || this.dodgeT > 0 || this.slosh >= 0 || this.streaming || !!this.dodge || this.lockT > 0 || !!MAIN_KITS[this.a.weapon?.kind]?.busy?.(this); }
   firingPose() { return this.firingT > 0 || this.charging || this.flick >= 0 || this.rolling || this.burstT > 0 || this.turret || this.slosh >= 0 || this.streaming || !!this.dodge || this.lockT > 0 || !!MAIN_KITS[this.a.weapon?.kind]?.firingPose?.(this); }
+  // 【开火中移速】射击/蓄力减速、滚刷笔刷滚动加速、翻滚锁定站定等;kit 武器优先(可整体接管移速)
   moveSpeed() {
     { const K = MAIN_KITS[this.a.weapon?.kind]; const v = K?.moveSpeed?.(this, this.a.weapon); if (v) return v; }
     const w = this.a.weapon;
@@ -90,6 +126,7 @@ export class WeaponRunner {
     return PLAYER.runSpeed;
   }
 
+  // 【当前散布锥半角(度)】HUD 准星据此画圈;bloom(持续开火累积)越大锥越宽,松扳机回收
   // current shot cone half-angle in degrees (HUD crosshair should use this)
   _spreadDeg(w) {
     { const K = MAIN_KITS[w.kind]; if (K?.spreadDeg) return K.spreadDeg(this, w); }
@@ -105,6 +142,9 @@ export class WeaponRunner {
     return 0;
   }
 
+  // 【每帧主入口】冷却/后摇计时与 bloom 衰减 → 按 kind 分派主武器 → 统一处理副武器:
+  //   蓄力型副武器按住即充能;松开投掷/放置,墨不足播空仓提示。大招"炸弹连发"期间副武器
+  //   临时换成它的连发炸弹(不耗墨,只受投掷间隔限制)。
   update(dt, inp) {
     const a = this.a, w = a.weapon;
     this.cooldown -= dt; this.emptyCd -= dt; this.rumbleT -= dt;
@@ -155,6 +195,7 @@ export class WeaponRunner {
     if (!inp.sub && !inp.subReleased) this.aimingSub = false;
   }
 
+  // 【空仓提示】墨尽时的"咔哒"声+低墨事件,0.45 s 内不重复
   _empty() {
     const a = this.a;
     if (this.emptyCd > 0) return;
@@ -162,6 +203,8 @@ export class WeaponRunner {
     if (a.isLocal) { G.audio?.play('empty_click'); emit('lowink', { actor: a }); }
   }
 
+  // 【自动武器(shooter 射击枪 / blaster 爆破枪)】按住扳机按 fireInterval 连发;while 补帧循环
+  //   消化掉帧率波动(guard 上限防一帧打多发失控);墨尽播空仓声并走一个发射间隔的"假冷却"。
   _auto(dt, inp, w) {
     const a = this.a;
     if (!inp.fire) { if (this.cooldown < 0) this.cooldown = 0; return; }
@@ -181,6 +224,9 @@ export class WeaponRunner {
     }
   }
 
+  // 【蓄能狙击(charger)】按住充能:S 曲线前 20% 快(点按也有点用)、中段扎实、顶端干脆;
+  //   充能上限受当前墨量钳制;松手按充能比例扣墨并打出 fireCharger——即时命中的光束,
+  //   不走弹道;满充能有提示音+手柄震动。
   _charger(dt, inp, w) {
     const a = this.a;
     if (inp.fire && this.cooldown <= 0) {
@@ -215,6 +261,10 @@ export class WeaponRunner {
     }
   }
 
+  // 【滚筒(roller)】点按=向前甩出一片扇形墨(flick 前摇后释放);按住+落地=滚动压路:
+  //   滚轮前方扇形碾压伤害(每目标约 0.5 s 一次)、按滚动距离耗墨、沿滚动方向涂出一条
+  //   笔直墨带(kind 'roll',CPU 涂地网格同步成直边条带);前摇期间移速骤降。boss 战可
+  //   碾压 HULLBREAKER 的附肢/腹部并压扁小蟹。
   _roller(dt, inp, w) {
     const a = this.a;
     // flick wind-up → release
@@ -289,6 +339,8 @@ export class WeaponRunner {
     if (this.rumbleT <= 0) { this.rumbleT = 0.12; rumble(a, 0.04, clamp(hs / w.rollSpeed, 0, 1) * 0.14, 110); }
   }
 
+  // 【双枪(dualies,上游实现)】双手交替速射;开火中按跳+方向键=翻滚闪避(0.3 s 拖墨,
+  //   之后 0.5 s 锁定炮台:站定、散布收紧、射速加快);两连滚,停火且锁定结束后回充。
   // ---- dualies (upstream): the hands alternate (12 shots/s). A jump press while firing with a move direction
   // dodge-rolls instead (actor.js calls tryDodge / dodgeVel): a 0.3 s ink-trailing roll, then a 0.5 s locked turret —
   // planted, tight spread, faster fire. Two rolls chain; they refill once you stop firing and the lock has ended.
@@ -327,6 +379,7 @@ export class WeaponRunner {
     }
   }
 
+  // 【双枪翻滚发起】actor.js 起跳判定改派到这里;返回 true 表示"这次起跳已被翻滚吃掉"
   // dualies dodge roll along `move` (world xz); tryDodge() dispatches here. true = rolling (skip the jump).
   _dualDodge(move) {
     const a = this.a, w = a.weapon;
@@ -347,6 +400,8 @@ export class WeaponRunner {
     return true;
   }
 
+  // 【翻滚期间水平速度】快出缓停(峰值 1.5 倍均速,按 (1-u²) 衰减到 0),返回 true 时
+  //   actor 跳过正常移动计算(twins 则用下面的 dodgeVelocity(out))
   /** actor.js (_horizontal): while a dualies roll runs, sets the horizontal velocity (fast-out ease: 1.5·dist/time → 0)
    *  and returns true. (Twins use dodgeVelocity(out) instead.) */
   dodgeVel(vel) {
@@ -358,6 +413,9 @@ export class WeaponRunner {
     return true;
   }
 
+  // 【泼桶(slosher,上游实现)】按下→0.13 s 扬臂前摇→一波多颗重墨沿同一抛物线泼出
+  //   (落点连成一条粗墨带,可越过掩体、打上高台),按 fireInterval 重复。真实弹道在
+  //   fireSlosher / Projectiles(弹型 'slosh')。
   // ---- slosher (upstream): press / hold → a 0.13 s heave, then the wave leaves (Projectiles.fireSlosher); repeats
   // at the fire rate
   _slosher(dt, inp, w) {
@@ -376,6 +434,9 @@ export class WeaponRunner {
     }
   }
 
+  // 【旋转加特林(splatling,上游实现)】按住转管蓄力(马达音调随蓄力升高,满蓄"咔哒"),
+  //   松手进入 15 发/s 的墨流,流长由蓄力在 burstMin..burstMax 间插值;charge 字段
+  //   蓄力时表蓄力、喷射时改表余量(burstFrac),供 HUD 武器计量条"先满后空"。
   // ---- splatling (upstream): hold → spin up (chargeTime; a motor loop rising in pitch, a clunk at full), release → a
   // stream of burstMin…burstMax s scaled by the charge at 15 shots/s. charge = spin-up while charging, the stream left
   // while streaming (burstFrac), so the HUD meter / weapon meter fill and then drain. burstT = stream time left.
@@ -429,7 +490,11 @@ export class WeaponRunner {
 }
 
 // ---------------------------------------------------------------------------------------------- new weapon kinds
+// 【本家新增武器挂载段】用 Object.assign 给 WeaponRunner.prototype 追加本家武器
+//   (bucket/spinner/twins/brush)与双持翻滚相关方法;上游武器在类体内,kit 武器在 kits 目录。
 Object.assign(WeaponRunner.prototype, {
+  // 【水桶(bucket,本家)】短前摇挥臂→沿瞄准方向抛出一串墨团(高抛物线,lead 团伤害最高,
+  //   一泼之内只有第一颗命中算直击,其余照样涂地);按住扳机连续泼。
   // bucket: a short wind-up swing, then a volley of ink hurled in an arc (holding fire keeps hurling)
   _bucket(dt, inp, w) {
     const a = this.a;
@@ -446,6 +511,8 @@ Object.assign(WeaponRunner.prototype, {
     if (a.isLocal || a._nearCamera()) G.audio?.play('roller_flick', { pos: a.isLocal ? undefined : a.pos, volume: 0.7, pitch: 0.8 });
   },
 
+  // 【纺锤(spinner,本家)】类狙击的蓄力(蓄力上限受墨量钳制),松手按蓄力释放一股持续
+  //   burst(时长/射程/弹速随蓄力),burst 期间以 fireInterval 连发小快弹 fireStream。
   // spinner: hold to spin up (like a charger), release to fire a stream whose length and reach follow the charge
   _spinner(dt, inp, w) {
     const a = this.a;
@@ -485,6 +552,8 @@ Object.assign(WeaponRunner.prototype, {
     }
   },
 
+  // 【双枪(twins,本家)】左右枪交替速射;翻滚后按住扳机进入"扎根双持"(turret:更密、
+  //   更直、更远),一动就退出;支持两连滚(翻滚中再按跳可排队接续),连滚后有一段锁定冷却。
   // twins: rapid alternating fire; after a dodge roll, holding fire plants you with both guns together (faster, tighter)
   _twins(dt, inp, w) {
     const a = this.a;
@@ -516,6 +585,8 @@ Object.assign(WeaponRunner.prototype, {
       this.cooldown += this.turret ? w.turretInterval : w.fireInterval;
     }
   },
+  // 【翻滚统一分派】actor.js 起跳时调用:twins(本家,需按住开火+方向)与 dualies(上游,
+  //   开火中+方向)各走各的判定;返回 true 表示翻滚已开始(这次跳跃被吃掉)。
   // Jump pressed while grounded (actor.js): roll instead of jumping? One dispatcher for both dual-wield kinds — twins
   // (ours: needs fire held + a move direction) and dualies (upstream: firing + a move direction). Accepts the actor's
   // intent (or a bare move vector). Returns true if a roll started.
@@ -525,6 +596,8 @@ Object.assign(WeaponRunner.prototype, {
     if (k === 'dualies') return this._dualDodge(intent && intent.move ? intent.move : intent);
     return false;
   },
+  // 【twins 翻滚】翻滚中再按跳+剩余滚次→排队接续(并吞掉这次跳跃);正式发起时扣滚墨、
+  //   记方向、两连滚后进入锁定冷却(rollLockout)。
   // twins: jump pressed while firing and moving → roll instead of jumping. Returns true if a roll started.
   _twinDodge(intent) {
     const a = this.a, w = a.weapon;
@@ -546,6 +619,7 @@ Object.assign(WeaponRunner.prototype, {
     rumble(a, 0.2, 0.25, 90);
     return true;
   },
+  // 【twins 翻滚速度曲线】快起步缓衰减(0.7 倍时长内从 v0 衰减 60%);返回 null 表示不在翻滚
   // twins: horizontal velocity while rolling (fast start, eases out), or null (dualies use dodgeVel(vel))
   dodgeVelocity(out) {
     if (this.dodgeT <= 0) return null;
@@ -553,12 +627,15 @@ Object.assign(WeaponRunner.prototype, {
     const v0 = w.rollDist / (0.7 * w.rollTime);
     return out.copy(this.dodgeDir).multiplyScalar(v0 * (1 - 0.6 * u));
   },
+  // 【剩余翻滚次数(HUD 显示用)】dualies 看 dualRolls;twins 锁定冷却中为 0,否则按
+  //   rollCharges - rollsUsed 计算。
   // rolls left in the chain (HUD): twins (lockout → 0) or dualies
   rollsLeft() {
     const w = this.a.weapon;
     if (w.kind === 'dualies') return this.dualRolls;
     return this.rollLock > 0 ? 0 : (w.rollCharges ?? 0) - this.rollsUsed;
   },
+  // 【强制结束翻滚】大招接管身体/扳机时必须清掉翻滚速度与炮台锁定,不能留下"无人认领"的状态
   // cut any dodge roll / post-roll lock short (a special taking over the body or the trigger mid-roll must not leave
   // the roll velocity or the planted lock running while the runner isn't being updated)
   endDodge() {
@@ -566,6 +643,9 @@ Object.assign(WeaponRunner.prototype, {
     this.dodge = null; this.lockT = 0;
   },
 
+  // 【笔刷(brush,本家)】按住+奔跑=刷地(细而快的长条墨痕+轻微接触伤害,不会一击击杀);
+  //   点按/站定按住=左右交替横扫,甩出一排低平的小飞墨。复用滚筒的 rolling/rollT 字段,
+  //   碾压判定与涂地节奏同理,只是更窄更快。
   // brush: hold fire while running to brush a thin fast trail (light contact damage, never a one-hit splat);
   // tap (or hold while standing) to swipe side to side, flicking a spray of small globs
   _brush(dt, inp, w) {
@@ -626,8 +706,16 @@ Object.assign(WeaponRunner.prototype, {
   },
 });
 
+// ==========================================================================================
+// 【弹道系统 Projectiles】全场唯一实例(G.projectiles):一个对象池 + 一个 InstancedMesh
+//   画尽所有墨滴;另管炸弹(bombs)、雨云(clouds)、光束(beams)、激光瞄准(sights)
+//   与本地玩家的投掷预览弧(arcLine/arcRing)。
+// ==========================================================================================
 // ---------------------------------------------------------------------------------------------- projectiles
 const MAX_BLOBS = 700;
+// 【墨滴实例上限】弹头+卫星尾滴共用这个池;_draw 逼近上限时多余的弹只推进不渲染
+// 【弹丸外观参数表】仅视觉:vis 弹头半径、tail0/tailK 尾部长度、wob/wobF 液体晃动频率、
+//   nose 鼻头压扁、sats 卫星尾滴个数;命中判定尺寸始终读弹体的 'size' 字段,与外观无关。
 // stream-round looks (visual only; hit size stays in 'size'): dualies smaller + snappier, splatling tight and fast
 const LOOK_DUAL_R = Object.freeze({ vis: 0.088, tail0: 0.8, tailK: 1.3, wob: 0.03, wobF: 28, nose: 0.3, sats: 2 });
 const LOOK_DUAL_L = Object.freeze({ vis: 0.088, tail0: 0.8, tailK: 1.3, wob: 0.03, wobF: 28, nose: 0.3, sats: 2 });
@@ -639,6 +727,9 @@ const LOOK_TWIN_PLANT = Object.freeze({ vis: 0.086, tail0: 0.9, tailK: 1.5, wob:
 // satellite droplets trailing each projectile (fractions of the head radius), thinning out down the string
 const SAT_SIZE = [0.46, 0.33, 0.24, 0.17];
 
+// 【墨滴材质】MeshPhysicalMaterial + onBeforeCompile 注入:顶点着色器把单位球捏成泪滴,
+//   片元加"近距抖动剔除"(友弹贴脸不糊屏)与 Fresnel 边缘发光(浅色地面可读);
+//   customProgramCacheKey 固定字符串,保证 three 的程序缓存不 miss。
 // Glossy ink teardrops: a unit sphere (poles on ±Z) deformed per instance in the vertex shader — round, pressure-
 // flattened nose; the back half stretched into a tapering tail (length from speed); low-order liquid wobble — then
 // oriented along the velocity by the instance matrix (uniform scale = head radius). aShape = (tail length in radii,
@@ -682,6 +773,8 @@ function makeBlobMaterial() {
   return mat;
 }
 
+// 【光束条带(ribbon)几何】x∈{-1,1} 为横向、z 0..1 为长度方向的"双面片";顶点着色器绕
+//   自身轴转向镜头。注意:GLSL 模板串内的行注释属于着色器源码,注解一律写在本文件 JS 层。
 // Camera-facing ribbon (x ∈ {-1, 1} across, z 0..1 along +Z) — charger beams and laser sights. The ribbon turns
 // about its own axis to face the camera, so the streak keeps its full width even when seen nearly end-on (your own
 // shot from behind the shoulder). Transform semantics match the old cylinders: position = muzzle, +Z = direction,
@@ -769,10 +862,15 @@ function makeRibbonMaterial(mode) {
   m.color = new THREE.Color();   // compat: fxHooks reads beam.material.color (= team colour × 2.2)
   return m;
 }
+// 【GTAO 豁免门】法线/深度 override(GTAO 等)会把条带画成平直暗条、在光束位置刻出假阴影——
+//   override 激活时清空 drawRange,让这些 pass 跳过条带。
 // Ribbons are drawn camera-facing by their own vertex shader; an override pass (GTAO normals/depth) would draw the raw
 // flat strip instead and carve a false dark occluder line down the beam — so they sit those passes out.
 function ribbonGate(renderer, scene, camera, geometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
 
+// 【弹道系统主体】构造即建:墨滴 InstancedMesh(球几何 + aShape 实例属性 + 实例颜色)、
+//   炸弹几何与按队缓存的材质、光束条带池、泼击命中环(vol 复用环,免每泼分配)、
+//   激光瞄准线表、本地玩家的投掷预览虚线与落点圆环。
 export class Projectiles {
   constructor(scene) {
     this.scene = scene;
@@ -782,6 +880,8 @@ export class Projectiles {
     this.clouds = [];
     this.beams = [];
     // glossy ink teardrops (+ satellite droplets), one instanced draw
+    // 【墨滴 InstancedMesh:全场弹道一次 draw call】球几何极点转到 ±Z 供泪滴形变对齐速度方向;
+    //   aShape 每实例 4 分量(尾长/晃动幅/相位/鼻头),矩阵与颜色都是动态写
     const geo = new THREE.SphereGeometry(1, 14, 12).rotateX(Math.PI / 2);
     this.blobShape = new THREE.InstancedBufferAttribute(new Float32Array(MAX_BLOBS * 4), 4);
     this.blobShape.setUsage(THREE.DynamicDrawUsage);
@@ -822,6 +922,8 @@ export class Projectiles {
     this.cloudGeo = new THREE.IcosahedronGeometry(1, 3);
   }
 
+  // 【清场】换关卡/重开:活跃弹全部还池,场景内的炸弹/雨云/光束/瞄准线移除
+  //   (瞄准线材质需 dispose;sights 是 per-actor 建的,不随池复用)
   clear() {
     for (const p of this.list) this.pool.push(p);
     this.list.length = 0;
@@ -837,13 +939,18 @@ export class Projectiles {
     for (const k in MAIN_KITS) MAIN_KITS[k].clear?.();
   }
 
+  // 【弹被打掉】Mega Stamp 守卫拍落弹道:swap-pop O(1) 摘除并还池;不结算命中也不涂墨
   // a shot knocked out of the air (Mega Stamp guard): gone, no impact, no paint
   removeShot(p) { const i = this.list.indexOf(p); if (i < 0) return; this.list[i] = this.list[this.list.length - 1]; this.list.pop(); this.pool.push(p); }
+  // 【炸弹被拆除】同样 splice 摘除;爆不了的炸弹不产生爆炸
   // a bomb smashed before it goes off: gone, no blast
   defuseBomb(b) { const i = this.bombs.indexOf(b); if (i < 0) return; this.scene.remove(b.mesh); this.bombs.splice(i, 1); }
+  // 【涂地计分】命中涂墨的面积记入 owner 的占地分;特殊期间(sp)的墨不回充大招槽
   // turf from a projectile / bomb: counts for the owner, but ink from a special never charges the special meter
   _credit(o, area) { if (o.sp) o.owner.addTurfNoSpecial(area); else o.owner.addTurf(area); }
 
+  // 【对象池取用】池空才新建(仅首次扩容);取出时清空上一世代的全部可选字段与外观字段,
+  //   杜绝脏数据从弹的"上一世"泄漏到这一世
   _new() {
     const p = this.pool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), start: new THREE.Vector3() };
     // pooled: clear the per-kind optional fields so nothing leaks from the projectile's previous life
@@ -854,6 +961,8 @@ export class Projectiles {
     return p;
   }
 
+  // 【弹入列】所有 fire* 的最后一站:入活跃列表;联机时非幽灵弹上报 nm.recProj,
+  //   其他端按记录重建幽灵弹同步观感(伤害/涂地仍以 owner 端结算为准)
   // every round enters the world here; online, rounds you own are recorded so the other players see them fly
   _push(p) {
     if (p.owner?.remote) p.ghost = true;   // a remote player's round made here (a ghost sub's drop …) is a ghost too
@@ -862,6 +971,9 @@ export class Projectiles {
     if (nm && !p.ghost) nm.recProj(p);
   }
 
+  // 【联机:他端弹】按网络记录重建"幽灵弹"——只飞行与渲染,不涂墨不伤人
+  //   (owner 端的命中与涂地结果单独同步过来);remote 玩家产生的衍生弹(幽灵副武器的
+  //   滴墨等)同样标记 ghost,不再二次上报。
   // ---- online: other players' rounds, bombs and shots, replayed as visual copies (they never paint or hurt anyone —
   // the owner's splats and hits arrive separately)
   ghostProjectile(a, e) {
@@ -874,6 +986,7 @@ export class Projectiles {
     this.list.push(p);
   }
 
+  // 【联机:他端炸弹】复用本端 throwBomb/throwStorm 创建,再覆写位置/速度并标 ghost
   ghostBomb(a, kind, px, py, pz, vx, vy, vz) {
     const s = this.bombs.length;
     if (kind === 'storm') this.throwStorm(a); else this.throwBomb(a);
@@ -884,6 +997,7 @@ export class Projectiles {
     if (b.dir) b.dir.set(vx, 0, vz).normalize();
   }
 
+  // 【联机:他端开火表现】只补音效/枪口闪光/蓄能光束;弹道本体是上面的幽灵弹
   // presentation of someone else's shot (sound + muzzle flash + charger beam); the round itself is a ghost projectile
   ghostFire(a, e) {
     const w = WEAPONS[e.weapon] || a.weapon;
@@ -914,6 +1028,7 @@ export class Projectiles {
     if (near) G.audio?.play('shoot_charger', { pos: m, volume: 0.6, pitch: 1.08 - 0.16 * charge });
   }
 
+  // 【光束条带对象池】空闲复用,不进池才新建;常驻场景、闲置时隐藏(零每发分配)
   // pooled charger beam ribbon (stays in the scene, hidden when idle)
   _beamMesh() {
     let m = this.beamPool.pop();
@@ -925,6 +1040,8 @@ export class Projectiles {
     return m;
   }
 
+  // 【枪口解算】优先角色骨骼枪口;举枪未完成时按 aimReady 权重向"瞄准姿态枪口"插值
+  //   (首发不会从腰间出弹);位置非法/离胸口太远/视线被挡时,退化到"胸口+瞄准方向 0.3 m"的保底点。
   // Where the muzzle is — or, while the gun is still coming up to the aim pose (the first shot of a burst fires on
   // the same frame the trigger is pulled), where it is about to be: shots never leave from the hip. (Degrades to the
   // plain muzzle on a character without aimReady / getAimMuzzle.)
@@ -938,6 +1055,7 @@ export class Projectiles {
     return out;
   }
 
+  // 【瞄准方向】枪口→准星世界点(aimPoint);目标太近(<2 m)或方向背向时退回 aimDir
   // direction from muzzle toward the actor's aim point (falls back to aimDir)
   _aimFrom(a, from, out) {
     out.copy(a.aimPoint).sub(from);
@@ -947,6 +1065,8 @@ export class Projectiles {
     return out;
   }
 
+  // 【散布锥】在垂直于弹道的圆盘内均匀取偏角(√r 抽样保证面积均匀),竖向压扁 0.55 倍:
+  //   横向散布略大于纵向,手感更像喷墨
   _spread(dir, deg) {
     if (deg <= 0) return dir;
     const r = deg * DEG * Math.sqrt(Math.random());
@@ -958,6 +1078,9 @@ export class Projectiles {
     return dir;
   }
 
+  // 【弹道校正(割线迭代)】抬高/压低出射角,让"直线段→重力+阻力"的积分弹道穿过准星点;
+  //   内部 sim 用与 _step 完全相同的积分器(60 Hz 半隐式欧拉),射程内落点即准星;
+  //   目标太近/太远/够不到(残差过大或仰角变化过猛)就保持原方向不动。
   // Raise/lower the launch direction so a gravity shot (straight phase, then gravity + drag — the exact integrator
   // update() uses) passes through `target`. Secant iterations on the launch pitch; no-op beyond maxDist.
   _ballistic(from, dir, target, speed, straight, grav, drag, maxDist) {
@@ -991,6 +1114,8 @@ export class Projectiles {
     return dir.set((dir.x / hdir) * cp, Math.sin(p1), (dir.z / hdir) * cp);
   }
 
+  // 【抛物线求解(水桶用)】从低到高扫描出射角,用与 update() 相同的飞行积分器找第一个
+  //   越过目标高度的最低抛角,再二分收敛;保持原航向,够不到就返回 false 不动方向。
   // Lob solver (bucket): the lowest launch pitch whose arc passes through `target`, found by sweeping pitch with the
   // flight integrator update() uses (gravity + drag from launch) and bisecting the first crossing. Keeps dir's heading;
   // leaves dir alone (returns false) when the target is out of reach.
@@ -1024,6 +1149,8 @@ export class Projectiles {
     return false;
   }
 
+  // 【射击枪出弹】弹道校正对准准星 → 散布锥 → 池取弹体(type 'shot')→ _push 入列并联机上报;
+  //   尾迹从枪口外约 2.5 m 才开始滴墨(不会洒在自己脚上)
   fireShooter(a, w, spreadDeg) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._aimFrom(a, m, _dir);
@@ -1045,6 +1172,8 @@ export class Projectiles {
     if (wr.rumbleT <= 0) { wr.rumbleT = 0.09; rumble(a, 0.02, 0.1, 40); }
   }
 
+  // 【左手枪口】双持武器用:骨骼若暴露独立左手枪口则直接用;否则取右手枪口沿身体中线镜像
+  //   (两支手枪对称持握),镜像后再做视线校验。
   // Left-hand muzzle for dual wield: the rig's own left pistol when it exposes one, else the right muzzle mirrored
   // across the kid's midline (actor frame) — the pistols are held symmetrically.
   _muzzleHand(a, hand, out) {
@@ -1064,6 +1193,8 @@ export class Projectiles {
     return out;
   }
 
+  // 【通用流弹】射击枪家族(dualies/splatling/spinner/twins)共用的单发流程:
+  //   弹道校正→散布→池取弹体(带各武器外观表 look)→_push→枪口音效/闪光;返回最终方向供事件用
   // one stream round (shooter-family): ballistic correction onto the crosshair, spread cone, teardrop look
   _fireRound(a, w, spreadDeg, m, look, snd, sndVol, pitch) {
     const dir = this._aimFrom(a, m, _dir);
@@ -1081,6 +1212,7 @@ export class Projectiles {
     return dir;
   }
 
+  // 【dualies 单发】左右手交替(hand 0/1 换枪口、换音色),fireInterval 与锁定射速分流
   fireDualies(a, w, spreadDeg, hand) {
     const m = this._muzzleHand(a, hand, _v.set(0, 0, 0));
     const dir = this._fireRound(a, w, spreadDeg, m, hand ? LOOK_DUAL_L : LOOK_DUAL_R, 'shoot_dualies', 0.5, hand ? 1.05 : 0.97);
@@ -1089,6 +1221,7 @@ export class Projectiles {
     if (wr.rumbleT <= 0) { wr.rumbleT = 0.08; rumble(a, hand ? 0.01 : 0.03, hand ? 0.1 : 0.05, 35); }
   }
 
+  // 【splatling 单发】墨流中的一发(外观更细更快,LOOK_SPLAT)
   fireSplatling(a, w, spreadDeg) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._fireRound(a, w, spreadDeg, m, LOOK_SPLAT, 'shoot_splatling', 0.46, 1);
@@ -1148,6 +1281,8 @@ export class Projectiles {
     rumble(a, 0.18, 0.3, 90);
   }
 
+  // 【泼击落地溅射】主墨团砸中点附近的敌人(需视线)吃溅射伤害;同一泼(vol 记录环)对每个
+  //   目标只结算一次;顺带结算副武器/大招物体与 boss。满充能的落地才有大圈特效。
   // slosher head glob landing: a heavy splash that also catches anyone standing next to where it lands
   _sloshSplash(p, at, direct) {
     const w = WEAPONS[p.wid] || WEAPONS.slosher;
@@ -1170,6 +1305,8 @@ export class Projectiles {
     }
   }
 
+  // 【爆破枪(blaster)】直线大墨球(type 'blast',不吃重力):命中即炸(直击+空爆溅射),
+  //   射程尽头自爆;后坐力事件只给本地玩家(一次干净的后坐力,不做 trauma 震屏)。
   fireBlaster(a, w, spreadDeg) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._aimFrom(a, m, _dir);
@@ -1191,6 +1328,8 @@ export class Projectiles {
     rumble(a, 0.28, 0.4, 95);
   }
 
+  // 【大招/自定义武器出弹口】从显式枪口+方向发弹(射击型或爆破型),specials 的枪都走这里;
+  //   look 可覆盖默认泪滴外观,weaponId 决定击杀播报的署名
   // Specials' guns: a shooter-style shot or a blaster-style blast from an explicit muzzle + direction.
   // o: { type: 'shot'|'blast', speed, damage, straight, range, radius (paint), size, trailEvery, trailRadius, grav, drag,
   //      burst: { radius, splashRadius, dmgMax, dmgMin } (blast only), weaponId, look: { vis, tail0, tailK, wob, wobF,
@@ -1212,6 +1351,8 @@ export class Projectiles {
     return p;
   }
 
+  // 【滚筒甩墨】沿前方扇形抛出一排墨滴(type 'drop'):中线大而快、边缘小而慢(仅视觉),
+  //   带近/远两段伤害(dmgFar 距离衰减)
   fireFlick(a, w) {
     const m = _v.copy(a.pos); m.y += 1.0;
     const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
@@ -1235,6 +1376,9 @@ export class Projectiles {
     rumble(a, 0.3, 0.32, 110);
   }
 
+  // 【蓄能狙击出弹:即时命中,不走弹道】按充能插值射程/伤害(满充能吃满伤);依次过:
+  //   世界 raycast → 副武器墨幕/大招物体挡枪 → 沿线最近敌人(线段-胶囊)→ boss;
+  //   沿途按步进向地面泼一条墨线(lineSplat),命中点补一坨;光束视觉复用 ribbon 条带池。
   fireCharger(a, w, charge) {
     const m = this._muzzle(a, _v.set(0, 0, 0)).clone();
     const dir = this._aimFrom(a, m, _dir).clone();
@@ -1302,6 +1446,9 @@ export class Projectiles {
     rumble(a, 0.12 + charge * 0.45, 0.2 + charge * 0.35, 80 + charge * 90);
   }
 
+  // 【水桶泼墨】默认沿"瞄准抬高一个抛角"的弧线甩(能越过掩体);准星点在射程内时改用
+  //   _lobAim 求解,让 lead 团正好落在准星上(够不到则保持默认弧)。一串墨团共享一个
+  //   volley 集合:一泼之内只有第一颗算直击,其余照样涂地。
   // bucket: a volley of blobs thrown along the aim, lobbed upward so it clears cover; the lead blob carries most of
   // the damage and only the first blob of a volley to reach an enemy hurts them (the rest still paint)
   fireSlosh(a, w) {
@@ -1331,6 +1478,8 @@ export class Projectiles {
     rumble(a, 0.2, 0.25, 90);
   }
 
+  // 【纺锤流弹】蓄力释放后的连发小快弹;弹速/直线段/射程都按本次蓄力 power 插值;
+  //   音效隔发抽取(每 2 发 1 次)避免高频刺耳
   // spinner stream: small fast shots; reach and speed follow the burst's charge
   fireStream(a, w, power, spreadDeg) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
@@ -1352,6 +1501,8 @@ export class Projectiles {
     if (wr.rumbleT <= 0) { wr.rumbleT = 0.07; rumble(a, 0.03, 0.12, 40); }
   }
 
+  // 【twins 单发】side 交替左右枪(-1/1),0=翻滚后的扎根双持(双枪并拢:更快更直更远);
+  //   有双持骨骼时每侧从自己的手枪出弹,否则单枪口做左右偏移/镜像折中
   // twin pistols: side = -1 / 1 alternates left and right guns (0 = both guns together after a roll)
   fireTwin(a, w, spreadDeg, side) {
     let m;
@@ -1391,6 +1542,8 @@ export class Projectiles {
     if (wr.rumbleT <= 0) { wr.rumbleT = 0.08; rumble(a, 0.02, 0.09, 35); }
   }
 
+  // 【笔刷横扫】刷头 low 扫过前方弧线上逐点甩出小飞墨(type 'drop'):每滴从弧上自己的
+  //   位置出发,向外+沿扫向飞出,低而平;side 决定从左往右还是从右往左。
   // brush swipe: globs flung off the brush head as it sweeps sideways low across the front — each leaves from its point
   // on the arc, flying outward and along the sweep, low and flat (side +1 sweeps right → left)
   fireSwipe(a, w, side) {
@@ -1416,6 +1569,8 @@ export class Projectiles {
     rumble(a, 0.08, 0.14, 50);
   }
 
+  // 【零散墨滴】洒水器等副武器/大招喷出的 loose 弹(type 'drop'):无直线段、固定重力,
+  //   伤害不衰减;weaponId 指定击杀播报署名(如 'sprinkler')
   // a loose ink drop (sprinkler spray): owner's team, damage with no falloff
   spawnDrop(owner, pos, vx, vy, vz, o = {}) {
     const p = this._new();
@@ -1428,6 +1583,11 @@ export class Projectiles {
     this._push(p);
   }
 
+  // ========================================================================================
+  // 【副武器:炸弹】本文件只实现 Splat 炸弹;其余副武器走 G.subs(kit 半接管)。
+  //   炸弹是带引信的场景 Group:出手旋转飞行→落地反弹→平放后点亮引信→爆炸
+  //   (涂地+视线衰减范围伤害+震屏+手柄震动)。
+  // ========================================================================================
   // ---- bombs
   _bombMat(team) {
     const key = team;
@@ -1440,12 +1600,16 @@ export class Projectiles {
     for (const [team, m] of this.bombMatCache) { m.color.copy(G.teamColors[team]); m.emissive.copy(G.teamColors[team]); }
   }
 
+  // 【投掷初速】在瞄准俯仰基础上抬高约 0.28 rad(往上抛),并叠加 0.4 倍持投者速度
+  //   (跑动中投得更远);垂直分量再补 +1.5 的出手上挑
   throwVelocity(a, speed, out) {
     const pitch = clamp(a.aimPitch + 0.28, -0.3, 1.1);
     const cp = Math.cos(pitch);
     return out.set(Math.sin(a.aimYaw) * cp * speed + a.vel.x * 0.4, Math.sin(pitch) * speed + 1.5, Math.cos(a.aimYaw) * cp * speed + a.vel.z * 0.4);
   }
 
+  // 【投 Splat 炸弹】组一个"墨球+引信盖"的 Group 出手;body 材质按队缓存克隆,引信
+  //   闪烁时改自发光。sp 标记:大招(炸弹连发)投出的不耗墨、不触发副武器 kit。
   throwBomb(a) {
     const b = SUB.bomb;
     const group = new THREE.Group();
@@ -1464,6 +1628,7 @@ export class Projectiles {
     emit('bomb:throw', { actor: a, pos: pos.clone(), team: a.team, radius: SUB.bomb.radius });
   }
 
+  // 【投雨云弹(大招 Ink Storm)】更大的墨球,落地(或超时)即化成降雨云
   throwStorm(a) {
     const sp = SPECIALS.storm;
     const group = new THREE.Group();
@@ -1478,6 +1643,8 @@ export class Projectiles {
     if (G.netm && !a.remote) G.netm.recBomb(this.bombs[this.bombs.length - 1]);
   }
 
+  // 【炸弹爆炸】中心一坨+周围 5 小坨涂地;副武器/大招物体范围伤害;范围内敌人按距离
+  //   平方衰减吃伤害(需视线);震屏+近处手柄震动;boss 吃 splash
   _explodeBomb(b) {
     const s = SUB.bomb;
     const c = b.pos;
@@ -1506,6 +1673,8 @@ export class Projectiles {
     G.boss?.splash(b.owner, c, s.radius, s.damageMax, s.damageMin, 'bomb');
   }
 
+  // 【雨云生成】贴地悬高约 4.6 m 的"积雨云"Group(底部深、顶部浅的蓬松球堆),带环境
+  //   雨声循环;出生时雷声音效+事件。云的实际降雨在 _updateClouds。
   _spawnCloud(b) {
     const sp = SPECIALS.storm;
     const g = G.physics.raycast(_v.copy(b.pos).setY(b.pos.y + 0.5), DOWN, 12, _hit);
@@ -1541,6 +1710,12 @@ export class Projectiles {
     emit('storm:start', { pos: group.position.clone(), team: b.team, actor: b.owner, radius: sp.radius });
   }
 
+  // ========================================================================================
+  // 【伤害结算唯一入口(联机路由核心)】shouldApplyHit 三态:
+  //   local —— 本端就是权威,直接 victim.damage();send —— 只上报(nm.sendHit),
+  //   击杀以对方端确认的 splat 为准;drop —— 丢弃(对方已自行判定/不同步)。
+  //   附带命中音效(按伤害量调音量/音高)与本地手柄震动(击杀更重)。
+  // ========================================================================================
   // ---- damage routing
   applyHit(attacker, victim, dmg, weaponId) {
     if (!victim.alive || victim.team === attacker.team) return;
@@ -1560,6 +1735,9 @@ export class Projectiles {
   }
 
   // ---- per-frame
+  // 【每帧推进(主循环)】先让 kit 武器 tick 自己的世界对象;倒序遍历活跃弹,_step 返回
+  //   true 即 swap-pop 摘除还池(免 splicing 位移);幽灵弹推进期间对联机静音计数
+  //   (nm.mute++/--),保证本端渲染幽灵弹不会误发涂地/音效广播。最后推进炸弹/雨云/光束并重绘墨滴。
   update(dt) {
     for (const k in MAIN_KITS) MAIN_KITS[k].tick?.(dt);   // kit weapons' own world objects (kits/*.js)
     const list = this.list;
@@ -1579,6 +1757,19 @@ export class Projectiles {
     this._draw();
   }
 
+  // ========================================================================================
+  // 【单弹单帧推进(热路径)】顺序:
+  //   ① 积分:直线段(straightTime 内不吃重力/阻力)→ 重力+阻力,半隐式欧拉
+  //   ② 角色命中:AABB 粗筛 → 线段-胶囊扫掠(对"视觉身体",所见即所中);
+  //      伤害三段修正——drop 型按飞行距离衰减、bucket 居高临下衰减(volley/vol 每泼每目标一次);
+  //      命中即伤害+特效,'blast' 追加空爆、'slosh' 主团追加落地溅射
+  //   ③ 拦截:副武器墨幕/装置与大招物体(bubbles/tanks 等)挡弹
+  //   ④ boss 命中球(HULLBREAKER 及其小蟹)
+  //   ⑤ 世界线段碰撞 → _impact 涂地
+  //   ⑥ 沿途滴墨(trailEvery 按飞行距离计)
+  //   ⑦ 收尾:寿命尽(blast 空爆)/落水(低于水面 1.8 m)
+  //   返回 true 表示该弹此生结束。
+  // ========================================================================================
   // one round, one frame; true = it's done
   _step(p, dt) {
     {
@@ -1647,6 +1838,9 @@ export class Projectiles {
     }
   }
 
+  // 【命中 boss 结算】与角色命中平行的分支(bh 来自 boss.segHit):每泼每部位只记一次
+  //   (vol.hits);滚筒/笔刷的一片甩墨对巨型躯干只全额记第一滴(0.3 s 内的后续滴降为
+  //   12% 蹭血),避免一扇形全额灌爆;命中特效/空爆/溅射与角色分支一致
   // a blob / drop / blast connecting with the boss or a crablet (bh from boss.segHit)
   _bossImpact(p, bh) {
     const at = (this._bossAt || (this._bossAt = new THREE.Vector3())).copy(bh.point), target = bh.target;
@@ -1664,6 +1858,9 @@ export class Projectiles {
     if (p.type === 'slosh' && p.head) this._sloshSplash(p, at, 'boss');
   }
 
+  // 【命中世界:涂地结算】落点沿法线抬高 0.14 m 防 z-fighting;半径带随机;面积经 _credit
+  //   计分;slosher 波(带 vol)落地涂成沿行进方向的条带,主团再补一次落地溅射;
+  //   最后按弹型追加空爆(blast)/特效/近处音效
   _impact(p, hit) {
     _v.copy(hit.point).addScaledVector(hit.normal, 0.14);
     _dir.copy(p.vel).normalize();
@@ -1686,6 +1883,8 @@ export class Projectiles {
     if (p.type === 'blast') this._blastBurst(p, hit.point, null);
   }
 
+  // 【爆破(blast)空爆结算】爆炸特效+近处音效;地面补一坨墨;范围内敌人按距离插值
+  //   衰减吃溅射(需视线),direct 是已吃直击的受害者要排除;副武器/大招物体与 boss 一并结算
   _blastBurst(p, at, direct) {
     const b = p.burst;
     const w = b ? { burstRadius: b.radius, impactRadius: b.paint ?? b.radius * 0.6, splashRadius: b.splashRadius, splashDamageMax: b.dmgMax, splashDamageMin: b.dmgMin } : WEAPONS.blaster;
@@ -1708,6 +1907,9 @@ export class Projectiles {
     if (direct !== 'boss') G.boss?.splash(p.owner, c, w.splashRadius, w.splashDamageMax, w.splashDamageMin, 'blaster');
   }
 
+  // 【炸弹推进】重力+线段碰撞:落地反弹(法向反弹 1.35 倍、切向按地面/墙面分别衰减),
+  //   平放(法向朝上)才点亮引信;引信期间自发光闪烁+渐快 beep+轻微鼓胀,到时爆炸;
+  //   雨云弹落地即化云;落水即除;boss 战中炸弹从 HULLBREAKER 壳上弹开。
   _updateBombs(dt) {
     for (let i = this.bombs.length - 1; i >= 0; i--) {
       const b = this.bombs[i];
@@ -1757,6 +1959,9 @@ export class Projectiles {
     }
   }
 
+  // 【雨云推进】0.5 s 生长(缓出)+ 末 0.6 s 淡出;随投掷方向漂移;持续期间:
+  //   环境雨粒子 + 每 0.045 s 向地面滴一滴墨(涂地计分)+ 对下方敌人视线内持续掉血
+  //   (联机时各端只对自己的玩家结算)+ boss 吃雨。幽灵云只演外观不结算。
   _updateClouds(dt) {
     const sp = SPECIALS.storm;
     for (let i = this.clouds.length - 1; i >= 0; i--) {
@@ -1794,6 +1999,9 @@ export class Projectiles {
     }
   }
 
+  // 【光束/激光推进】已发射的光束:随寿命变细(只细不粗)到点后回收进条带池;
+  //   另外给每个正在蓄能的 charger 维护一条激光瞄准线(暴露敌方狙击手的瞄准方向;
+  //   spinner/splatling 用马达音与武器计量条作提示,不出瞄准线)。
   _updateBeams(dt) {
     for (let i = this.beams.length - 1; i >= 0; i--) {
       const b = this.beams[i];
@@ -1837,6 +2045,9 @@ export class Projectiles {
     }
   }
 
+  // 【投掷预览弧(仅本地玩家按住副键)】用与 _updateBombs 相同的积分器(60 Hz 半隐式
+  //   欧拉、每 2 步一个顶点)模拟落点,命中地面画落点圆环;墨不足时整条线变灰。
+  //   放置类/自画瞄准线的 kit 副武器(noArc)不显示。
   // bomb/special throw arc preview (local player holding the sub button)
   updateArc(a, show) {
     const sub = (a && a.specialActive && a.specialActive.bomb) || (a && a.sub) || SUB.bomb;
@@ -1870,6 +2081,12 @@ export class Projectiles {
     this.arcRing.scale.setScalar(1 + Math.sin(G.time * 8) * 0.06);
   }
 
+  // ========================================================================================
+  // 【渲染:全场墨滴一次 draw call】每帧把活跃弹写进唯一 InstancedMesh:
+  //   每颗弹 = 1 个弹头实例(速度对齐 Z 轴、缩放到弹头半径;出膛瞬间有"喷射"膨胀)
+  //   + sats 个卫星尾滴实例(沿尾迹方向逐颗缩小、摆动、随弹龄淡出);blaster 爆前鼓胀。
+  //   矩阵/实例颜色/aShape 全量重写后统一打 needsUpdate。
+  // ========================================================================================
   // Every projectile = a glossy teardrop head (tail length from its speed, liquid wobble, a fat "squirt" pop as it
   // leaves the muzzle) + a string of satellite droplets that sway behind it and close up as it slows. Blaster balls
   // swell and jiggle in the last moments before their mid-air burst.

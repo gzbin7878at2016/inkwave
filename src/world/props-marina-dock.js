@@ -8,11 +8,26 @@
 //
 // Signage uses 3D channel letters from a small stroke font (below): bevelled, lit by the sun, cached per glyph.
 
+// ============================ 中文导读 ============================
+// 【文件性质】Halyard Marina(帆船码头)码头/岸侧道具包,marina 系列外挂包之一,由 props.js 注册进 PropKit;
+//   具体摆放数据在 DRESSING.halyard(src/world/dressing.js)。机制详见 docs/ASSETS-WEAPONS.zh-CN.md §5.2。
+// 【注册内容】码头沿口(桩柱/护舷木/碰垫/泳梯)、加油机、储物箱、泵出/供水站、船台垫木、码头板条箱、
+//   燃料小屋、FUEL DOCK 高杆招牌、游艇会、船屋、港口办公室、咖啡座、导览图、皮划艇架、岸电桩、
+//   系船柱灯、船台吊车、盖布船、脚手架、工作台、港口灯塔、防波堤、航道标、栈桥栏杆、大台阶栏杆等。
+// 【坐标约定】米制,Y 向上,pos = 道具基点,rotY 绕局部 +Z("正面")旋转;墙面件以局部 z=0 为墙面并朝 +Z 凸出;
+//   码头沿口件从甲板边 pos 出发,沿局部 +X 延伸 length,水在局部 +Z(海平面 y = -1.6,常量 WATER)。
+// 【构建体系】全部由几何原语(chamferBox / lathe / tube / extrude + 本文件自建的 GB 微型构建器)程序化生成,
+//   无外部模型与贴图;招牌文字用自研描边字体挤出成 3D 槽型字,可按字形缓存、可发光(lit)。
+// 【碰撞约定】B.col 注册 AABB 碰撞盒:默认实体盒;{ rail: true } 只挡人(子弹/墨/鱿鱼可穿,也没人站上);
+//   { roof: true } 为禁入顶面(站上去会滑走)。与关卡面采样/导航避让相关的工程要点在各函数处均有中文注释。
+// 【性能要点】NS(mat) 无阴影材质别名(见下方说明);tpl() 按参数键缓存几何体;微小零件一律用 pbox 单位盒缩放。
+
 export function registerMarinaDock(D, H) {
   const { THREE, col, shade, mixc, chamferBox, latheGeo, tubeGeo, extrudeGeo, rcylProf, flangeProf, arcPts, woodCrate, drum, pallet, rod, wheel, TIRE, LIFERING, PI, TAU, HP, P3 } = H;
 
   // ------------------------------------------------------------------------------------------ local palette
   // muted, weathered marina tones (the team inks stay the loudest thing on screen)
+  // 【调色板 K】低饱和的风化码头色调——刻意压暗,保证画面上最抢眼的是各队墨弹颜色
   const K = {
     tar: '#2e2a27', pile: '#8b7a67', pileLt: '#a3927b', endgrain: '#b9a684', whaler: '#86745f', whalerDk: '#6f5f4e',
     mussel: '#262b35', weed: '#56683b', rope: '#cdb894', ropeDk: '#a88f68', ropeBlue: '#3f5a7a',
@@ -24,6 +39,9 @@ export function registerMarinaDock(D, H) {
     red: '#c9453b', green: '#3d8a5a', white: '#f2eee6', lamp: '#ffe2a8', led: '#ff5a3c', ledG: '#63e08a',
   };
 
+  // 【无阴影别名 NS】看不到自身阴影的部分(甲板下桩段、水线附着物、螺栓、扁平字母、贴墙饰条、远景)
+  // 一律走无阴影材质:优先用套件的 H.noShadow 钩子;否则退回同材质 '<mat>_ns' 别名桶——与同名桶合并渲染,
+  // 仅跳过投影 pass。glow/blob 桶与已是别名的材质直接原样返回。无头套件保持原桶即可。
   // Parts whose shadow can't be seen (sub-deck piles, waterline growth, bolts, flat lettering, trims flush on a wall,
   // distant scenery) go through NS(mat): the kit's no-shadow hook when it offers one (H.noShadow), otherwise the same
   // `<mat>_ns` alias bucket the vessels pack uses (the kit decides castShadow per bucket key; an alias of the same
@@ -40,7 +58,9 @@ export function registerMarinaDock(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ geometry helpers
+  // 【几何助手区】
   // tiny builder (same contract as props.js GB: triangles auto-orient to the supplied outward normals)
+  // 【微型构建器 GB】契约同 props.js:顶点自带法线/顶点色/uv,tri() 按外法线方向自动确定三角形绕向
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
@@ -65,6 +85,7 @@ export function registerMarinaDock(D, H) {
       return g;
     }
   }
+  // 【几何模板缓存】按参数键缓存几何体,全场景同类小件只构建一次(tpl)
   const TPL = new Map();
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
@@ -73,6 +94,8 @@ export function registerMarinaDock(D, H) {
   const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
   const smooth = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 
+  // 【子道具组合 sub】在当前局部坐标系内以 (x,y,z)/ry 嵌入另一种已注册道具,并把其碰撞盒旋转平移回本坐标系
+  // (B.col 盒是道具局部的,嵌套构建后必须重新映射;末尾元素保留 roof / rail 标志位)。
   // Compose another prop type inside this one (at x,y,z / ry in the current local frame) with its colliders carried
   // along (B.col boxes are prop-local, so nested builds must be re-mapped).
   function sub(B, type, x, y, z, ry, opts = {}) {
@@ -94,13 +117,17 @@ export function registerMarinaDock(D, H) {
       B.cols[i] = b.length > 6 ? [x0, b[1] + y, z0, x1, b[4] + y, z1, b[6]] : [x0, b[1] + y, z0, x1, b[4] + y, z1];   // keep roof / rail flags
     }
   }
+  // 【碰撞盒助手 colBox】局部坐标下以 中心点(x,z)+尺寸(w,h,d) 注册 AABB
   // local-frame collider helper: centre + size
   const colBox = (B, x, y, z, w, h, d) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);
 
   // ------------------------------------------------------------------------------------------ stroke font
+  // 【描边字体】自研圆头粗体无衬线字库(字帽高 1):中心线笔画 + 圆端帽/圆转角,正面倒角、背面平整,
+  // 3D 槽型字直接可用于招牌;字形几何按 (字,线宽,厚度,倒角,段数) 缓存。
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 【字形表 GL】每个字形 = [字面宽度, 若干笔画…]:开笔画是折线点列,闭环笔画给 { c: 点列 }
   const GL = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
@@ -147,6 +174,8 @@ export function registerMarinaDock(D, H) {
   const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
 
+  // 【笔画带 ribbon】把一条折线/闭环挤出成带状实体:正面平贴在 z=d(倒角 b 过渡到侧壁),侧壁落到 z0;
+  // b=0 无倒角;d=z0 时退化为纯平面(喷漆/镂空字:只有正面)。
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
   function ribbon(g, pts, closed, hw, b, d, z0) {
@@ -176,6 +205,7 @@ export function registerMarinaDock(D, H) {
       for (let j = 0; j < np; j += 2) g.quad(A[j], A[j + 1], Bq[j + 1], Bq[j]);
     }
   }
+  // 【圆盘 disc】笔画端帽/转角的圆片:a0..a1 为整圆,或朝外露出的半圆(开口笔画端头)
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
   function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
@@ -194,6 +224,8 @@ export function registerMarinaDock(D, H) {
       if (walls) g.quad(wt[k], wb[k], wb[j], wt[j]);
     }
   }
+  // 【字形几何 glyph】字帽单位(baseline y=0、cap y=1,背面 z=0、正面 z=dep),返回 { geo, adv 字宽 };
+  // dep=0 → 平面喷漆字(只出面);ds = 圆帽段数。锐角转折处拆段并在交点画整圆连接。
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
   function glyph(ch, wt, dep, bev, ds = 10) {
@@ -236,6 +268,8 @@ export function registerMarinaDock(D, H) {
     });
   }
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
+  // 【排字 letters】在当前坐标系内铺一行朝 +Z 的字(凸字或 flat 平面漆字),返回行宽(米);
+  // o.lit 时凸字正面再贴一层微凸的灯面(见下)。
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
   function letters(B, str, o = {}) {
@@ -252,6 +286,7 @@ export function registerMarinaDock(D, H) {
       if (gi.geo) B.add(flat || h < 0.2 ? NS(m) : m, gi.geo, o.c ?? K.club, (o.x ?? 0) + x, o.y ?? 0, o.z ?? 0, { s: h, sz: flat ? 1 : h, glow: o.glow, ao: false });
       // lit channel letters: an illuminated acrylic face (flat, unlit-shaded) just proud of the raised letter's face, so
       // the sign reads as switched on at dusk and as a crisp lit sign by day
+      // 【发光字】凸字正面再叠一层微凸的亚克力灯面(glow 桶,无光照着色):黄昏读作"通电",白天读作清晰的灯箱字
       if (gi.geo && o.lit) {
         const fg = glyph(ch, wt, 0, 0, ds);
         if (fg.geo) B.add(NS('glow'), fg.geo, o.litC ?? o.c ?? K.clubGold, (o.x ?? 0) + x, o.y ?? 0, (o.z ?? 0) + dep * h + 0.004, { s: h, sz: 1, glow: o.lit, ao: false });
@@ -261,6 +296,7 @@ export function registerMarinaDock(D, H) {
     return W;
   }
 
+  // 【七段数码管】单元格 0.62×1、略斜体:点亮段走 glow 桶,未点亮的"幽灵 8"压在 paint 桶垫底
   // 7-segment LED digits (unit cell 0.62 × 1, slight italic): lit segments on 'glow', the unlit "ghost 8" on 'paint'
   const SEG7 = { a: [[0.1, 1], [0.46, 1]], b: [[0.53, 0.94], [0.53, 0.56]], c: [[0.53, 0.44], [0.53, 0.06]], d: [[0.1, 0], [0.46, 0]], e: [[0.03, 0.44], [0.03, 0.06]], f: [[0.03, 0.94], [0.03, 0.56]], g: [[0.1, 0.5], [0.46, 0.5]] };
   const DIG = ['abcdef', 'bc', 'abged', 'abgcd', 'fgbc', 'afgcd', 'afgedc', 'abc', 'abcdefg', 'abcdfg'];
@@ -278,6 +314,7 @@ export function registerMarinaDock(D, H) {
       return g.geo();
     });
   }
+  // 【LED 数字行 ledText】如 '1.89'('.' 归前一位数字);h = 字高,面朝 +Z
   // a row of LED digits, e.g. '1.89' (the '.' belongs to the digit before it); h = digit height, faces +Z
   function ledText(B, str, x, y, z, h, c = K.led, glow = 2.4) {
     let cx = x;
@@ -291,12 +328,15 @@ export function registerMarinaDock(D, H) {
     }
     return cx - x;
   }
+  // 【迷你盒 pbox】无倒角单位立方体(12 三角形)缓存,专给微小零件,用 sx/sy/sz 缩放
   // plain (unbevelled) box for tiny parts: 12 triangles
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
 
   // ------------------------------------------------------------------------------------------ pier timber
+  // 【码头木结构】桩柱、水线贻贝裙、缠绳、系缆桩、充气碰垫、泳梯等甲板沿口小件;水面高度常量 WATER = -1.6
   const WATER = -1.6;
+  // 【桩柱几何 pileGeo】焦油双色调烘焙:溅水区以下焦油色、以上风化灰棕带竖向木纹,桩顶切面端纹更浅
   // Tarred timber pile, baked two-tone: tar below the splash zone, weathered grey-brown above with vertical grain
   // streaks, lighter end grain on the cut top. Local origin at the pile axis, y = world height.
   function pileGeo(top, r, seg, seed) {
@@ -322,6 +362,7 @@ export function registerMarinaDock(D, H) {
       return g;
     });
   }
+  // 【贻贝裙 musselGeo】水线上的一圈疙瘩状贻贝/藤壶附着带:蓝黑壳块带浅色藤壶斑点,顶部收紧贴着水线
   // lumpy mussel collar at the waterline: blue-black shell clumps with pale barnacle flecks, tucked tight at the top
   function musselGeo(r, seg, seed) {
     return tpl(['mussel', r, seg, seed % 4].map(kf).join('|'), () => {
@@ -347,6 +388,7 @@ export function registerMarinaDock(D, H) {
       return g.geo();
     });
   }
+  // 【缠绳 wrapGeo】绕桩的螺旋绳圈(局部原点在桩轴/最底圈处),tubeGeo 扫出
   // rope turns wrapped round a pile (helix), local origin at the pile axis / bottom turn
   function wrapGeo(r, turns, rr, radial) {
     return tpl(['wrap', r, turns, rr, radial].map(kf).join('|'), () => {
@@ -355,6 +397,7 @@ export function registerMarinaDock(D, H) {
       return tubeGeo(pts, rr, radial);
     });
   }
+  // 【桩柱 pile】组装件:桩身(带帽时 wood 桶投影,否则 NS 无阴影)+ 水线贻贝裙 + 可选缠绳(wraps 圈数、wrapY 高度)与镀锌桩帽(cap)
   function pile(B, x, z, top, r, o = {}) {
     const seg = Math.max(5, B.seg(o.seg ?? (o.cap ? 7 : 6))), seed = Math.floor(B.r(0, 97));
     B.add(o.cap ? 'wood' : NS('wood'), pileGeo(top, r, seg, seed), 'white', x, 0, z, { ry: B.r(0, TAU), ao: false });
@@ -365,6 +408,7 @@ export function registerMarinaDock(D, H) {
     }
   }
 
+  // 【系缆桩 cleat】不锈钢羊角桩 + 底板(长度沿局部 X),pos = 甲板点
   // stainless horn cleat on a base plate (length along local X), pos = deck point
   function cleat(B, x, y, z, ry, L = 0.3, c = K.stainless) {
     B.push(x, y, z, ry);
@@ -376,6 +420,8 @@ export function registerMarinaDock(D, H) {
     B.pop();
   }
 
+  // 【碰垫 fender】黑色圆柱形(充气)碰垫,横挂时轴沿局部 X;由缆绳吊在甲板沿口(vert 竖挂),
+  // 绳路上翻护舷木面、越过甲板边、系到甲板系绳环(tie)。
   // black cylindrical (inflatable) fender, axis along local X when horizontal; hangs by a line from the deck edge
   function fender(B, x, y, z, o = {}) {
     const L = o.len ?? 0.62, r = o.r ?? 0.11, vert = !!o.vert, c = o.color ?? K.fender;
@@ -394,6 +440,7 @@ export function registerMarinaDock(D, H) {
     B.cyl(NS('metal'), K.stainless, 0.035, 0.008, tie[0], 0.004, tie[2], { seg: 8 });
   }
 
+  // 【泳梯 swimLadder】不锈钢泳梯,装在平板立面(z=0 为立面、水在 +Z),抓握拱圈翻过甲板边
   // stainless swim ladder on a slab face (face at z = 0, water +Z), grab hoops over the deck edge
   function swimLadder(B, x, o = {}) {
     const W = 0.46, z = 0.1, bot = -2.25, hoop = o.hoop ?? 0.78, c = K.stainless;
@@ -413,6 +460,8 @@ export function registerMarinaDock(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ pier edge run
+  // 【道具 pieredge:码头沿口】沿 +X 的码头/岸壁沿口装饰(立面 z=0、水在 +Z、甲板面 y=0):
+  // 焦油桩+贻贝裙+缠绳、风化护舷木、可选系缆桩/碰垫/泳梯、橡胶 D 型护舷条;outer 模式桩柱高出甲板并带镀锌帽(仅竞技场周界)。
   D.pieredge = {
     desc: 'Pier / quay edge dressing along +X (slab face at z = 0, water on +Z, deck top y = 0): tarred timber fender piles with mussel line + rope wraps, weathered timber whaler with bolts, optional cleats, black cylinder fenders, a rubber D-fender strip, swim ladders. outer: piles rise above deck with galvanised caps (arena perimeter only).',
     params: { length: 'm (8)', outer: 'bool tall piles', spacing: 'pile spacing m (3.4)', s0: 'first pile offset (0.3)', s1: 'last pile offset (0.3)', skip: '[[s0,s1]] no piles/whaler', cleats: '[s] cleat positions', fenders: '[s] hung fenders', ladders: '[s] swim ladders', dfender: 'rubber strip', ext0: 'whaler extension at start (0)', ext1: 'at end (0)' },
@@ -420,6 +469,7 @@ export function registerMarinaDock(D, H) {
     build(B, o) {
       B.aoBase = null;
       const L = o.length ?? 8, outer = !!o.outer, sp = o.spacing ?? (outer ? 4.4 : 4.6), s0 = o.s0 ?? 0.3, s1 = o.s1 ?? 0.3;
+      // 【避让采样 skip】skip = [[s0,s1]] 禁布区间(台阶口、下水坡口等):桩和护舷木都要跳过这些开口
       const skip = o.skip || [], inSkip = (a, b = a) => skip.some(([p, q]) => b > p && a < q);
       const r = outer ? 0.17 : 0.155, zc = 0.1 + r * 0.92, top = outer ? 0.82 + B.r(-0.04, 0.05) : -0.06;
       // piles
@@ -432,6 +482,7 @@ export function registerMarinaDock(D, H) {
         const tp = outer ? top + B.r(-0.05, 0.05) : top;
         pile(B, s, zc, tp, r, { wrap: o.wraps === false ? 0 : (outer ? i % 5 === 1 : i % 5 === 2) ? 2 : 0, wrapY: outer ? 0.16 : -0.64, cap: outer });
       }
+      // 【护舷木 whaler】顶部横木按板材长度分段(错缝平接),每根桩处及桩间打螺栓
       // whaler (top timber) in board lengths with butt joints, bolts at every pile and between
       const e0 = o.ext0 ?? 0, e1 = o.ext1 ?? 0;
       const runs = [];
@@ -455,6 +506,7 @@ export function registerMarinaDock(D, H) {
           B.box(NS('rubber'), K.fender, x1 - x0, 0.15, 0.075, (x0 + x1) / 2, -0.19, 0.137, { r: 0.032 });
         }
       }
+      // 【避让采样 snap】悬挂/固定五金绝不能穿桩:若落点与桩冲突,滑到最近的空档里
       // hung / fixed hardware never clips a pile: slide it to the nearest clear gap
       const snap = (s, half) => {
         const need = half + r + 0.05, hit = piles.some((p) => Math.abs(s - p) < need);
@@ -476,6 +528,8 @@ export function registerMarinaDock(D, H) {
   };
 
   // ================================================================================================ required cover
+  // 【必配道具区】关卡要求必须出现的功能道具(加油机、储物箱、服务站、垫木、板条箱)
+  // 【油枪 nozzle】加油机挂枪:手柄+护圈+弯管出油嘴插在枪座里;两侧 ±Z 显示,DIESEL 在 +X、UNLEADED 在 -X
   // ---- marina fuel dispenser: two-sided (displays on ±Z), DIESEL nozzle on +X, UNLEADED on -X; 0.8 × 0.8 × 1.25
   function nozzle(B, x, y, z, side, grip) {
     // pistol nozzle resting in its boot: grip + trigger guard + curved spout down into the boot
@@ -486,6 +540,8 @@ export function registerMarinaDock(D, H) {
     B.tube('metal', K.galvDk, [P3(-side * 0.02, 0.07, 0), P3(-side * 0.055, 0.02, 0), P3(-side * 0.04, -0.06, 0)], 0.006, { radial: 4 });
     B.pop();
   }
+  // 【道具 fuelpump:码头加油机】0.8×0.8×1.25 双面(±Z 显示),含泄油盘、蓝色柜体+百叶门、
+  // LED 油价屏、DIESEL(+X)/UNLEADED(-X) 油枪与盘绕油管、FUEL 字、禁烟/易燃标、急停钮
   D.fuelpump = {
     desc: 'Marina fuel dispenser (0.8 × 0.8 × 1.25, collider): spill tray, blue cabinet with doors + louvres, white head with LED price displays on both faces, DIESEL (+X) and UNLEADED (-X) nozzles in boots with looping hoses, FUEL letters, NO SMOKING + flammable labels, e-stop.',
     params: { price: 'diesel price text (1.89)', price2: 'unleaded price (2.14)' }, variants: 1, mount: 'ground',
@@ -538,10 +594,13 @@ export function registerMarinaDock(D, H) {
       // e-stop on the head's top corner
       B.cyl('metal', K.galv, 0.03, 0.02, 0.24, 1.26, 0.18, { seg: 10 });
       B.sph('gloss', K.red, 0.028, 0.24, 1.272, 0.18, { ws: 10, hs: 5, half: true });
+      // 【碰撞】整机一个实体盒(加油机是不可穿越的落地设备)
       B.col(-0.4, 0, -0.4, 0.4, 1.25, 0.4);
     },
   };
 
+  // 【道具 dockbox:码头储物箱】白色玻璃钢箱体(rotY=±PI/2 时世界 1.2×1.8×1.0;局部 1.8 宽 ×1.2 深),
+  // 锥形模压箱体+滑橇、圆顶盖带垂边、钢琴铰链+气撑、挂锁扣、端部内凹拉手、铭牌、盖上盘绳
   // ---- white fibreglass dock box (1.2 × 1.8 × 1.0 world when rotY = ±PI/2; local 1.8 wide × 1.2 deep), lid opens to +Z
   D.dockbox = {
     desc: 'White fibreglass dock box: moulded tapered body on skids, domed lid with overhanging lip, stainless piano hinge + gas struts, hasp and brass padlock, recessed end handles, moulded nameplate, a coiled line on the lid. Local 1.8 (x) × 1.2 (z) × 1.0; front +Z.',
@@ -571,10 +630,14 @@ export function registerMarinaDock(D, H) {
       // a coiled line left on the lid
       for (let i = 0; i < 4; i++) B.tor('paint', K.rope, 0.16 - i * 0.012, 0.014, 0.35, 1.012 + i * 0.012, -0.1, { rx: HP, rs: 4, ts: 16 });
       B.tube('paint', K.rope, [P3(0.5, 1.02, -0.12), P3(0.62, 1.01, -0.05), P3(0.8, 0.98, 0.1), P3(0.9, 0.93, 0.2), P3(0.93, 0.8, 0.26)], 0.014, { radial: 4 });
+      // 【碰撞】整箱一个实体盒
       B.col(-W / 2, 0, -Dd / 2, W / 2, Hh, Dd / 2);
     },
   };
 
+  // 【道具 pumpout:泵出/供水服务站】敞前脸亭棚(局部 1.6 宽 ×1.8 深 ×2.2 高,正面 +Z;后 1.25 实体,
+  // 前 0.55 栏杆后敞开):木披板墙+单坡顶+PUMP OUT 楣字、黄色真空泵出机(表/按钮/卷盘吸污管)、
+  // 蓝色饮用水立管(黄铜龙头+盘管)、告示牌+灯
   // ---- pump-out / water service station: open-fronted shelter (1.6 wide × 1.8 deep local, 2.2 tall), front +Z
   D.pumpout = {
     desc: 'Marina service station (collider 1.6 × 2.2 × 1.8 local, front +Z; back 1.25 solid, open front 0.55 behind the barrier = rail): timber-clad shelter with a mono-pitch roof and PUMP OUT fascia letters, yellow vacuum pump-out unit with gauge and buttons, suction hose on a reel, blue potable-water standpipe with brass taps and a coiled hose, notice + lamp.',
@@ -638,12 +701,16 @@ export function registerMarinaDock(D, H) {
       // notice on the back wall
       B.box('paint', K.white, 0.36, 0.5, 0.01, 0.25, 1.55, -Dd / 2 + 0.08, { r: 0.01 });
       B.decal('pst9', 0.32, 0.46, 0.25, 1.55, -Dd / 2 + 0.086);
+      // 【碰撞】后半(墙+泵机+立管)= 实体遮挡盒;前半(栏杆+链门之后)= rail 盒:只挡人,墨/弹可穿
       B.col(-W / 2, 0, -Dd / 2, W / 2, 2.2, 0.35);                     // walls, pump-out unit, standpipe: solid cover
       B.col(-W / 2, 0, 0.35, W / 2, 2.2, Dd / 2, { rail: true });       // open front behind the barrier rail + chain gate
     },
   };
 
+  // 【道具 keelblocks:船台垫木堆】1.8×2.0×1.2:六层交叉叠放的 200mm 方木(端纹、防污漆渍、随机错缝),
+  // 顶面毛毡垫+硬木楔子,斜靠一只钢船架
   // ---- keel-block stack (timber cribbing) 1.8 × 2.0 × 1.2: crossed layers, end grain, antifouling smudges, wedges
+  // 【垫木单根 beamGeo】带倒角方木,逐顶点烘焙:两端端纹色、侧面随机木色、上表面偶发防污漆渍
   function beamGeo(L, t, seed) {
     return tpl(['beam', L, t, seed % 6].map(kf).join('|'), () => {
       const g = chamferBox(L, t, t, 0.018);
@@ -682,11 +749,15 @@ export function registerMarinaDock(D, H) {
       B.cyl('metal', K.galv, 0.022, 0.4, 0, 1.2, 0, { seg: 8 });
       B.box('rubber', 'charcoal', 0.16, 0.04, 0.16, 0, 1.41, 0, { r: 0.015 });
       B.pop();
+      // 【碰撞】整堆一个实体盒(斜靠的船架在盒内)
       B.col(-0.9, 0, -1.0, 0.9, 1.2, 1.0);
     },
   };
 
+  // 【道具 quaycrates:码头板条箱堆】2.2×1.6×1.2:托盘上两只加斜撑的出口木箱(HALYARD MARINA 模板字+箭头),
+  // 一只半罩蓝防雨布(垂坠褶皱+缆绳捆扎),箱顶捆着碰垫组(variant 0)或浮球袋(variant 1)
   // ---- quay crates 2.2 × 1.6 × 1.2: two braced export crates on pallets, a tarp half off, stencils, rope lashing
+  // 【木箱 crate】单只出口板条箱:板缝读作暗线,框条+角柱+每面斜撑;tone 控制明暗
   function crate(B, x, y, z, w, h, d, ry, tone) {
     B.push(x, y, z, ry);
     const wc = shade('woodlight', tone), dk = shade('wooddark', tone * 0.95);
@@ -750,13 +821,15 @@ export function registerMarinaDock(D, H) {
       } else {
         for (let i = 0; i < 7; i++) B.sph('gloss', i % 2 ? K.fuelRed : K.white, 0.08, -0.72 + (i % 4) * 0.13, 1.28 + Math.floor(i / 4) * 0.1, -0.2 + (i % 3) * 0.14, { ws: 7, hs: 5 });
       }
+      // 【碰撞】整堆一个实体盒
       B.col(-1.1, 0, -0.8, 1.1, 1.2, 0.8);
     },
   };
 
   // ================================================================================================ building kit
-  // Everything below mounts flush on playable walls (≤ 0.12 m proud of the face, wall at local z = 0, facing +Z).
+  // 【建筑立面套件区】以下全部贴装在可玩墙面上(凸出 ≤0.12 m,墙在局部 z=0、朝 +Z)
   // striped awning valance strip (scalloped), cached per width / colours; hangs from y = 0 down ~0.2 m
+  // 【遮阳篷垂边 valanceGeo】条纹扇形垂帘,按 宽/双色 缓存;从 y=0 下垂约 0.2 m
   function valanceGeo(W, cA, cB) {
     return tpl(['val', W, cA, cB].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(2, Math.round(W / 0.2)), sw = W / n, vh = 0.13, ca = cx3(cA), cb = cx3(cB);
@@ -771,6 +844,7 @@ export function registerMarinaDock(D, H) {
       return g.geo();
     });
   }
+  // 【卷帘遮阳篷 awningRolled】卷收盒+条纹垂帘,凸出 0.13 m
   // rolled-in awning: cassette box + striped scalloped valance (projects 0.13 m)
   function awningRolled(B, x, y, W, cA = K.fuelBlue, cB = K.white) {
     B.box('gloss', mixc(cA, K.white, 0.1), W + 0.06, 0.13, 0.12, x, y, 0.06, { round: true, r: 0.04 });
@@ -778,6 +852,8 @@ export function registerMarinaDock(D, H) {
     B.add('foliage', valanceGeo(W, cA, cB), 'white', x, y - 0.055, 0.125, {});
     B.cyl('metal', K.galv, 0.012, W, x, y - 0.06, 0.1, { rz: HP, seg: 6 });
   }
+  // 【窗单元 windowUnit】带框窗(洞口 w×h,左下角在 x-w/2, y):内凹玻璃、方框料、倒角窗台,
+  // 可选中梃/亮子、百叶(blind,可 lit 发光)、百叶窗板(shutters)
   // framed window (opening w × h, bottom-left at x - w/2, y): recessed glass, square frame members, bevelled sill,
   // optional mullions / transom / blind / louvred shutters
   function windowUnit(B, x, y, w, h, o = {}) {
@@ -797,6 +873,7 @@ export function registerMarinaDock(D, H) {
       for (let k = 1; k < 4; k++) pbox(B, NS('paint'), shade(o.shutters, 0.8), sw - 0.06, 0.014, 0.01, sxp, y + (k * h) / 4, 0.04);
     }
   }
+  // 【门单元 doorUnit】玻璃门带框:踢板、推杆(pushbar)或执手、门槛;double 双扇
   // glazed door with frame, kick plate, push bar / handle, threshold
   function doorUnit(B, x, w, h, o = {}) {
     const fc = o.frame ?? K.frameDk, leaf = o.leaf ?? K.frameDk, gl = o.glass ?? K.glass, dbl = !!o.double;
@@ -814,6 +891,7 @@ export function registerMarinaDock(D, H) {
       else { pbox(B, 'metal', K.stainless, 0.03, 0.14, 0.03, hx, 1.02, 0.07); pbox(B, 'metal', K.stainless, 0.1, 0.022, 0.03, hx - 0.03, 1.05, 0.09); }
     }
   }
+  // 【招牌板 boardSign】贴墙招牌:底板按字宽自动定宽,凸字(可 lit 发光),返回板宽
   // flush sign board with raised letters (board centred at x, y); returns board width
   function boardSign(B, text, x, y, o = {}) {
     const h = o.h ?? 0.22, pad = o.pad ?? h * 0.7, W = o.w ?? textW(text, o.wt ?? 0.17, o.track ?? 0.12) * h + pad * 2, Hb = o.hb ?? h + pad * 1.1;
@@ -823,6 +901,7 @@ export function registerMarinaDock(D, H) {
     letters(B, text, { h, x, y: y - h / 2, z: (o.bd ?? 0.05) + (o.z ?? 0) + 0.004, c: o.c ?? K.white, wt: o.wt, track: o.track, mat: o.mat, dep: o.dep, glow: o.glow, lit: o.lit, litC: o.litC, bev: o.lit ? 0 : undefined });
     return W;
   }
+  // 【灭火器箱 extinguisher】挂墙(z=0,凸出 0.1 m):红箱+玻璃门内可见瓶体+标签
   // fire-extinguisher cabinet (wall z = 0, 0.1 m proud): red box, glazed door showing the cylinder, label
   function extinguisher(B, x, y) {
     B.box('gloss', K.red, 0.3, 0.62, 0.1, x, y + 0.31, 0.05, { r: 0.02 });
@@ -831,6 +910,9 @@ export function registerMarinaDock(D, H) {
     pbox(B, NS('paint'), K.white, 0.2, 0.06, 0.004, x, y + 0.075, 0.102);
     pbox(B, NS('metal'), K.stainless, 0.03, 0.08, 0.02, x + 0.12, y + 0.34, 0.105);
   }
+  // 【道具 fuelhut:燃料小屋】围绕 w×d×h 方块(pos=块基座中心)做立面装修:-Z 门+遮阳篷+灭火器,
+  // +Z 服务窗+卷帘篷,±X 窗+FUEL PRICES 价格牌(LED 数字),屋顶檐口/天沟/落水管,
+  // 屋顶双面 FUEL·ICE·BAIT 招牌(带碰撞)+空调/风帽子道具;各立面用 face() 翻转到对应墙面
   // ---- fuel hut kit: dresses the `fuel-hut` block (w × d × h around pos), roof sign FUEL · ICE · BAIT with colliders
   D.fuelhut = {
     desc: 'Fuel-dock attendant hut dressing around a w × d × h block (pos = block base centre): door + awning (-Z), service hatch + awning (+Z), windows and FUEL PRICES boards (±X), roof trim, gutters + downpipes, double-sided FUEL · ICE · BAIT roof sign, rooftop AC and vent (roof pieces collide), extinguisher, NO SMOKING plates.',
@@ -838,6 +920,7 @@ export function registerMarinaDock(D, H) {
     build(B, o) {
       B.aoBase = null;
       const W = o.w ?? 3.4, Dd = o.d ?? 3.7, Hh = o.h ?? 2.7;
+      // 【face 助手】把回调临时推入指定墙面局部系:side 0 +Z / 1 +X / 2 -Z / 3 -X;x 沿墙面、z 朝外
       const face = (side, fn) => { // side: 0 +Z, 1 +X, 2 -Z, 3 -X → local frame on that face (x along the face, z out)
         const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
         B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
@@ -895,12 +978,15 @@ export function registerMarinaDock(D, H) {
         letters(B, 'FUEL · ICE · BAIT', { h: 0.25, x: 0, y: sy + 0.5, z: 0.003, c: K.white, flat: true, wt: 0.2, track: 0.1, mat: 'glow', glow: 0.9 });
         B.pop();
       }
+      // 【碰撞】屋顶双面招牌整体一个实体盒(高出墙沿的悬空物,防攀爬判定)
       B.col(-1.62, sy, sz - 0.08, 1.62, sy + 0.94, sz + 0.08);
       sub(B, 'acunit', 0.75, sy, 0.95, 0, { variant: 1 });
       sub(B, 'vent', -1.0, sy, 1.1, 0, { variant: 2 });
     },
   };
 
+  // 【道具 fueldocksign:FUEL DOCK 高杆地标】6.4 m 镀锌桅杆立于码头边(pos),悬臂朝局部 -X 伸到水面上方,
+  // 挂双面发光牌(FUEL/DOCK+油枪图标,面朝 ±Z),鹅颈灯洗牌,桅顶风向旗;【碰撞】只有桅杆本体
   // ---- tall FUEL DOCK landmark: galvanised mast on the dock edge, cantilever arm over the water, lit double-sided panel
   D.fueldocksign = {
     desc: 'Tall FUEL DOCK landmark: 6.4 m galvanised mast on a bolted base at the dock edge (pos), cantilever arm toward local -X over the water carrying a double-sided lit panel (FUEL / DOCK + nozzle icon) facing ±Z, gooseneck lamps, wind pennant. Only the mast collides.',
@@ -942,19 +1028,24 @@ export function registerMarinaDock(D, H) {
       // pennant on the mast top
       B.cyl('metal', pc, 0.012, 0.6, 0, Hm + 0.3, 0, { seg: 5 });
       B.flag(0.0, Hm + 0.46, 0.0, { color: K.fuelYel, rz: HP, ry: PI, s: 1.7 });
+      // 【碰撞】只有桅杆本体一个细盒;悬臂/招牌都在头顶,不设碰撞
       B.col(-0.16, 0, -0.16, 0.16, Hm, 0.16);
     },
   };
 
   // ================================================================================================ clubhouse
+  // 【游艇会区】
   // wall lantern (wall z = 0): bracket, carriage lantern with a warm glowing glass
+  // 【壁灯 lantern】挂墙(z=0):背板+ carriage 灯笼,暖色发光玻璃
   // flush marine bulkhead light (wall z = 0, 0.11 m proud): cast back plate, glowing half-dome lens, cage bars
+  // 【舱壁灯】贴墙凸出 0.11 m:铸造背板、发光半球罩、护栅条
   function lantern(B, x, y) {
     B.box('metal', K.club, 0.2, 0.2, 0.03, x, y, 0.015, { r: 0.012 });
     B.cyl('metal', K.club, 0.085, 0.03, x, y, 0.035, { rx: HP, seg: 10 });
     B.sph('glow', K.lamp, 0.07, x, y, 0.045, { ws: 10, hs: 4, half: true, rx: HP, glow: 1.7 });
     for (const a of [0, HP]) pbox(B, 'metal', K.club, 0.15, 0.014, 0.014, x, y, 0.1, { rz: a });
   }
+  // 【坡屋顶 gableRoof】覆盖 x0..x1 × z0..z1(屋脊沿 X,檐口 yE,起坡 r):山墙三棱柱 + 两扇石板瓦 + 屋脊压顶
   // pitched roof over x0..x1 × z0..z1 (ridge along X, eaves at yE, rise r): gable prism + two slate slabs + ridge cap
   function gableRoof(B, x0, x1, z0, z1, yE, r, o = {}) {
     const L = x1 - x0, cx = (x0 + x1) / 2, d = z1 - z0, cz = (z0 + z1) / 2, rc = o.roof ?? '#5f6d7c', ov = o.ov ?? 0.18;
@@ -969,6 +1060,11 @@ export function registerMarinaDock(D, H) {
     }
     B.box('paint', shade(rc, 0.8), L + ov * 2, 0.1, 0.22, cx, yE + r + 0.07, cz, { r: 0.04 });
   }
+  // 【道具 clubhouse:HALYARD MARINA 游艇会】pos = 可玩墙面中心(局部 z=0 即墙面,建筑在其后):
+  // 一层门面(THE GALLEY 咖啡座 + CHANDLERY 船具店、会所落地窗、壁灯、卷帘篷、檐口)、
+  // 二层+双翼坡屋顶+中央山墙楼阁大招牌(HALYARD MARINA·YACHT CLUB 发光字)+穹顶瞭望亭+
+  // 海事旗杆(斜桁+横桁+燕尾旗/信号旗)+烟囱,以及墙后供外景看的低层背面与码头延伸;
+  // 除 ≤0.1 m 的贴墙饰条外 z=0 之前不放任何东西,二层及以上设防相机碰撞
   D.clubhouse = {
     desc: 'HALYARD MARINA yacht club (pos = centre of the back wall face, local z = 0 is the wall face, building behind it): ground-floor fittings on the playable wall (THE GALLEY café + CHANDLERY shopfronts, clubroom French doors behind the terrace, lanterns, rolled awnings, cornice), upper storey + roofs + central gabled pavilion with the big HALYARD MARINA · YACHT CLUB sign, cupola, nautical flagstaff with burgee + signal pennants, chimneys, and the lower building + quay extension behind the wall for outside views. Upper storey collides (camera-safe); nothing sits in front of z = 0 except flush trims ≤ 0.1 m.',
     params: {}, variants: 1, mount: 'ground',
@@ -1109,6 +1205,7 @@ export function registerMarinaDock(D, H) {
       B.pop();
       for (const sx of [-1, 1]) { B.push(sx * 24.02, 0, (FZ + BZ) / 2, sx * HP); for (const x of [-1.5, 1.5]) windowUnit(B, x, 5.3, 1.0, 1.4, { frame: trim, mull: 1, sill: false, ns: true }); B.pop(); }
       // colliders: upper storey + pavilion + cupola/mast (camera-safe, all behind the wall face)
+      // 【碰撞】二层整层/楼阁/穹顶瞭望亭均标 roof(禁入顶面,站上去会滑走);全部位于墙面 z=FZ 之后,相机安全
       B.col(-24.3, WT, BZ - 0.3, 24.3, EW + 1.75, FZ, { roof: true });   // roofs: off limits (slide off)
       B.col(-PW, EW, BZ - 0.2, PW, PE + PR, FZ, { roof: true });
       B.col(-1.0, PE + PR - 0.3, cz - 1.0, 1.0, CY + 3.2, cz + 1.0, { roof: true });
@@ -1116,11 +1213,14 @@ export function registerMarinaDock(D, H) {
   };
 
   // ================================================================================================ quay buildings
+  // 【码头建筑区】
   // face helper for block dressings: side 0 +Z, 1 +X, 2 -Z, 3 -X → frame on that face (x along the face, z out)
+  // 【onFace 助手】方块立面装修通用:把回调临时推入指定墙面局部系(同 clubhouse 的 face)
   function onFace(B, W, Dd, side, fn) {
     const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
     B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
   }
+  // 【blockTrim】平屋顶方块的檐口条+转角线脚+底部裙边(可按面挑选)
   // roof edge trim + corner beads + skirt for a flat-roofed block (W × Dd × Hh)
   function blockTrim(B, W, Dd, Hh, c, sides = [0, 1, 2, 3]) {
     for (const side of sides) onFace(B, W, Dd, side, (L) => {
@@ -1129,6 +1229,7 @@ export function registerMarinaDock(D, H) {
       pbox(B, 'paint', mixc(c, K.concreteDk, 0.5), L + 0.02, 0.12, 0.035, 0, 0.06, 0.017);
     });
   }
+  // 【落水管 downpipe】墙面上固定卡子+底部弯口
   function downpipe(B, x, Hh, c) {
     B.cyl('paint', c, 0.045, Hh - 0.3, x, (Hh - 0.3) / 2 + 0.08, 0.07, { seg: 8 });
     B.cyl('paint', c, 0.055, 0.14, x, 0.08, 0.12, { rx: 0.95, seg: 8 });
@@ -1136,6 +1237,8 @@ export function registerMarinaDock(D, H) {
     for (const yy of [0.8, Hh - 0.8]) pbox(B, 'metal', K.galvDk, 0.12, 0.03, 0.08, x, yy, 0.04);
   }
 
+  // 【道具 boathouse:船屋】围绕 W×D×H 方块:正面肋板卷帘门(导轨+卷筒盒+警示边+KEEP CLEAR)、
+  // 行人门、BOATHOUSE 凸字、侧窗、檐沟/落水管;屋顶套件(风帽、采光顶、太阳能板)带碰撞
   // ---- boathouse: roller door + pedestrian door + BOATHOUSE letters on the front, windows, roof kit (collides)
   D.boathouse = {
     desc: 'Boathouse dressing around a W × D × H block (pos = block base centre): big ribbed roller door with guide rails + drum box + hazard edges + KEEP CLEAR, pedestrian door, BOATHOUSE letters, side windows, gutters/downpipes, roof trim; roof kit (turbine vents, glazed rooflight, solar panels) collides.',
@@ -1172,6 +1275,7 @@ export function registerMarinaDock(D, H) {
       // glazed rooflight
       B.box('paint', trim, 1.6, 0.28, 1.0, -0.4, y + 0.14, 0.4, { r: 0.03 });
       B.push(-0.4, y + 0.28, 0.4, 0, -0.18); pbox(B, 'gloss', K.glassLt, 1.5, 0.04, 0.9, 0, 0.02, 0); for (let i = -2; i <= 2; i++) pbox(B, 'paint', trim, 0.03, 0.05, 0.92, i * 0.3, 0.03, 0); B.pop();
+      // 【碰撞】采光顶一个实体盒(可站立的屋面凸起)
       B.col(-1.22, y, -0.12, 0.42, y + 0.45, 0.92);
       // solar panels on a low frame
       for (let i = 0; i < 3; i++) {
@@ -1182,10 +1286,13 @@ export function registerMarinaDock(D, H) {
         B.pop();
       }
       for (const sx of [-1, 1]) for (const sz of [0.8, 1.35]) pbox(B, 'metal', K.galvDk, 0.04, 0.3, 0.04, 2.2 + sx * 1.45, y + 0.12, sz);
+      // 【碰撞】太阳能板阵列一个实体盒
       B.col(0.6, y, 0.7, 3.8, y + 0.45, 1.5);
     },
   };
 
+  // 【道具 harbouroffice:港口办公室】围绕 W×D×H 方块:+X 服务窗+卷帘篷+柜台+铜铃、HARBOUR OFFICE 楣字、
+  // 软木告示板(船期表/告示)、+Z 门+窗、-X 窗、屋顶天线桅杆(闪烁灯)+碟形天线+旗杆(屋顶件带碰撞)
   // ---- harbour office kiosk: service window + awning + counter, notice board, door, HARBOUR OFFICE fascia, roof kit
   D.harbouroffice = {
     desc: 'Harbour-office kiosk dressing around a W × D × H block (pos = block base centre): service window with rolled awning, counter and bell on +X, HARBOUR OFFICE fascia letters, notice board with notices, door + window on +Z, window on -X, roof trim, antenna mast with blinking light + dish + flagpole (roof pieces collide).',
@@ -1222,11 +1329,14 @@ export function registerMarinaDock(D, H) {
       B.lathe('metal', K.white, [[0.05, 0], [0.04, 0.2], [0.03, 3.4], [0, 3.42]], 1.6, Hh, 0.9, { seg: 8 });
       B.sph('metal', K.clubGold, 0.05, 1.6, Hh + 3.45, 0.9, { ws: 8, hs: 5 });
       B.flag(1.6, Hh + 3.3, 0.9, { color: '#3f6fb0', s: 1.3 });
+      // 【碰撞】天线桅杆一个细实体盒
       B.col(1.5, Hh, 0.8, 1.7, Hh + 3.4, 1.0);
     },
   };
 
   // ---- café set: round bistro table, 3 chairs, striped parasol (collider = table + chairs)
+  // 【道具 cafeset:咖啡座】圆 Bistro 桌(铸铁脚)+三把板条椅+条纹遮阳伞(2.3 m)+菜单牌+咖啡杯;
+  // 伞顶按 半径/双色 缓存成伞面扇片+垂边
   function parasolTop(B, x, y, z, R, cA, cB, n = 8) {
     B.add('foliage', tpl(['para', R, cA, cB, n].map(kf).join('|'), () => {
       const g = new GB(), ca = cx3(cA), cb = cx3(cB), rise = 0.38, sub = 3;
@@ -1249,6 +1359,7 @@ export function registerMarinaDock(D, H) {
     B.sph('gloss', cA, 0.045, x, y + 0.42, z, { ws: 8, hs: 6 });
     for (let i = 0; i < n; i++) { const a = ((i + 0.5) / n) * TAU; B.tube('metal', K.galv, [P3(x, y - 0.32, z), P3(x + Math.cos(a) * R * 0.5, y + 0.14, z + Math.sin(a) * R * 0.5)], 0.007, { radial: 3 }); }
   }
+  // 【bistroChair】板条 Bistro 椅:四根锥形钢管腿+板条座/靠背
   function bistroChair(B, x, z, ry, c) {
     B.push(x, 0, z, ry);
     for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) B.tube('metal', c, [P3(sx * 0.19, 0, sz * 0.19), P3(sx * 0.17, 0.45, sz * 0.17)], 0.013, { radial: 5 });
@@ -1269,10 +1380,13 @@ export function registerMarinaDock(D, H) {
       parasolTop(B, 0, 1.95, 0, 1.15, cA, K.white, 8);
       B.box('paint', K.white, 0.1, 0.13, 0.02, 0.12, 0.81, -0.08, { r: 0.006, rx: -0.2 });
       for (const [cx, cz] of [[-0.12, 0.1], [0.18, 0.16]]) B.lathe('gloss', K.white, [[0, 0], [0.03, 0], [0.035, 0.07], [0.028, 0.072], [0, 0.01]], cx, 0.748, cz, { seg: 8 });
+  // 【碰撞】桌面+三把椅子一整盒
       B.col(-0.85, 0, -0.85, 0.85, 0.78, 0.85);
     },
   };
 
+  // 【道具 mapboard:码头导览图】双镀锌立柱上的园区平面图(正面 +Z):藏青框、浅水蓝底、
+  // 奶油色栈桥平面(世界坐标按比例映射)、泊位号刻度、红色 YOU ARE HERE 发光点、楣字、小顶棚
   // ---- marina site map on two posts (front +Z): stylised pier plan, YOU ARE HERE, header
   D.mapboard = {
     desc: 'HALYARD MARINA site map on two galvanised posts (front +Z): navy frame, pale blue water with the piers laid out in cream, berth numbers as ticks, a red YOU ARE HERE dot, header letters, little roof.',
@@ -1294,11 +1408,13 @@ export function registerMarinaDock(D, H) {
       pbox(B, 'paint', K.white, 13 * 0.68 / 24, 5.8 * (Hb - 0.34) / 92, 0.004, 0, y0 + 0.05 + (Hb - 0.34) / 2, 0.062);
       B.cyl('glow', K.red, 0.022, 0.01, (-21.5 * 0.68) / 24, y0 + 0.05 + (Hb - 0.34) / 2 + (-31.5 * (Hb - 0.34)) / 92, 0.066, { rx: HP, seg: 10, glow: 1.4 });
       B.box('paint', K.club, W + 0.24, 0.05, 0.3, 0, y0 + Hb + 0.12, 0.06, { r: 0.02, rx: 0.12 });
+      // 【碰撞】整牌一个实体盒
       B.col(-W / 2 - 0.1, 0, -0.1, W / 2 + 0.1, y0 + Hb + 0.2, 0.14);
     },
   };
 
   // ---- kayak rack: galvanised frame with padded arms, three sit-on-top kayaks and paddles (front +Z, along X)
+  // 【kayakGeo】坐式皮划艇壳体:舯大两头尖的截面环扫出船体+微拱平顶甲板
   function kayakGeo(L, Wd, c1) {
     return tpl(['kayak', L, Wd, c1].map(kf).join('|'), () => {
       const prof = [];
@@ -1321,6 +1437,8 @@ export function registerMarinaDock(D, H) {
       const geo = g.geo(); geo.computeVertexNormals(); return geo;
     });
   }
+  // 【道具 kayakrack:皮划艇架】镀锌 A 字架+软垫托臂,三只坐式皮划艇(壳+甲板+座窝),端部斜靠双叶桨;
+  // 正面 +Z、沿 X 排布
   D.kayakrack = {
     desc: 'Galvanised kayak rack (along +X, front +Z): two A-frame uprights with padded arms, three sit-on-top kayaks (hull + deck + seat wells), paddles leaning at the end.',
     params: {}, variants: 1, mount: 'ground',
@@ -1336,11 +1454,15 @@ export function registerMarinaDock(D, H) {
         B.box('rubber', 'charcoal', 0.5, 0.02, 0.36, -0.1, yy + 0.17, 0.22, { r: 0.01 });
       });
       for (let k = 0; k < 2; k++) { B.push(1.55 + k * 0.12, 0, 0.2 - k * 0.1, 0, 0, 0.1); B.cyl('metal', '#2b2f36', 0.017, 2.1, 0, 1.05, 0, { seg: 6 }); for (const s of [-1, 1]) B.box('gloss', k ? '#e3b23c' : '#3f8fb0', 0.03, 0.4, 0.16, 0, 1.05 + s * 0.95, 0, { r: 0.012 }); B.pop(); }
+      // 【碰撞】整架一个实体盒(含斜靠的桨)
       B.col(-1.3, 0, -0.4, 1.85, 1.75, 0.6);
     },
   };
 
   // ================================================================================================ dock hardware
+  // 【码头五金区】
+  // 【道具 shorepower:岸电桩】1.2 m 玻璃钢双色调柱体(钢底座、发光圆顶灯、两个蓝色 16A CEE 插座带翻盖、
+  // 一只插着电缆垂向泊位、表窗、闪烁状态 LED、侧面黄铜水嘴+盘管、泊位号 A12)
   // ---- marina shore-power pedestal: fibreglass body, light dome, CEE sockets with flip lids, meter, status LEDs, tap
   D.shorepower = {
     desc: 'Marina shore-power pedestal (front +Z, 1.2 m): rounded two-tone fibreglass body on a steel base, glowing dome light, two blue 16 A sockets with flip lids + one plugged-in lead running off, meter window, blinking status LEDs, a brass tap with a coiled hose on the side, berth number.',
@@ -1372,9 +1494,11 @@ export function registerMarinaDock(D, H) {
       pbox(B, 'metal', K.galvDk, 0.03, 0.16, 0.12, 0.165, 0.34, 0);
       for (let i = 0; i < 2; i++) B.tor('rubber', '#5a8fc9', 0.13 - i * 0.012, 0.016, 0.2, 0.26 - i * 0.02, 0, { ry: HP, rx: 0.2, rs: 4, ts: 12 });
       B.decal('lb0', 0.2, 0.05, 0, 0.35, 0.122);
+      // 【碰撞】整柱一个实体盒
       B.col(-0.2, 0, -0.17, 0.2, 1.22, 0.17);
     },
   };
+  // 【道具 bollardlight:系船柱灯】0.85 m 低杆灯:铸造底座、阳极氧化杆身、穹顶帽下百叶头发暖光
   // ---- low bollard light: louvred aluminium post, warm glow under the cap
   D.bollardlight = {
     desc: 'Low dock bollard light (0.85 m): cast base, anodised post, louvred glowing head under a domed cap.',
@@ -1391,12 +1515,16 @@ export function registerMarinaDock(D, H) {
   };
 
   // ================================================================================================ boatyard
+  // 【船厂区】
   // big boatyard tyre on a hub (axis along local X)
+  // 【yardWheel】船厂大轮胎连轮毂(轴沿局部 X),TIRE 标准轮廓按目标尺寸缩放
   function yardWheel(B, x, y, z, R, wdt) {
     B.lathe('rubber', '#26282d', TIRE.map(([r, yy]) => [r * (R / 0.33), yy * (wdt / 0.2)]), x, y, z, { seg: 9, closed: true, rz: HP });
     B.cyl('metal', K.liftYel, R * 0.52, wdt * 0.9, x, y, z, { rz: HP, seg: 12 });
     B.cyl('metal', K.galvDk, R * 0.2, wdt * 1.05, x, y, z, { rz: HP, seg: 8 });
   }
+  // 【道具 travellift:船台吊车(35 t)】四条蓝色箱形腿架黄色双轮台车(腿碰撞),5.4–6.1 m 侧梁+后横梁+膝撑,
+  // 四只卷扬机与吊缆、收起的吊带(最低点 ≥5.0 m)、发动机房+排烟、操作台,HALYARD / SWL 35 T 标识+警示带
   // ---- travel lift: 4 box legs on twin-wheel bogies, side beams ≥ 5.4 m, rear cross beam, winches + slings (raised),
   //      engine house, operator station; legs collide, beams are overhead (≥ 4.6 m clear everywhere)
   D.travellift = {
@@ -1458,10 +1586,12 @@ export function registerMarinaDock(D, H) {
       B.pop();
       B.blink('#ffb347', W / 2, BY + BH + 0.12, L / 2 + 0.3, { size: 0.05, rate: 0.8, lo: 0.2, hi: 5 });
       B.cyl('metal', 'charcoal', 0.06, 0.1, W / 2, BY + BH + 0.05, L / 2 + 0.3, { seg: 8 });
+      // 【碰撞】只有四条支腿碰撞(腿间净空可穿行吊装);横梁/吊带全部 ≥4.6 m 悬在头顶,不设碰撞
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) B.col(sx * W / 2 - (sx < 0 && sz < 0 ? 0.5 : 0.3), 0, sz * L / 2 - 0.66, sx * W / 2 + 0.3, BY, sz * L / 2 + 0.66);
     },
   };
 
+  // 【hullLoft】放样:从船尾(t=0, x=-L/2)到船首(t=1)的硬折角滑行艇型值——折角线、外飘舷弧、上翘龙骨
   // ---- boat under a tarp on a steel cradle (front +Z along the keel), at the yard edge
   function hullLoft(L, Bm, Dp, n = 14) {
     // sections from the transom (t = 0, x = -L/2) to the stem (t = 1): hard-chine planing hull, raked stem, rising keel
@@ -1476,12 +1606,15 @@ export function registerMarinaDock(D, H) {
     }
     return { secs };
   }
+  // 【hullRing】单个截面的 9 点环:右舷舷缘→折角→龙骨→左舷折角→左舷舷缘(镜像)
   // ring of section points starboard sheer → chine → keel → port chine → port sheer (9 points)
   const hullRing = (sc) => {
     const S = (z, y) => [z, y], cw = sc.bw * 0.9;
     const pts = [S(sc.bw, sc.sheer), S((sc.bw + cw) / 2 + 0.01, (sc.sheer + sc.chine) / 2), S(cw, sc.chine), S(cw * 0.5, (sc.chine + sc.keel) / 2 - 0.02), S(0, sc.keel)];
     return [...pts, ...pts.slice(0, 4).reverse().map(([z, y]) => [-z, y])];
   };
+  // 【道具 tarpboat:盖布船】钢支架上的退役摩托艇(龙骨沿局部 X):支架螺旋顶垫贴合船体放样、
+  // 放样船壳(红防污/ navy 水线带/白上壳)、舷缘防擦条、拱形防雨布罩(撑杆起脊+绑带+弹力钩)
   D.tarpboat = {
     desc: 'Laid-up motor launch on a painted steel cradle with screw pads, wrapped in a sagging blue tarp with lashings and bungees, white topsides with a navy boot stripe and red antifouling showing below the cover. Keel along local X.',
     params: {}, variants: 1, mount: 'ground',
@@ -1541,10 +1674,13 @@ export function registerMarinaDock(D, H) {
         pts.unshift(P3(x, 0.2, Bm / 2 - 0.1)); pts.push(P3(x, 0.2, -Bm / 2 + 0.1));
         B.tube('paint', K.fuelYel, pts, 0.012, { radial: 4 });
       }
+      // 【碰撞】船体+罩布+支架整体一个实体盒
       B.col(-L / 2 - 0.05, 0, -0.8, L / 2 + 0.05, cy + 0.1 + Dp + 0.4, 0.8);
     },
   };
 
+  // 【道具 scaffold:移动铝合金脚手架】1.3×1.1×4.2:脚轮、梯框端架、斜撑、3.2 m 木平台+踢脚板+双道护栏,
+  // 顶上的油漆桶+滚筒盘;整塔按 rail 盒碰撞(框架看得见:挡人,子弹/墨/鱿鱼可穿,也没人站上)
   // ---- aluminium mobile scaffold tower (1.3 × 1.1): castors, frames, braces, timber platform, guard rails, tins
   D.scaffold = {
     desc: 'Mobile aluminium scaffold tower (1.3 × 1.1 × 4.2): castor wheels, ladder-frame ends, diagonal braces, timber-boarded platform at 3.2 m with toe boards and double guard rails, paint tin + roller tray up top. Collides as a rail block (see-through frame: kids blocked, shots / ink / squids pass, nobody perches).',
@@ -1567,16 +1703,20 @@ export function registerMarinaDock(D, H) {
       B.lathe('gloss', K.white, [[0, 0], [0.09, 0], [0.09, 0.16], [0, 0.16]], 0.35, Hp + 0.04, 0.25, { seg: 10 });
       B.cyl('metal', K.galvDk, 0.092, 0.012, 0.35, Hp + 0.205, 0.25, { seg: 10 });
       pbox(B, 'paint', '#2f5f9e', 0.28, 0.04, 0.34, -0.3, Hp + 0.06, -0.2);
+      // 【碰撞】整塔一个 rail 盒:镂空框架只挡小孩,子弹/墨/鱿鱼照常穿透,没人能站上平台
       B.col(-W / 2, 0, -Dd / 2, W / 2, Ht, Dd / 2, { rail: true });   // open frame: kids blocked, shots / ink / squids pass
     },
   };
 
   // ---- workbench against a hull / wall behind it (-Z): vice, tools, tins, pressure washer cart beside it
+  // 【paintTin】油漆桶(镀锌桶身+内衬色+淌下的漆痕)
   function paintTin(B, x, y, z, c, s = 1) {
     B.lathe('metal', K.galv, [[0, 0], [0.085 * s, 0], [0.085 * s, 0.17 * s], [0.08 * s, 0.18 * s], [0, 0.18 * s]], x, y, z, { seg: 10 });
     B.cyl('paint', c, 0.086 * s, 0.09 * s, x, y + 0.09 * s, z, { seg: 10, open: true });
     B.tube('paint', c, [P3(x + 0.07 * s, y + 0.18 * s, z), P3(x + 0.087 * s, y + 0.12 * s, z + 0.01), P3(x + 0.087 * s, y + 0.05 * s, z + 0.01)], 0.009 * s, { radial: 4 });
   }
+  // 【道具 workbench:船厂工作台】1.5×0.65×0.9,背贴船体/墙(-Z):厚木台面+钢腿、台虎钳、锤/木槌、
+  // 防污漆桶+滚筒盘(台面/搁板/地面),旁边 +X 一台带卷盘喷枪的高压清洗机推车
   D.workbench = {
     desc: 'Boatyard workbench (1.5 × 0.65 × 0.9, back to a hull at -Z): thick timber top on steel legs, engineer vice, hammer + mallet, antifoul tins and a roller tray on the shelf and the ground, plus a wheeled pressure washer with its hose reel and lance at +X.',
     params: {}, variants: 1, mount: 'ground',
@@ -1610,11 +1750,15 @@ export function registerMarinaDock(D, H) {
       B.tube('metal', K.galv, [P3(-0.26, 0.88, 0.15), P3(-0.3, 0.5, 0.2), P3(-0.32, 0.12, 0.24)], 0.01, { radial: 4 });
       B.tube('rubber', '#1f2126', [P3(-0.1, 0.6, 0.12), P3(0.1, 0.08, 0.35), P3(0.4, 0.012, 0.45), P3(0.7, 0.012, 0.3)], 0.012, { radial: 4 });
       B.pop();
+      // 【碰撞】台面+清洗机一整盒(清洗机在侧面,盒体按 ws 方向扩边)
       B.col(ws > 0 ? -W / 2 : -W / 2 - 0.66, 0, -Dd / 2, ws > 0 ? W / 2 + 0.66 : W / 2, Hh + 0.05, Dd / 2);
     },
   };
 
   // ================================================================================================ harbour beacon
+  // 【港口灯塔区】
+  // 【道具 beacon:灯塔冠】装在 S×S×H 灯塔方块顶部(pos=块基座中心):顶部红带+角护、±X 昼标三角+名牌、
+  // -Z 墙面爬梯(带翻越抓环)、顶部镀锌护栏圈(碰撞)、红白灯室+格条玻璃+闪烁红灯、红色穹顶、通风球+避雷针
   // lantern house on the beacon block (pos = block base centre, block S × S × H): railing ring (collides), red/white
   // bands, wall ladder with hoops, gallery grating, glazed lantern with astragals + lamp (blinks), domed red roof, vane
   D.beacon = {
@@ -1670,9 +1814,12 @@ export function registerMarinaDock(D, H) {
       B.cyl('metal', '#3a3f48', 0.012, 0.7, 0, ly + 2.5, 0, { seg: 4 });
       B.push(0, ly + 2.62, 0, 0.9); pbox(B, 'metal', '#3a3f48', 0.4, 0.1, 0.008, 0.1, 0, 0); B.pop();
       // colliders: lantern house + the four railing sides (the crown is not a perch)
+      // 【碰撞】灯室一个实体盒 + 四侧护栏 rail 盒(塔冠不可站立)
       B.col(-0.68, top, -0.68, 0.68, ly + 2.1, 0.68);
       // railing colliders hug the very edge (≥ 0.04 outboard of the level's face-visibility samples, so the block's top
       // face is never culled and the baked lightmap stays valid)
+      // 【采样避让】护栏碰撞盒贴着块体外缘(比关卡的面可见性采样点外扩 ≥0.04):保证方块顶面
+      // 永不被剔除、烘焙光照图不失效
       const e0 = S / 2 - 0.04, e1 = S / 2 + 0.02;
       B.col(-e1, top, e0, e1, top + 1.05, e1, { rail: true }); B.col(-e1, top, -e1, e1, top + 1.05, -e0, { rail: true });   // gallery rails
       B.col(e0, top, -e1, e1, top + 1.05, e1, { rail: true }); B.col(-e1, top, -e1, -e0, top + 1.05, e1, { rail: true });
@@ -1680,7 +1827,11 @@ export function registerMarinaDock(D, H) {
   };
 
   // ================================================================================================ outside the arena
+  // 【竞技场外区】(不可达,纯景观)
+  // 【道具 breakwater:防波堤】沿局部 +Z 的抛石堤(pos=根部水线中线):两侧两排乱石护面、混凝土压顶+防浪墙、
+  // +Z 端圆弧堤头+绿色堤头灯(闪烁)
   // rubble-mound breakwater along local +Z (length L) with a concrete crest + parapet and a rounded head at the +Z end
+  // 【rockGeo】单块抛石:十二面体逐顶点哈希扰动,压扁成块石,法线平滑+灰度顶点色(读作碎石断面)
   function rockGeo(seed) {
     return tpl('rock|' + seed, () => {
       let g = new THREE.DodecahedronGeometry(1, 0);
@@ -1730,6 +1881,8 @@ export function registerMarinaDock(D, H) {
       B.blink(lc === K.green ? '#5dff8a' : '#ff5a4a', 0, 3.0, L, { size: 0.22, rate: 0.33, lo: 0.1, hi: 4 });
     },
   };
+  // 【道具 channelmarker:航道标】浮在水面(pos y = 海平面):variant 0 = 绿色右侧桩式标(爬梯+锥形顶标+闪绿光);
+  // 1 = 红色左侧罐形浮标(罐形顶标+闪红光)
   // ---- channel marker: 0 = green starboard pile beacon (cone topmark), 1 = red port can buoy; pos on the water
   D.channelmarker = {
     desc: 'Channel marker on the water (pos y = sea level): variant 0 = green steel pile beacon with a ladder, cone topmark and blinking green light; 1 = red floating can buoy with a can topmark and blinking red light.',
@@ -1749,16 +1902,24 @@ export function registerMarinaDock(D, H) {
       } else {
         const n0 = B.cols.length;
         sub(B, 'buoy', 0, -0.45, 0, 0, { variant: 1, color: K.red });
+        // 【采样避让】撤销 sub() 刚注册的全部碰撞盒:浮标悬在竞技场外的水面上,绝不允许产生碰撞体,
+        // 更不允许被误判成"甲板"方块(那会污染导航/落点采样)
         B.cols.length = n0;                       // floating outside the arena: no collision (and never a "deck" block)
       }
     },
   };
 
   // ================================================================================================ ramps
+  // 【坡道栏杆区】
   // All three dress level ramps whose top surface runs along local +Z from (0, 0, 0) to (0, rise, run); everything sits
   // outside the walking width (|x| ≥ width / 2). The handrails carry `rail` colliders (kids can't walk through or off the
   // side, shots / ink / squids pass); the masonry newels are solid.
+  // 【共同约定】三者都装饰顶面沿局部 +Z、(0,0,0)→(0,rise,run) 的关卡坡道;所有构件放在步行宽
+  // 度之外(|x| ≥ width/2);扶手为 rail 碰撞(挡人,墨/弹/鱿鱼可穿),砖石望柱为实体
   const slopeY = (rise, run, t) => (rise * t) / run;
+  // 【slopeRail】沿斜坡扶手的 rail 碰撞盒:局部 x0…x1(须比坡道侧面外扩 ≥0.045,关卡的面/倒角采样
+  // 点永不落进盒内),从 z=za 到 zb 分 n 段阶梯盒;每段低端从坡面上 0.06 起(避开甲板采样),
+  // 高端到坡面上 top。bot 给固定底面:成为实体楼梯旁的全深栅栏,任何导航节点/边都无法跨越
   // Rail colliders along a sloped handrail: local x0…x1 (keep ≥ 0.045 outboard of the ramp's side face so the level's
   // face / bevel samples never land inside them), from z = za to zb in `n` stepped boxes; each box starts 0.06 above the
   // slope at its low end (clear of the deck samples) and reaches `top` above the slope at its high end. bot: fixed bottom
@@ -1770,6 +1931,9 @@ export function registerMarinaDock(D, H) {
       B.col(x0, y0, Math.min(s0, s1), x1, y1, Math.max(s0, s1), { rail: true });
     }
   }
+  // 【道具 gangwayrails:栈桥栏杆】为薄板关卡坡道(顶面 (0,0,0)→(0,rise,run),宽 W 居中)做两侧铝桁架:
+  // 下弦兼踢脚板、立杆、斜坡扶手+中杆、N 形斜撑(无阴影,透过扶手可读),码头端铰链座+销轴,远端叉架着地滚轮;
+  // 桁架外 rail 碰撞(走道从头到尾保持敞开)
   // ---- marina gangway: aluminium side trusses (bottom chord / kick plate, stanchions, sloped top + mid rail, N-bracing),
   //      hinge brackets + pins at the pier end, landing rollers at the far end. Same alloy language as the vessels pack.
   D.gangwayrails = {
@@ -1823,12 +1987,18 @@ export function registerMarinaDock(D, H) {
       // end over the water — past it you are already standing on the deck. They reach 0.5 m out over the water so a kid
       // whose feet still hold the walkway edge (squid surfacing on the lip) is inboard of the box centre and gets pushed
       // back onto the walkway, never off it.
+      // 【采样避让】两侧 rail 盒(绝不横跨走道)。两端各留 0.25 m 不伸上甲板:栏杆端头不会戳进
+      // 甲板(沿码头沿走的机器人不会被绊),而 r=0.38 的小孩也挤不过端头落水——走过端头就已站上甲板。
+      // 盒体向水面伸出 0.5 m:脚还勾着走道边的小孩(鱿鱼从沿口冒头场景)被盒中心推回走道,而非推下水。
       const la = (o.land0 ?? 0.2) + 0.25, lb = (o.land1 ?? run - 0.05) - 0.25, nR = Math.max(1, Math.ceil((lb - la) / 1.3));
       slopeRail(B, W / 2 + 0.045, W / 2 + 0.5, la, lb, rise, run, HR + 0.03, nR);
       slopeRail(B, -W / 2 - 0.5, -W / 2 - 0.045, la, lb, rise, run, HR + 0.03, nR);
     },
   };
 
+  // 【道具 grandstair:大台阶栏杆】为宽坡道((0,0,0)→(0,rise,run),宽 W 居中)做两侧:灰泥 cheek 斜板+
+  // 石压顶(盖住坡侧上沿),藏青钢立杆+清漆柚木扶手+双道细杆,脚端望柱带灯、顶端望柱带球饰;
+  // 栏杆为 rail 碰撞,望柱实体(不可站立)
   // ---- grand stair balustrade: render cheek stringers with stone coping along both sides, navy steel stanchions,
   //      varnished teak handrail + two rod rails, newel pillars at the foot (with lanterns) and at the terrace (finials)
   D.grandstair = {
@@ -1876,6 +2046,9 @@ export function registerMarinaDock(D, H) {
         // colliders: see-through balustrade between the newels = rail; the render newels are solid (nobody perches)
         // (full depth down to the quay beside the solid stair side: no quay nav node survives next to it, so bots never
         //  plan a drop off the stair through the balustrade; ends 6 cm short of the terrace front so its lip keeps its bevel)
+        // 【采样避让】望柱间透空栏杆 = rail 盒;望柱实体(没人站上);rail 盒全深落到码头面(紧挨
+        // 实体梯侧,码头上的导航节点无一幸存,bot 不会规划翻越栏杆跳下);盒端比平台前沿收进 6 cm,
+        // 平台沿口的倒角采样不受影响
         const a = sx * (W / 2 + 0.045), b = sx * (W / 2 + 0.2), n0 = sx * (W / 2 + 0.045), n1 = sx * (W / 2 + 0.28);
         slopeRail(B, Math.min(a, b), Math.max(a, b), 0.12, run - 0.06, rise, run, HR + 0.08, 4, 0.06);
         B.col(Math.min(n0, n1), 0, -0.16, Math.max(n0, n1), 1.08, 0.12, { roof: true });
@@ -1884,6 +2057,7 @@ export function registerMarinaDock(D, H) {
     },
   };
 
+  // 【收尾】给本包注册的每种道具包一层 build 包装,让 NS() 在构建时能拿到当前 builder(经 curB 取材质桶)
   // every docks type builds with its builder in scope for NS()
   for (const t of Object.keys(D)) {
     if (before.has(t)) continue;

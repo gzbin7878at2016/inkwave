@@ -1,3 +1,31 @@
+// ============================================================================
+// 【中文导读】大招系统 —— 配置驱动 + 内置实现表(不走 kit registry)
+// ----------------------------------------------------------------------------
+// 【模块定位】19 种大招中除 Tidal Slam / Ink Tempest 之外的全部 17 种。数值在
+//   config.js 的 SPECIALS 表,行为在本文件底部的 IMPL 表按 kind 查得;运行时挂到
+//   actor.specialActive 上,用一组"接管标志"驱动 actor 自身的更新;导弹、龙卷风、
+//   音箱、泡泡等世界对象放在 this.world 里,由 SpecialSystem.update(dt) 统一推进。
+// 【为什么是配置驱动而非 kit】武器系统是"三级可插拔"(见 docs/ASSETS-WEAPONS
+//   .zh-CN.md §0):主武器 kit 全接管,副武器 kit 半接管,大招是第三级——数值全在
+//   共享配置表,行为在内置 IMPL/GHOST 两张表。原因是大招深度接管移动/武器/受击,
+//   hook 面远大于武器;配置表 + kind 分派让平衡调整(改数值)零代码,只有新机制
+//   才需要动本文件。
+// 【IMPL 表机制】SpecialSystem.start(a, id) 读 SPECIALS[id].kind(炸弹连发的 5 个
+//   变体共享 'barrage'),查 IMPL[kind] 得 { start, tick, body, move, weapon, end }
+//   钩子,以 .call(this, a, s, ...) 调在系统实例上。运行中的大招是
+//   actor.specialActive = { id, def, t, dur, ... }:body=true 时 G.specials.body
+//   替代正常移动控制器;speed/accel 覆盖地面速度;noSquid / inkProof / faceYaw /
+//   faceMove / aimFace / firing / hang / seatY 等标志每帧被 actor 读取。
+// 【武器接管】actor 每帧先问 G.specials.weapon(a, s, dt, inp),返回 true 就跳过
+//   weaponRunner——大招由此替换主武器(龙卷炮/泡泡机/印章)或吞掉扳机(投弹/起跳);
+//   zipcaster 返回 false:主武器照常开火,只有副键发射滑索。
+// 【联机协议】owner 把大招记成 ['k', nid, 'sp', data] 记录(data 首元素分 5 类,
+//   见下方英文注释);其他客户端由 netGhost 在对应玩家身上播"ghost"版:只演外观
+//   (道具/变身/手持物),涂墨静音、命中丢弃;持续伤害(龙卷风/音波)由各客户端对
+//   自己的玩家结算。变形类大招结束约 2 秒前有"即将结束"提示音(TRANSFORMS 表)。
+// 【配套阅读】docs/ASSETS-WEAPONS.zh-CN.md §0(三级可插拔总览)、docs/NET.zh-CN.md。
+//   本注释以代码实际行为为准。
+// ============================================================================
 // Specials (everything except Tidal Slam and Ink Tempest, which live in actor.js / weapons.js).
 //
 // A running special is `actor.specialActive = { id, def, t, dur, … }`. Flags on it steer the actor's own update:
@@ -21,6 +49,8 @@ import { SPECIAL_ICONS } from '../ui/ui-icons.js';
 import { t } from '../i18n/strings.js';
 import { KIT_GHOSTS, netRec, netId, netHurt, netMuted, ghostMute } from './kits/registry.js';
 
+// 【可选外观道具】大型大招(海怪/音箱/导弹/喷射背包/螃蟹机甲)的程序化模型模块,
+//   动态 import:尚未加载或不存在时一律用代码内置的占位几何体,功能不受影响。
 // world props for the big specials (kraken, speaker, missile, jetpack, crab) — optional until they exist
 let PROPS = null;
 import('./special-props.js').then((m) => { PROPS = m; }).catch(() => { /* placeholders are used */ });
@@ -32,6 +62,11 @@ const _hit = new Hit(), _hit2 = new Hit();
 const _res = { t: 0, dist: 0 };
 const TAU = Math.PI * 2;
 
+// 【联机记录格式】owner 端把大招记成 ['k', nid, 'sp', data],data[0] 分 5 类:
+//   0=开始(带 SPECIAL_ORDER 下标) 1=结束(带原因) 2=世界对象生成(导弹/龙卷/
+//   音箱/泡泡/投掷印章/蟹壳炮弹/应援球) 3=世界对象事件 4=进行中大招的瞬间动作。
+//   其余客户端只在对应玩家身上播放 ghost 版:纯视觉(涂墨静音、命中丢弃),
+//   持续伤害由各客户端对自己的玩家本地结算(与 Ink Tempest 的做法一致)。
 // ---- online (see SpecialSystem.netGhost): the owner records its special as ['k', nid, 'sp', data] —
 //   [0, index in SPECIAL_ORDER] start · [1, reason] end · [2, kind, gid, …] a world object (missile, twister, speaker,
 //   bubble, thrown stamp, shell, orb) · [3, gid, what] a world object's event · [4, what, …] a running special's moment
@@ -42,16 +77,22 @@ const v3 = (v) => [r2(v.x), r2(v.y), r2(v.z)];
 const V = (d, i) => new THREE.Vector3(d[i], d[i + 1], d[i + 2]);
 const rec = (a, d) => netRec(a, 'sp', d);
 
+// 【音频/相机小工具】near=离相机足够近(省掉听不到的音效与看不见的特效),
+//   hearable=本机玩家或近到能听到的角色;play/loop 是 G.audio 的安全包装(无音频系统时静默)
 const near = (p, r = 32) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
 const hearable = (a) => a.isLocal || a._nearCamera();
 const play = (name, o) => G.audio?.play(name, o);
 const loop = (name, o) => G.audio?.loop?.(name, o) || null;
+// 【脚下地面】从 p 上方一点向下打射线找落脚点(找不到返回 null)
 function groundBelow(p, maxDown = 30) {
   const g = G.physics.raycast(_v4.copy(p).setY(p.y + 0.3), DOWN, maxDown, _hit2, true);
   return g.hit ? g.point.clone() : null;
 }
+// 【涂墨助手】大招的墨水只算涂地、永不给大招槽充能(addTurfNoSpecial)
 // special ink counts as turf but never charges the special meter
 function paint(owner, pos, r, team) { const area = G.paint.splat(pos, r, team, { seed: Math.random() }); owner?.addTurfNoSpecial?.(area); return area; }
+// 【印章朝向助手】Mega Stamp 的身体朝向(转身比瞄准慢)与前向扇区判定:
+//   stampFront 测试目标点是否落在身体正前方 arcDeg 度扇形内(贴身距离恒真)
 // damage everyone on the other team within `radius` of c (line of sight from c), falloff from dmgMax to dmgMin
 // Mega Stamp: the body's facing (it turns slower than the aim) and a front-arc test (is p within arcDeg of the facing?)
 function stampFwd(s) { return new THREE.Vector3(Math.sin(s.bodyYaw), 0, Math.cos(s.bodyYaw)); }
@@ -61,9 +102,14 @@ function stampFront(a, s, p, arcDeg) {
   return (dx * Math.sin(s.bodyYaw) + dz * Math.cos(s.bodyYaw)) / l >= Math.cos((arcDeg * Math.PI) / 180);
 }
 // specials that transform you / take over your weapon for a while: they sound a "wearing off" cue before they end
+// 【变形类大招集合】会变身/接管武器的大招,结束前 ENDING_CUE 秒播"即将结束"提示音;
+//   STAMP_SMASHES = 印章挥击可以拍爆的副武器种类
 const TRANSFORMS = new Set(['jetpack', 'crab', 'kraken', 'stamp', 'zipcaster', 'zooka', 'blower', 'bubbler']);
 const ENDING_CUE = 2.0;   // seconds left when it sounds
 const STAMP_SMASHES = new Set(['bomb', 'sticky', 'burst', 'seeker', 'mist', 'mine']);   // sub kinds a swing smashes
+// 【范围爆炸助手】对半径内所有敌队成员结算伤害(需从爆心到目标的视线),
+//   伤害按距离在 dmgMax→dmgMin 间平方衰减,killRadius 内直接秒杀;
+//   同时溅射副武器道具、通知 Boss 战(Boss Battle)。
 function blast(owner, team, c, radius, dmgMax, dmgMin, weaponId, killRadius = 0) {
   for (const e of G.actors) {
     if (e.team === team || !e.alive) continue;
@@ -77,6 +123,8 @@ function blast(owner, team, c, radius, dmgMax, dmgMin, weaponId, killRadius = 0)
   G.subs?.damageArea(c, radius, 60, team);
   G.boss?.splash(owner, c, radius, dmgMax, dmgMin, weaponId);   // Boss Battle
 }
+// 【持续伤害】龙卷风/音波光束用:没有逐帧命中事件,只掉血与溅墨;
+//   跳过远端角色(remote)——联机时各客户端结算自己的玩家
 // continuous damage (tornado, sound beam): no per-frame hit events, only the splat
 // (online: each client applies it to its own players — from a ghost's tornado / speaker too, as the Ink Tempest does)
 function tickDamage(owner, e, dmg, weaponId) {
@@ -87,6 +135,8 @@ function tickDamage(owner, e, dmg, weaponId) {
 function bounds() { return G.level.bounds; }
 
 // ------------------------------------------------------------------------------------------------ shaders
+// 【自定义着色器】大招的视觉全部走 ShaderMaterial,共 4 套:旋涡漏斗(龙卷/气旋)、
+//   音波光束环、肥皂泡薄膜(泡泡/力场)、滑索暗影光环。下方 xMat(color) 是各自的工厂函数。
 // swirling funnel (vortex, twisters): spiral streaks scrolling up, soft top/bottom, team tint
 const SWIRL_VS = `
   uniform float uTime; uniform float uBottom; uniform float uTop; uniform float uWobble;
@@ -116,6 +166,7 @@ const SWIRL_FS = `
     vec3 c = mix(uColor * 0.7, uColor * 1.5 + 0.12, band * 0.8 + band2 * 0.4);
     gl_FragColor = vec4(c, a);
   }`;
+// 【音波光束片元】沿轴向飞驰的亮环,配合 SWIRL_VS 的圆柱 UV(Howl Box 的充能与爆发)
 // sound beam: rings racing outward along the axis
 const BEAM_FS = `
   uniform vec3 uColor; uniform float uTime; uniform float uAlpha; uniform float uCharge;
@@ -128,6 +179,8 @@ const BEAM_FS = `
     vec3 c = mix(uColor, uColor * 1.6 + 0.25, ring * uCharge);
     gl_FragColor = vec4(c, a);
   }`;
+// 【肥皂泡/力场】虹彩菲涅尔边缘 + 半透明泡体 + 流动高光 + 受击闪白(uHit);
+//   Bubble Blower 的泡泡与 Bubble Guard 的护盾球共用
 // soap-ink bubble / force field: iridescent fresnel rim, faint body, moving highlight
 const BUBBLE_VS = `
   varying vec3 vN; varying vec3 vV; varying vec3 vP;
@@ -150,6 +203,8 @@ const BUBBLE_FS = `
     gl_FragColor = vec4(c + hl, clamp(a, 0.0, 1.0));
   }`;
 
+// 【滑索光环】暗色烟雾外壳:顶点沿法线做双重正弦涌动,片元是上升的烟斑 +
+//   队色混紫罗兰的辉光边缘(zipcaster 变身的"神秘气场")
 // zipline aura: dark smoky shroud, drifting streaks, glowing team-coloured rim
 const AURA_VS = `
   uniform float uTime; varying vec3 vN; varying vec3 vV; varying vec3 vP;
@@ -199,6 +254,8 @@ function bubbleMat(color) {
   });
 }
 
+// 【道具网格工厂】按外观道具定义拼一个 Group:塑料本体 + 队色墨水件 + 可选发光件;
+//   partMesh 是不带发光件的简化版(螃蟹腿、印章这类散件)
 // a mesh group from a prop def's geometry (body plastic + team ink + optional glow)
 function propMesh(d, team, glowMat) {
   const g = new THREE.Group();
@@ -215,6 +272,10 @@ function partMesh(body, ink, team) {
 }
 
 // ================================================================================================ system
+// 【SpecialSystem 类】大招系统的核心:生命周期(start/tick/body/end)、武器接管、
+//   联机 ghost 协议(netGhost/_spawn/_ghostObj)、护盾与欢呼的每帧更新(update)、
+//   小地图绘制(drawMap),以及共享工具(_stand/_swapWeapon 等)。
+//   世界对象(this.world)与临时网格(this.owned)都在 clear() 里统一清理。
 export class SpecialSystem {
   constructor(scene) {
     this.scene = scene;
@@ -232,6 +293,7 @@ export class SpecialSystem {
   _add(...objs) { for (const o of objs) { this.scene.add(o); this.owned.add(o); } }
   _remove(...objs) { for (const o of objs) { if (!o) continue; this.scene.remove(o); this.owned.delete(o); } }
 
+  // 【队色发光材质】按队伍缓存的 MeshStandardMaterial(暗色底+队色自发光),给道具的 glow 件用
   glowMat(team) {
     if (!this._glow[team]) {
       const c = G.teamColors[team];
@@ -240,6 +302,7 @@ export class SpecialSystem {
     return this._glow[team];
   }
 
+  // 【清理全场】对局结束/重开时:回收世界对象、scene 里的临时网格、护盾球与缓存材质
   clear() {
     for (const w of this.world) w.dispose?.();
     this.world.length = 0;
@@ -252,6 +315,8 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- lifecycle
+  // 【开始大招】查 SPECIALS[id] 得数值定义,按 def.kind 查 IMPL 表调 start 钩子;
+  //   记录 [0, 下标] 联机广播;actor.specialActive 挂上运行状态对象 s。
   start(a, id) {
     const def = SPECIALS[id];
     // `kind` picks the behaviour (the Bomb Barrage variants all share 'barrage')
@@ -264,6 +329,8 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- online
+  // 【联机入口】收到某玩家的大招记录 d(格式见文件顶部),按 d[0] 的 5 类分派:
+  //   0 开始 ghost · 1 结束 · 2 生成世界对象 · 3 世界对象事件 · 4 运行中大招的瞬间动作
   // a remote player's special, from its owner's records (see the note at the top)
   netGhost(a, d) {
     if (!Array.isArray(d)) return;
@@ -275,6 +342,8 @@ export class SpecialSystem {
       case 4: { const s = a.specialActive; if (s?.ghost) GHOST[s.kind]?.event?.call(this, a, s, d); break; }
     }
   }
+  // 【启动 ghost 版大招】ghost 的 start 优先用 GHOST 表的视觉版,缺省回落到 IMPL 的
+  //   start(仅当它对"由网络驱动的角色"无害时);先掐掉可能残留的旧 ghost。
   _startGhost(a, id) {
     if (a.specialActive?.ghost) this.end(a, 'net');   // (one that never heard its end)
     const def = SPECIALS[id];
@@ -284,6 +353,8 @@ export class SpecialSystem {
     try { f?.call(this, a, s); } catch (e) { console.warn('[specials] ghost start', id, e); }
     emit('special:start', { actor: a, id });
   }
+  // 【ghost 每帧】只推进视觉(GHOST[kind].tick),整体包在 ghostMute 里:
+  //   涂墨静音、命中丢弃;移动由网络的 owner 负责,这里不碰
   // per frame: remote players' specials (visuals only; their owners move them)
   _ghostTick(dt) {
     for (const a of G.actors) {
@@ -297,6 +368,7 @@ export class SpecialSystem {
       if (f) ghostMute(s, () => f.call(this, a, s, dt));
     }
   }
+  // 【生成联网世界对象】放进 this.world 并分配 gid,记录 [2, kind, gid, ...data] 广播给全场
   // the owner's world object: in the world, with an id, recorded for everyone else
   _spawn(a, w, kind, data) {
     this.world.push(w);
@@ -304,6 +376,8 @@ export class SpecialSystem {
     if (w.gid) rec(a, [2, kind, w.gid, ...data]);
     return w;
   }
+  // 【世界对象的 ghost 重建】按 kind 缩写(mi/tw/sk/bu/ts/sh/or)在本地 new 一个
+  //   对应类的实例,用记录里的位置/方向补全状态,标记 ghost(纯视觉,不判定命中)
   _ghostObj(a, d) {
     const [, kind, gid] = d;
     if (this.world.some((x) => x.gid === gid)) return;
@@ -321,11 +395,15 @@ export class SpecialSystem {
     w.ghost = true; w.gid = gid;
     this.world.push(w);
   }
+  // 【ghost 侧世界对象受击】别的屏幕上有人打中了本对象的 ghost:转发给 owner 结算。
+  //   目前只有泡泡接入(dmg<0 表示己方墨水,由 owner 的副本决定充能还是吸收)
   // a hit on one of our world objects made on another screen (bubbles: dmg < 0 = its own team's ink)
   netHurtObj(gid, dmg) {
     const w = this.world.find((x) => !x.ghost && x.gid === gid && !x.dead);
     if (w && w.kind === 'bubble') this._bubbleHit(w, dmg < 0 ? w.team : 1 - w.team, Math.abs(dmg), null);
   }
+  // 【结束提示音】变形类大招(TRANSFORMS)剩余 ENDING_CUE 秒时播一次:
+  //   本机大声、旁人小声带位置(给双方一个"变身快没了"的读秒)
   // transformation specials: a "wearing off" jingle ~2 s before the time runs out (loud for you, positional for others)
   _endCue(a, s) {
     if (s.endCued || !s.dur || !TRANSFORMS.has(s.kind) || s.dur - s.t > ENDING_CUE) return;
@@ -333,6 +411,8 @@ export class SpecialSystem {
     if (a.isLocal) play('special_ending', { volume: 0.75 });
     else if (hearable(a)) play('special_ending', { pos: a.pos, volume: 0.4 });
   }
+  // 【非接管型大招的每帧推进】actor 自己移动+开火之后调用:走 IMPL 的 tick,
+  //   到时长的按 'time' 结束(接管移动的大招走 body,见下)
   // per-frame for non-body specials (after the actor's own movement + weapon)
   tick(a, s, dt) {
     s.t += dt;
@@ -341,6 +421,8 @@ export class SpecialSystem {
     IMPL[s.kind]?.tick?.call(this, a, s, dt);
     if (a.specialActive === s && s.dur && s.t >= s.dur) this.end(a, 'time');
   }
+  // 【接管移动型大招的每帧推进】s.body=true 时 actor 调这里代替正常控制器:
+  //   瞄准空袭/音波摆放/声呐施放/喷射背包悬停/滑索飞驰;落水判定仍然生效("大海照样赢")
   // body-owning specials (strike aiming, wail placement, sonar cast, jetpack, zipline zips)
   body(a, s, dt) {
     s.t += dt;
@@ -354,13 +436,19 @@ export class SpecialSystem {
       a.splat(a.lastDamage < 4 ? a.lastAttacker : null, 'water');
     }
   }
+  // 【移动前钩子】actor 移动之前,大招可以改写/整形移动输入(Mega Stamp 的横向削速)
   // before the actor moves: a special may steer / shape the movement input (Mega Stamp)
   move(a, s, dt) { IMPL[s.kind]?.move?.call(this, a, s, dt); }
+  // 【武器接管钩子】主武器的替代者:返回 true 表示大招吞掉了这次扳机,
+  //   actor 因此跳过 weaponRunner(见文件顶部导读)
   // main-weapon replacement; returns true when the special consumed the trigger (the weapon runner is skipped)
   weapon(a, s, dt, inp) {
     const f = IMPL[s.kind]?.weapon;
     return f ? !!f.call(this, a, s, dt, inp) : false;
   }
+  // 【结束大招】调 IMPL 的 end 钩子做清理(还武器/拆模型/停循环音),广播 [1, 原因];
+  //   jetpack/zipcaster 到时未死则超级跳回起点(s.jumpBack),信标转为"返航"倒计时。
+  //   (slam/storm 不经过这里,它们在 actor.js/weapons.js 自管)
   end(a, reason = 'time') {
     const s = a.specialActive;
     if (!s || s.ended || s.id === 'slam' || s.id === 'storm') return;
@@ -375,10 +463,13 @@ export class SpecialSystem {
     else if (s.jumpBack && reason !== 'splat' && a.alive && s.origin && a.pos.distanceTo(s.origin) > 2.5 && a.superJump(s.origin.clone(), { instant: true, home: true })) s.marker?.returning();
     else s.marker?.finish();
   }
+  // 【被击杀时】结束当前大招(除 slam/storm),并卸掉身上的泡泡护盾
   onSplat(a) {
     if (a.specialActive && a.specialActive.id !== 'slam' && a.specialActive.id !== 'storm') this.end(a, 'splat');
     if (a.status.shield > 0) this._dropShield(a, false);
   }
+  // 【HUD 进度条】返回剩余比例(0..1):有的按时间、有的按次数/耐久——
+  //   螃蟹取时间与血量两条线的较小值;泡泡机是次数×时间双因子
   // remaining fraction of a running special (HUD gauge drains)
   remaining(a) {
     const s = a.specialActive;
@@ -389,6 +480,8 @@ export class SpecialSystem {
     if (s.dur) return Math.max(0, 1 - s.t / s.dur);
     return 1;
   }
+  // 【HUD 操作提示】本机玩家大招进行中的底部提示文案:返回 i18n 消息 id,
+  //   或 { id, params } 描述符(名字/数字嵌在句子中间时,由 HUD 富文本渲染)
   // HUD hint for the local player while a special runs. Returns an i18n message id, or a { id, params } descriptor
   // when a name/number goes in the middle (the HUD renders it: ui-util.msgText → t(id, params) → richText).
   prompt(a) {
@@ -411,6 +504,8 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- damage + hits
+  // 【受击过滤器】actor 结算伤害前先过这里:海怪=免伤但吃击退;螃蟹=转给蟹壳 hurt;
+  //   印章挥击 guard 期间正面扇区=弹开;泡泡护盾=全额吸收但吃击退。都不掉血则返回 0。
   filterDamage(v, amount, attacker, source) {
     const s = v.specialActive;
     if (s && s.id === 'kraken') { this._knock(v, attacker, Math.min(4, amount * s.def.knockPerDamage)); this._hitFlash(v); return 0; }
@@ -429,6 +524,7 @@ export class SpecialSystem {
     }
     return amount;
   }
+  // 【击退】沿"离攻击者方向"给水平冲量并小跳一下;无攻击者时沿面朝的反方向
   _knock(v, attacker, k) {
     if (!(k > 0)) return;
     let dx = 0, dz = 0;
@@ -440,6 +536,8 @@ export class SpecialSystem {
   }
   _hitFlash(v) { v.hurtFlash = Math.min(1, v.hurtFlash + 0.25); }
 
+  // 【弹道 vs 大招世界对象】目前只有泡泡会接子弹——三者对应三种命中查询:
+  //   shotHit 线段扫掠(子弹)、rayHit 射线(狙击类)、areaHit 范围爆炸;命中即被泡泡吸收
   // projectile segment against special objects (bubbles: any team). true = absorbed
   shotHit(prev, pos, team, dmg, owner) {
     for (const w of this.world) {
@@ -471,6 +569,8 @@ export class SpecialSystem {
     }
   }
 
+  // 【泡泡受击结算】己方墨水给泡泡充能,充到 popDamage 就爆炸;敌方墨水被吸收
+  //   并让泡泡略微缩小;ghost 的泡泡只转发给 owner 的副本结算(netHurt)
   // a bubble hit: your team's ink charges it until it blows; enemy ink is soaked up (and shrinks it a little)
   _bubbleHit(w, team, dmg, owner) {
     if (w.dead || netMuted()) return;   // (a ghost's shot: its owner's copy decides)
@@ -485,6 +585,7 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- shields
+  // 【给予护盾】(Bubble Guard / 队友共享)套一个会呼吸的虹彩泡壳,计时与共享见 update
   giveShield(a, time, owner) {
     a.status.shield = Math.max(a.status.shield, time);
     a._shieldOwner = !!owner;
@@ -498,6 +599,7 @@ export class SpecialSystem {
     if (hearable(a)) play('shield_up', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.8 : 0.5 });
     emit('special:shield', { actor: a, time });
   }
+  // 【卸下护盾】清计时、摘网格;pop=true 时(时间耗尽)播放破裂音效与墨花
   _dropShield(a, pop) {
     a.status.shield = 0;
     const m = this.shieldMeshes.get(a);
@@ -509,6 +611,8 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- "Yeah!" cheers
+  // 【欢呼(Booyah)】按 C 给自己队持球的队友充能:每个在蓄力中的 Cheer Orb 大招
+  //   获得 cheer 充能;帮了忙且自己手上没大招时,给自己回一点大招槽,可能触发就绪事件
   cheer(a) {
     if (!a.alive || G.time - (a._cheerT || -9) < 0.4) return;
     a._cheerT = G.time;
@@ -532,6 +636,8 @@ export class SpecialSystem {
     emit('actor:cheer', { actor: a, helped });
   }
   // ---------------------------------------------------------------------------------------------- per frame
+  // 【系统每帧】依次:处理欢呼输入 → 推进欢呼列表 → 力场护盾的计时/跟随/队友共享 →
+  //   ghost 大招推进(_ghostTick)→ 世界对象推进(ghost 对象涂墨静音,死了就回收)
   update(dt) {
     // cheer input (controllers set intent.cheer for one frame)
     for (const a of G.actors) if (a.intent.cheer) { a.intent.cheer = false; this.cheer(a); }
@@ -572,6 +678,8 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- minimap
+  // 【小地图】把大招世界对象画进小地图:导弹落点(脉冲圈+十字)、龙卷风(旋转弧)、
+  //   音箱(虚线指向+爆发粗线)、泡泡、返航信标(图标+灰化进度)、应援球(半径渐涨)
   drawMap(c, mm, tc, s, hex, t) {
     const me = mm.viewerTeam ?? 0;
     for (const w of this.world) {
@@ -631,6 +739,7 @@ export class SpecialSystem {
     }
   }
 
+  // 【空袭瞄准输入】小地图 canvas 像素增量移动 Vortex Strike 的落点光标(限场地内)
   // strike targeting input from the player controller: cursor moves in minimap canvas pixels
   aimMove(a, dxPx, dyPx, mm) {
     const s = a.specialActive;
@@ -642,6 +751,8 @@ export class SpecialSystem {
   aimConfirm(a) { const s = a.specialActive; if (s && s.id === 'strike' && s.aiming && s.t > 0.25) s.confirm = true; }
 
   // ---------------------------------------------------------------------------------------------- shared helpers
+  // 【共享工具】_stand=站桩(指数阻尼+重力+贴地),_swapWeapon/_restoreWeapon=换/还大招专用武器,
+  //   _fwd=瞄准朝向的单位向量(复用模块级 _v3,注意别长期持有)
   _stand(a, dt, damp = 8) {
     a.vel.x *= Math.exp(-damp * dt); a.vel.z *= Math.exp(-damp * dt);
     if (!a.grounded) a.vel.y = Math.max(-PLAYER.maxFall, a.vel.y - PLAYER.gravity * dt); else a.vel.y = 0;
@@ -655,12 +766,17 @@ export class SpecialSystem {
 }
 
 // ================================================================================================ world objects
+// 【世界对象】从大招里"丢出去"的独立物体:返航信标、导弹、龙卷风、龙卷弹、音箱、
+//   泡泡、投掷印章、蟹壳炮弹、应援球。统一约定:update(dt) 返回 false 表示寿命结束,
+//   dispose() 回收场景资源;owner 端的对象带 gid 走联机,ghost 端纯视觉。
 // Where an Ink Jet / Zipline user took off: they super jump back here when the special ends, so it's marked for
 // everyone (both teams — the other side can camp it) until they land or are splatted. The beacon carries the special's
 // icon in the owner's colour; once they take off for home it wipes round to grey like a clock, reaching full grey the
 // instant they land — a countdown to time your attack by.
 const RETURN_GREY = new THREE.Color('#9aa0a6');
 const _badges = new Map();
+// 【图标徽章】返航信标头顶的队色大招图标:canvas 画奶白圆盘+队色描边,再把 SVG 图标
+//   转 data URL 叠印进去;按 (大招id, 颜色) 缓存共享。灰色版用于"正在返航"倒计时。
 // icon badge (canvas + texture, shared): cream disc, colour rim, the special's icon with its accents in `color`
 function iconBadge(id, color) {
   const hex = '#' + color.getHexString(), key = id + hex;
@@ -687,6 +803,8 @@ function iconBadge(id, color) {
   }
   return e;
 }
+// 【返航信标】Ink Jet/滑索使用者的起飞点标记:双环+细小旋涡光柱+悬浮大招图标;
+//   owner 起飞回家时图标从 12 点方向做"时钟扫灰",灰化进度=回家飞行进度(可蹲点读秒)
 class ReturnMarker {
   constructor(sys, a, pos, icon) {
     this.sys = sys; this.kind = 'return'; this.owner = a; this.team = a.team; this.icon = icon;
@@ -774,6 +892,8 @@ class ReturnMarker {
   }
 }
 
+// 【Vortex Strike 导弹】先从投掷者背后垂直升空出画,再俯冲到目标点(地面有
+//   脉动警告圈+呼啸声),落地化成一股 Tornado 后自身结束
 // Vortex Strike missile: up off the thrower's back, then down onto the target (warning ring on the ground)
 class Missile {
   constructor(sys, a, to) {
@@ -821,6 +941,8 @@ class Missile {
   dispose() { this.sys.scene.remove(this.mesh, this.ring); this.ring.material.dispose(); }
 }
 
+// 【龙卷风】空袭落地的持续伤害区:内外双层旋涡漏斗(不同摆动幅度/转速),
+//   持续翻搅涂墨脚印、把范围内敌人往外缘轻拽并按 dps 掉血(各客户端本地结算)
 class Tornado {
   constructor(sys, owner, team, pos) {
     const d = SPECIALS.strike;
@@ -875,6 +997,8 @@ class Tornado {
   }
 }
 
+// 【Twister Zooka 龙卷弹】又高又细的旋转气柱直线前飞:穿透玩家(每个只结算一次,
+//   hit 集合去重),撞墙/被副武器拦截/打到泡泡即爆裂;沿途在地面留一条墨线
 // Twister Zooka shot: a tall spinning twister flying straight; pierces players, stops at walls
 class Twister {
   constructor(sys, a, from, dir) {
@@ -932,6 +1056,8 @@ class Twister {
   dispose() { this.sys.scene.remove(this.mesh); this.mesh.material.dispose(); }
 }
 
+// 【Howl Box 音箱】先充能(喇叭震颤+细引导光束),再沿瞄准方向放一道穿墙的音波
+//   粗光束持续 blast 秒:光束内敌队持续掉血,最后收束淡出
 // Howl Box: charges, then blasts a sound wave down its line through walls
 class Speaker {
   constructor(sys, a, pos, dir) {
@@ -1020,6 +1146,8 @@ class Speaker {
   dispose() { this.sys.scene.remove(this.group, this.beam); this.beam.material.dispose(); this.loop?.stop?.(0.2); }
 }
 
+// 【Bubble Blower 泡泡】漂浮的虹彩泡:敌人推不进去(球面碰撞),吸收敌方火力;
+//   己方墨水把它充爆——爆炸按当前半径大范围涂墨+伤害,还能连锁引爆别的泡泡
 // Bubble Blower bubble: floats, walls off enemies, soaks up enemy fire; team fire sets it off
 class Bubble {
   constructor(sys, a) {
@@ -1102,6 +1230,7 @@ class Bubble {
   dispose() { this.sys.scene.remove(this.mesh); this.mesh.material.dispose(); }
 }
 
+// 【投掷出去的 Mega Stamp】抛物线旋转飞出,撞墙/砸中敌人/被打爆时落地大范围爆炸
 // thrown Mega Stamp
 class ThrownStamp {
   constructor(sys, a, from, dir) {
@@ -1154,6 +1283,7 @@ class ThrownStamp {
   dispose() { this.sys.scene.remove(this.mesh); }
 }
 
+// 【Crab Rig 迫击炮弹】螃蟹机甲副键发射的抛物线炮弹,落点爆炸涂墨+范围伤害
 // Crab Rig mortar shell
 class Shell {
   constructor(sys, a, from, vel) {
@@ -1191,6 +1321,8 @@ class Shell {
   dispose() { this.sys.scene.remove(this.mesh); }
 }
 
+// 【Cheer Orb 应援球】抛投出去,落地先"引线"膨胀(警告泡壳渐涨到爆炸半径),
+//   然后一次性超大爆炸:大范围涂墨+高伤害+击杀半径
 // Cheer Orb: lobbed, lands, swells, then one huge blast
 class Orb {
   constructor(sys, a, from, vel) {
@@ -1244,7 +1376,12 @@ class Orb {
 }
 
 // ================================================================================================ specials
+// 【IMPL 实现表】kind → 钩子集 { start, tick, body, move, weapon, end },全部 .call(this) 调在
+//   SpecialSystem 实例上。钩子按需实现:只接管武器就给 weapon,接管移动就给 body …
+//   数值一律从 s.def(= config.js 的 SPECIALS[id])读。下方每个 kind 一行中文简介。
 const IMPL = {
+  // 【炸弹连发】限时无限投掷某一种副武器(5 个变体共用本 kind,由 def.bomb 决定弹种),
+  //   不耗墨;大招期间把角色的副武器换成该弹种,结束换回
   // ---------------------------------------------------------------------------------------------- Bomb Barrage
   barrage: {
     start(a, s) {
@@ -1254,12 +1391,15 @@ const IMPL = {
     end(a) { a.character.setSub?.(a.sub.kind); a.weaponRunner.aimingSub = false; },
   },
 
+  // 【泡泡罩】给一个限时虹彩力场(见 shields 区):伤害全吸收但吃击退,结束时按自带计时器
+  //   自然消失,owner 还能把剩余时间分享给身边的队友
   // ---------------------------------------------------------------------------------------------- Bubble Guard
   bubbler: {
     start(a, s) { this.giveShield(a, s.def.duration, true); },
     end(a, s, reason) { if (reason !== 'time') return; /* the field runs out on its own timer */ },
   },
 
+  // 【深海声呐】施放瞬间标记全场敌人(reveal 计时+小地图追踪),施法动作期间站桩
   // ---------------------------------------------------------------------------------------------- Deep Sonar
   sonar: {
     start(a, s) {
@@ -1278,6 +1418,8 @@ const IMPL = {
     body(a, s, dt) { this._stand(a, dt); },
   },
 
+  // 【漩涡空袭】进小地图光标瞄准模式(站桩),确认后在目标点 spawn 导弹→落地龙卷风;
+  //   机器人选目标:敌人最密处,或采样可行走地面找敌方墨最多的点
   // ---------------------------------------------------------------------------------------------- Vortex Strike
   strike: {
     start(a, s) {
@@ -1301,6 +1443,8 @@ const IMPL = {
       emit('special:launch', { actor: a, to: to.clone() });
       this.end(a, 'launch');
     },
+    // 【机器人选落点】优先选"敌人最密集处";否则 35% 概率或没目标时,采样可行走
+    //   地面(优先 nav 节点,避开开阔水面)找"敌方墨最多+空地"评分最高的点
     // bots: the thickest cluster of enemies, else the most enemy ink
     botTarget(a, s) {
       let best = null, bs = 0;
@@ -1328,6 +1472,8 @@ const IMPL = {
     },
   },
 
+  // 【龙卷炮】主武器被替换成肩扛炮:按间隔发射穿透性龙卷弹(Twister),移动减速、
+  //   不能变鱿鱼、面朝瞄准方向;结束还原武器
   // ---------------------------------------------------------------------------------------------- Twister Zooka
   zooka: {
     start(a, s) { s.cd = 0.25; s.speed = 4.2; s.aimFace = true; s.noSquid = true; this._swapWeapon(a, 'sp_zooka'); },
@@ -1349,6 +1495,8 @@ const IMPL = {
     end(a) { this._restoreWeapon(a); },
   },
 
+  // 【音波箱】把音箱举在右肩瞄准(细引导光束预览弹道),点击放到面前并朝瞄准方向
+  //   发射一道穿墙的音波粗光束(Speaker 世界对象),随后大招结束、还原武器可见性
   // ---------------------------------------------------------------------------------------------- Howl Box
   wail: {
     // hold the speaker up in front of you and aim (a faint guide shows the line); click sets it down and it fires
@@ -1408,6 +1556,8 @@ const IMPL = {
     },
   },
 
+  // 【海怪变身】角色模型换成海怪壳:免墨减速免伤害但吃击退,跳跃变成大跳;
+  //   左键=跳劈(空中则俯冲),落地范围爆炸涂墨;移动留下墨脚印,结束换回原模型
   // ---------------------------------------------------------------------------------------------- Kraken
   kraken: {
     start(a, s) {
@@ -1470,6 +1620,8 @@ const IMPL = {
     },
   },
 
+  // 【泡泡机】主武器换成吹泡器:按住左键吹大一个泡泡(松开/超时放出,最多 max 个),
+  //   吹满即放须松键再按(needRelease 防连吹);放出的泡泡成为世界对象(见 Bubble 类)
   // ---------------------------------------------------------------------------------------------- Bubble Blower
   blower: {
     start(a, s) { s.count = 0; s.cur = null; s.aimFace = true; s.noSquid = true; this._swapWeapon(a, 'sp_blower'); },
@@ -1510,6 +1662,9 @@ const IMPL = {
     },
   },
 
+  // 【喷射背包 Ink Jet】原地升空悬停(s.body 完全接管移动):摇杆水平推进、保持离地面
+  //   固定高度,跳跃=向上猛冲一段;左键射爆炸墨弹,喷嘴向下喷墨涂地;起飞点立返航
+  //   信标,结束(未死)超级跳回起点
   // ---------------------------------------------------------------------------------------------- Ink Jet
   jetpack: {
     start(a, s) {
@@ -1596,6 +1751,9 @@ const IMPL = {
     },
   },
 
+  // 【巨型印章】主武器换成大印章:身体朝向缓慢跟枪(移动中更慢),输入被削成 mostly 前进;
+  //   左键=前砸(带前扑),空中左键=后空翻前后双砸,右键=把印章扔出去(大招直接结束);
+  //   挥击 guard 期间正面扇区弹开子弹/拍爆炸弹与可碎副武器,结束还原武器
   // ---------------------------------------------------------------------------------------------- Mega Stamp
   stamp: {
     start(a, s) {
@@ -1670,6 +1828,8 @@ const IMPL = {
         IMPL.stamp.guardSweep.call(this, a, s);
       }
     },
+    // 【印章挥击的防御扫掠】guard 生效期间每帧:正面扇区内的敌方子弹直接击碎,
+    //   敌方炸弹/可碎副武器(STAMP_SMASHES)拍爆——这是"挥印章挡子弹"的判定
     // the swing's guard: enemy shots in front are knocked out of the air, enemy bombs in front are smashed
     guardSweep(a, s) {
       const d = s.def, ay = a.pos.y + 1.0;
@@ -1693,6 +1853,8 @@ const IMPL = {
         G.subs._destroy(it);
       }
     },
+    // 【印章砸落】在朝向前方 reach 处找地面落点:涂两摊墨(主落点+前方)、广播联机
+    //   瞬间 [4,'sl']、对半径内敌人逐个视线判定结算伤害
     slam(a, s, radius, reach) {
       const f = stampFwd(s);
       const c = _v.copy(a.pos).addScaledVector(f, reach);
@@ -1715,6 +1877,8 @@ const IMPL = {
     end(a) { this._restoreWeapon(a); },
   },
 
+  // 【应援球 Booyah】"Yeah!"大招:手里举着发光球持续充能(队友按 C 欢呼加速,
+  //   见 cheer),充满后左键/超时抛出(Orb 世界对象落地大爆);充能时给抛物线预览
   // ---------------------------------------------------------------------------------------------- Cheer Orb
   booyah: {
     start(a, s) {
@@ -1770,6 +1934,9 @@ const IMPL = {
     },
   },
 
+  // 【滑索 Zipcaster】副键发射 tether:命中墙面/地面则身体被拽过去(中途撞到敌人直接
+  //   撞停并小爆炸),挂墙可停留、跳或推摇杆离开;全程暗影光环+拖尾,左键主武器照常;
+  //   起飞点立返航信标,结束超级跳回起点
   // ---------------------------------------------------------------------------------------------- Zipline
   zipcaster: {
     start(a, s) {
@@ -1792,6 +1959,8 @@ const IMPL = {
       if (press && s.cd <= 0 && !s.zip) IMPL.zipcaster.fire.call(this, a, s);
       return false;
     },
+    // 【发射 tether】从手部朝 aimPoint 射射线:没命中只留一道 0.2s 的"放空"残影(联机
+    //   记 'zm');命中墙面/天花板则挂墙、命中地面则落点站稳,并向全员广播 'zf' 锚点
     fire(a, s) {
       const from = _v.copy(a.pos).setY(a.pos.y + 1.2).clone();
       const dir = _v2.copy(a.aimPoint).sub(from).normalize().clone();
@@ -1906,6 +2075,9 @@ const IMPL = {
     end(a, s) { this._remove(s.line, s.aura); s.line.material.dispose(); s.line.geometry.dispose(); s.aura?.material.dispose(); s.hang = 0; },
   },
 
+  // 【螃蟹机甲 Crab Rig】坐上蟹壳战车:壳体有独立血量(hp),左键=壳体朝向的加特林,
+  //   右键=迫击炮(Shell 世界对象),按"鱿鱼键"卷成装甲球高速滚动(减伤、不能开火,
+  //   碾过留墨);子弹打到正面/上方会穿透打中骑手,hp 打空或到时机甲爆裂
   // ---------------------------------------------------------------------------------------------- Crab Rig
   crab: {
     start(a, s) {
@@ -2013,6 +2185,8 @@ const IMPL = {
       s.loop?.set?.({ volume: Math.min(1, hs / (s.roll ? 6 : 2)) * (a.isLocal ? 0.5 : 0.35), pitch: 0.8 + hs * 0.08, pos: a.isLocal ? undefined : a.pos });
       if (s.hp <= 0) this.end(a, 'broken');
     },
+    // 【壳体受击分流】未卷球时,从背后(正面点积 < -0.45)或上方(高 2.4)打来的
+    //   子弹绕过壳体命中骑手(返回原伤害);其余扣壳体 hp,卷球时有减伤系数
     hurt(a, s, amount, attacker) {
       const d = s.def;
       let toRider = false;
@@ -2045,6 +2219,9 @@ const IMPL = {
 };
 
 // ================================================================================================ online ghosts
+// 【GHOST 表】远端玩家大招在本屏幕上的"纯视觉版":start(缺省直接用 IMPL 的 start——
+//   仅限视觉或无害的),tick(每帧视觉,包在 ghostMute 里跑),event(响应 owner 的
+//   [4, what, …] 瞬间记录)。这里任何东西都不决定命中。
 // A remote player's special on this screen (see the note at the top): what differs from IMPL. start (default: IMPL's
 // start — kept only where it's visual, or harmless on a squidkid the network moves), tick (visuals per frame; runs
 // muted), event (the owner's moments, [4, what, …]). Nothing here decides a hit.
@@ -2122,6 +2299,9 @@ const GHOST = {
   },
 };
 
+// 【owner→ghost 的每帧姿态位】actor 打包自己的 specialActive 姿态(超出 actor tick 的部分):
+//   螃蟹=卷球1bit+开火1bit+壳朝向8bit(挤进一个整数),应援球=充能 6bit;
+//   无大招/ghost 端返回 0。specialNetApply 在 ghost 端解包(螃蟹的 s.net 即来源于此)
 // the owner's special pose state beyond the actor tick (packActor) → the ghost's (applyRemote)
 export function specialNetState(a) {
   const s = a.specialActive;
@@ -2137,4 +2317,6 @@ export function specialNetApply(a, v) {
   else if (s.kind === 'booyah') { s.netCharge = true; s.charge = (v & 63) / 63; }
 }
 
+// 【联机挂钩】把大招的 ghost 协议注册进 kit registry:'sp' 频道的记录走 netGhost,
+//   世界对象受击转发走 netHurtObj(kits/registry.js 的 KIT_GHOSTS 表按 kind 查找)
 KIT_GHOSTS.sp = { ghost: (a, d) => G.specials?.netGhost(a, d), netHurt: (gid, dmg) => G.specials?.netHurtObj(gid, dmg) };

@@ -1,3 +1,31 @@
+// ============================================================================
+// 【中文导读】角色主类 —— 全程序化骨骼动画的核心
+// ----------------------------------------------------------------------------
+// 【模块定位】squidkid 角色：程序化装配(骨骼/材质/LOD 分层网格)+ 完全程序化、
+//   分层叠加的动画系统。没有任何关键帧剪辑(canned clip),一切姿态都在每帧由
+//   数学公式和弹簧实时算出。引擎只拥有 root.position / root.rotation.y,
+//   本文件只驱动 root 以下的所有子节点。update() 全程零分配(同屏 8 个角色)。
+// 【三大件机制】
+//   1. 姿态通道 P(Float32Array,长度 PN):一个"虚拟骨架"的全部标量通道
+//      (每根骨骼 3 个欧拉角 + 脚目标/武器锚点/表情等),各姿态层(_poseXxx)
+//      往 P 里做加性叠加或 lerpE 混合,最后在 _applyPose 里一次性写回真实骨骼。
+//   2. 弹簧岸 sp(Float32Array,长度 SPN):每个弹簧占 2 个浮点(位移,速度),
+//      由 spr()(半隐式欧拉,子步进)或 sprA()(解析解,大阻尼稳定)推进,
+//      让冲击、摆动、追随都有真实的过冲与回弹。
+//   3. 触发计时器 tr(Float32Array,长度 TN):每个 one-shot 动作一个"距触发
+//      的秒数"时钟,trigger(name) 把它清零即重放该动作;层函数用 win()/kf()
+//      等时间窗曲线读取它。
+// 【每帧流水线】update(dt, AnimState):
+//   _trackRoot(测根运动→速度/加速度/转向率)→ _updateStates(混合权重/步态参数)
+//   → _updateFormScales(人形⇄鱿鱼 0.45s 变形弹)-> _updateFeet(世界锁定落脚步态)
+//   → _buildPose(各姿态层向 P 分层叠加)→ _applyPose(缩放/骨盆可达性→躯干 FK
+//   → 头部稳定 → 双腿/双臂解析双骨 IK 兜底 → 脸 → 头发弹簧链 → 墨水槽)
+//   → _updateSquid(鱿鱼形态)→ _updateMaterials → _updateLod。
+// 【人形⇄鱿鱼】变形不是淡入淡出,而是一段 0.45s 的"弹性手势":下潜=蹲下→摊平
+//   成墨渍→鱿鱼从中升起并过冲摇晃;现身=鱿鱼蹲下→弹射变细→人形弹出着地压缩。
+// 【配套中文文档】docs/ASSETS-RIG.zh-CN.md(骨骼装配)、docs/ASSETS-CHARACTER.zh-CN.md
+//   (角色资产管线)。本注释以代码实际行为为准。
+// ============================================================================
 // INKWAVE — squidkid character: skinned procedural model + fully procedural, layered animation.
 // API: docs/CONTRACTS.md §1 (constructor, root, setColor, setWeapon, update(dt, AnimState), trigger, setDance, setHurt,
 // setVisible, getMuzzle, getHeadPosition, dispose). The engine owns root.position / root.rotation.y; everything here
@@ -30,8 +58,9 @@ import { getWeaponDef, getSubDef, FIST_OFFSET, GRIP_HOLE_L, WEAPON_KINDS, makeLa
 import { TIERS, T_HERO, T_GAME, T_FAR, LOD_QUALITY, KID_H, FADE_S, pickTier, ditherMaterial, farGeometry } from './character-lod.js';
 
 // ------------------------------------------------------------------------------------------------
-// Style tables
+// Style tables(风格目录表)
 // ------------------------------------------------------------------------------------------------
+// (中文:风格目录在 character-style.js 中,由外观流持有;此处再导出以兼容旧 import)
 // (the catalog lives in character-style.js — owned by the appearance stream; re-exported here for older importers)
 import * as STYLE from './character-style.js';
 const { SKIN_TONES, OUTFITS, IRIS, HAIR_STYLES, resolveStyle } = STYLE;
@@ -40,6 +69,12 @@ export { SKIN_TONES, OUTFITS, IRIS, HAIR_STYLES };
 // ------------------------------------------------------------------------------------------------
 // Math helpers (allocation-free)
 // ------------------------------------------------------------------------------------------------
+// 【数学助手·全零分配】这些标量函数贯穿整个动画系统:
+//   clamp/lerp/sstep(平滑阶梯)/damp(指数趋近,帧率无关)/ease 系(缓动)/
+//   mj(minimum-jerk,眼动 saccade 用的最小镇定度曲线)/backOut(回弹出界缓动)/
+//   pulse(冲量包络:快攻+指数衰减)/win(时间窗:区间外为 0,两端缓入缓出)/
+//   kf(关键帧查值,平滑阶梯插值)/kc(Catmull-Rom 切线插值,关键点处不停顿)/
+//   hk(手型键值查值)/spr 与 sprA(两大弹簧推进器,见下)。
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
 const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -79,6 +114,8 @@ function kc(t, T, V) {
   return (2 * u3 - 3 * u2 + 1) * V[i - 1] + (u3 - 2 * u2 + u) * h * m0 + (-2 * u3 + 3 * u2) * V[i] + (u3 - u2) * h * m1;
 }
 /** Damped spring (semi-implicit Euler, sub-stepped). S[i] = x, S[i+1] = v. Returns x. */
+// 【通用阻尼弹簧】半隐式欧拉 + 按固有频率自动子步进(防大步长爆炸)。
+// 弹簧岸 sp 中每个弹簧占 2 个浮点:[i]=位置 x,[i+1]=速度 v,本函数就地推进并返回 x。
 function spr(S, i, target, hz, zeta, dt) {
   const w = TAU * hz, k = w * w, c = 2 * zeta * w;
   let x = S[i], v = S[i + 1];
@@ -89,6 +126,8 @@ function spr(S, i, target, hz, zeta, dt) {
 
 /** Damped spring advanced with the exact (analytic) solution — stable for any damping ratio / step, so heavily damped
  *  weapon kicks keep their shape (spr's Euler sub-steps flip the velocity when 2ζω·h > 1). Same S layout as spr. */
+// 【解析解弹簧】直接求阻尼谐振子的精确解,任意步长/阻尼比都稳定。spr 的欧拉子步
+// 在大阻尼下会翻转速度、把"踢击"拉变形;武器后坐这类重阻尼冲量必须用本函数。
 function sprA(S, i, target, hz, zeta, dt) {
   const w = TAU * hz, x0 = S[i] - target, v0 = S[i + 1];
   let x, v;
@@ -164,6 +203,10 @@ function withRim(m, u, k) {
 }
 
 // rig constants (read from the rig so modelling tweaks flow through)
+// 【骨架常量】全部从 REST(rig 静态数据)读出,建模调整会自动贯通到动画代码:
+//   ANKLE_H 脚踝离地高(足部骨骼原点在鞋底上方)· HIPW 站立半髋宽
+//   BALL_Z/HEEL_Z 掌球/脚跟滚动枢轴(脚尖点地、抬跟两种滚动的支点)
+//   HEAD_CTR 头骨骼局部坐标系中的头部中心(头发/视线/头位置都用它)
 const ANKLE_H = REST.footL.y;            // ankle height above the sole
 const HIPW = Math.abs(REST.footL.x) + 0.008;
 const BALL_Z = 0.11, HEEL_Z = 0.065;     // toe-roll / heel-roll pivots relative to the ankle projection
@@ -172,7 +215,28 @@ const HEAD_CTR = new THREE.Vector3(0, 0.164, 0.014); // head-bone-relative head 
 // ------------------------------------------------------------------------------------------------
 // Pose buffer layout (one Float32Array per layer; blended channel-wise)
 // ------------------------------------------------------------------------------------------------
+// 【姿态通道布局·本文件最核心的数据结构】下面是"三大件"之一的姿态缓冲 P。
+// 编译期用 S(n) 自增分配偏移,得到一个紧凑的 Float32Array(PN 个标量):
+// 它就是一个与真实骨骼平行的"虚拟骨架",每帧先 poseNeutral(P) 填中性值,
+// 然后各 _poseXxx 层按序叠加,最后 _applyPose 把数值写进 THREE 骨骼。
+// 凡 S(3) 的通道都是 XYZ 三分量(骨骼欧拉角用 YXZ 序;位置通道是 kid 空间);
+// 凡 S() 的通道都是单个标量权重。各层之间靠这些权重做分层混合。
 let _k = 0; const S = (n = 1) => { const i = _k; _k += n; return i; };
+// 【通道一览(按声明顺序)】
+//   骨骼欧拉角(YXZ):HIPS 骨盆 · SPINE 腰 · CHEST 胸 · NECK 颈 · HEAD 头
+//     CLAVL/R 左右锁骨 · UARML/R 上臂 · FARML/R 前臂 · HANDL/R 手
+//   脚目标(kid 空间脚踝点 + YXZ 朝向):FOOTL/R 为位置,FOOTLR/FOOTRR 为(pitch,yaw,roll)
+//   武器/手臂解算:ANC/ANCR 右手武器锚点(位置+朝向)· ANL/ANLR 左手(双持镜像)
+//     POLER/POLEL 左右臂 IK 极向量(膝盖/肘尖朝向)· LTGT/LTGTR 左手显式目标点+朝向
+//     IKR/IKL 右/左臂 IK 权重 · LTW 左手"显式目标"权重 · SPIN 武器绕柄旋转
+//   脚解算权重:WPL/WPR 左右脚"世界落地"权重 · STAB 头部稳定器权重
+//     AFOLT/AFOLR 武器锚点跟随躯干的位置/旋转权重
+//   表情(详见 _poseFace):BROW 眉压 · BROWY 眉升降 · MCURVE 嘴弯曲 · MWIDTH 嘴宽
+//     MOPEN 张嘴 · MTILT 嘴歪 · EYE 眼睁 · WINK 眨眼(单眼)· SQUINT 眯眼
+//     LOOKX/Y 眼睛注视偏移 · MODEL/MODELR kid 组的位移/旋转
+//   缩放与姿态:SQUAT SQY/SQXZ 纵/横向挤压拉伸 · HLY/HLP 头看向(偏航/俯仰)
+//     CROUCH 下蹲 · HANDPL/HANDPR 手型(-1 拳·0 握·1 放松·2 张开)· EARS 耳(-1 垂…+1 竖)
+//     TIPTOE 双脚踮跟 · BRAS 眉不对称 · PUPIL 瞳孔 · BREATH 呼吸相位 · SNEER/PUCKER/BLUSH
 const HIPS_P = S(3), HIPS = S(3), SPINE = S(3), CHEST = S(3), NECK = S(3), HEAD = S(3), CLAVL = S(3), CLAVR = S(3);
 const UARML = S(3), UARMR = S(3), FARML = S(3), FARMR = S(3), HANDL = S(3), HANDR = S(3);
 const FOOTL = S(3), FOOTLR = S(3), FOOTR = S(3), FOOTRR = S(3);          // kid-space ankle targets + (pitch, yaw, roll)
@@ -188,6 +252,9 @@ const ANL = S(3), ANLR = S(3), TIPTOE = S();
 const BRAS = S(), PUPIL = S(), BREATH = S(), SNEER = S(), PUCKER = S(), BLUSH = S();
 const PN = _k;
 
+// 【中性姿态】把 P 清零后填上"站立就绪"基准值:双脚分立于髋宽、脚踝高度,
+// 膝/肘微屈,IK 权重全 1(完全由解算接管),表情中性,挤压拉伸为 1。
+// 每个姿态层都从这个基准出发叠加,而不是从零开始。
 function poseNeutral(P) {
   P.fill(0);
   P[FOOTL] = HIPW; P[FOOTL + 1] = ANKLE_H; P[FOOTL + 2] = -0.004; P[FOOTLR + 1] = 0.1;
@@ -199,11 +266,23 @@ function poseNeutral(P) {
   P[UARML + 2] = 0.1; P[UARMR + 2] = -0.1; P[FARML] = -0.3; P[FARMR] = -0.3;
   P[HANDL + 2] = -0.1; P[HANDR + 2] = 0.1;
 }
+// 【通道缓冲操作三件套】poseLerp 整缓冲插值(舞蹈淡入/空中混合用);setE 三分量
+// 写;lerpE 以权重 w 向目标收敛(姿态层混合的原语——大多数层的叠加都用它,天然
+// 防过冲)。
 function poseLerp(out, a, b, t) { for (let i = 0; i < PN; i++) out[i] = a[i] + (b[i] - a[i]) * t; }
 function setE(P, i, x, y, z) { P[i] = x; P[i + 1] = y; P[i + 2] = z; }
 function lerpE(P, i, x, y, z, w) { P[i] += (x - P[i]) * w; P[i + 1] += (y - P[i + 1]) * w; P[i + 2] += (z - P[i + 2]) * w; }
 
 // springs (index into the spring bank; each spring owns 2 floats)
+// 【弹簧岸索引表】三大件之二:sp(Float32Array,SPN 个浮点),每个弹簧 2 格
+// (位置,速度),由 spr/sprA 就地推进。用途分布:
+//   身体:LEANP/LEANR 加减速俯仰/侧倾 · PELY 骨盆弹跳 · SQ 挤压拉伸 · HITP/R/Y 受击
+//     HEADP/R 头冲击 · CLAV 锁骨耸动 · STAG 踉跄 · SHIFT 重心换脚 · LAGX/Z 身体动量滞后
+//   武器:RCP/RCZ/RCY/RCR 右手后坐(上跳/后座/偏航/滚转)· RCP2/RCZ2/RCY2 左手(双持)
+//     WPX/Y/Z 武器位置摆动 · WRX/RY 武器姿态摆动 · GRIP/GRIPL 握把挤压
+//   其他:TANKX/Z/L 墨水槽摇晃(侧倾/俯仰/液面)· SQY/P/R 鱿鱼弹跳 · HLY/HLP 头弹簧
+//     HEMP/HEMV/HEMR 衣摆前后/上下/侧摆 · TKX/Z/Y 背包摆动 · EARL/EARR 耳朵
+//     ATTY/ATP 菜单注视头转
 let _sk = 0; const SPG = () => (_sk++) * 2;
 const S_LEANP = SPG(), S_LEANR = SPG(), S_PELY = SPG(), S_SQ = SPG(), S_ARML = SPG(), S_ARMR = SPG(), S_ELBL = SPG();
 const S_WPX = SPG(), S_WPY = SPG(), S_WPZ = SPG(), S_WRX = SPG(), S_WRY = SPG();
@@ -216,12 +295,21 @@ const S_ATTY = SPG(), S_ATTP = SPG(), S_GRIP = SPG(), S_GRIPL = SPG();   // atte
 const SPN = _sk * 2;
 
 // one-shot timers (seconds since trigger)
+// 【触发计时器表】三大件之三:tr(Float32Array,TN 个),每个 one-shot 动作一个
+// "距触发的秒数"时钟(初始 99 = 未激活)。trigger(name) 把对应时钟清零即重放;
+// 层函数用 win(t,a,b,c,d) 等时间窗曲线读出 0..1 的包络。一览:
+//   武器:SHOOT/SHOOTL 射击(右/左)· FLICK 滚筒甩击 · SLOSH 泼桶 · REL 蓄力释放
+//   移动:LAND 落地 · JUMP 起跳 · BRAKE 急停 · DODGE 翻滚 · FORM 变形
+//   受击/演出:HIT 受击 · STAG 踉跄 · LEAP/SLAM/IMPACT 大招跳劈三段 · SPAWN 重生
+//   投掷:THROW 扔副武器 · 杂项:ADMIRE 欣赏新装 · FLIP 甩发 · WINK 眨眼挑逗
 let _tk = 0; const TK = () => _tk++;
 const T_SHOOT = TK(), T_FLICK = TK(), T_THROW = TK(), T_LAND = TK(), T_JUMP = TK(), T_HIT = TK(), T_LEAP = TK(), T_SLAM = TK(), T_SPAWN = TK(), T_REL = TK(), T_IMPACT = TK(), T_BRAKE = TK(), T_FORM = TK(), T_STAG = TK();
 const T_SHOOTL = TK(), T_DODGE = TK(), T_SLOSH = TK(), T_ADMIRE = TK(), T_FLIP = TK(), T_WINK = TK();
 const TN = _tk;
 
 // stepping modes
+// 【迈步模式】GAIT 步态迈步(周期驱动)· CATCH 追赶步(身体跑离支撑脚时追)
+//   · SETTLE 落定步(站定/转身/换站姿时把脚归位)
 const M_GAIT = 0, M_CATCH = 1, M_SETTLE = 2;
 
 // ------------------------------------------------------------------------------------------------
@@ -229,7 +317,15 @@ const M_GAIT = 0, M_CATCH = 1, M_SETTLE = 2;
 // yaw(+left), roll]. aim.p is relative to AIM_PIVOT and rotates with aim pitch. stance = aim-stance feet
 // [lx, lz, lyaw, rx, rz, ryaw] (kid space); hip/chest = aim-stance yaw distribution.
 // ------------------------------------------------------------------------------------------------
-const AIM_PIVOT = new THREE.Vector3(-0.03, 0.93, 0.05);
+// 【武器持握数据表 HOLD】每种武器纯数据驱动姿态层 _poseWeapon。核心字段:
+//   carry/run/aim/lock 武器锚点 ANC/ANCR 的四档姿态(静止携带/奔跑/瞄准/翻滚锁定,
+//     位置 p 为 kid 空间坐标,旋转 r 为 YXZ 欧拉[pitch(+向下),yaw(+向左),roll])
+//   twoCarry/twoAim 双手持握权重(左手是否上前托住前握把)· poleR/poleL 左右臂 IK 极向量
+//   rc 后坐弹簧参数(kick 上跳量/back 后座量/hz 频率/z 阻尼/jit 抖动/torso 躯干带动
+//     /head 头带动/crouch 下蹲/brace 持续射击顶肩)· hip/chest 瞄准时髋/胸的偏航分配
+//   stance 瞄准站姿(双脚 [左x,z,yaw, 右x,z,yaw])· raise 高举(胜利舞)· lobby 大厅展示
+//   dual 双持(左手锚点 = 右手镜像)· fire 该武器触发哪个通用开火 one-shot
+const AIM_PIVOT = new THREE.Vector3(-0.03, 0.93, 0.05);   // 【瞄准枢轴】锚点绕它随俯仰角旋转(肩前方一点)
 const HOLD = {
   shooter: {
     carry: { p: [-0.19, 0.76, 0.14], r: [0.62, 0.12, -0.16] }, twoCarry: 0,
@@ -362,12 +458,19 @@ HOLD.blade = {
   lobby: { p: [-0.2, 0.98, 0.02], r: [-2.35, 0.25, 0.3] }, lobbyTwo: 0,
 };
 const STANCE_IDLE =[HIPW + 0.012, 0.014, 0.19, -HIPW - 0.008, -0.01, -0.2];   // ready stance: a bit wide, toes out, left foot a touch ahead
+// 【站姿表】STANCE_IDLE 待机就绪(微宽、脚尖外八、左脚略前)· STANCE_LOCK 双枪翻滚后
+// 的炮台站姿(更宽更稳)。六个分量 = [左x, 左z, 左yaw, 右x, 右z, 右yaw](kid 空间,
+// +z 前,+yaw 脚尖外撇)。
 const STANCE_LOCK = [0.165, 0.035, 0.42, -0.165, -0.035, -0.42];   // dualies' post-roll turret: wide and planted
 // idle re-plants of one foot (kid space, left-foot convention: +x out, +z forward, +yaw toes out): out · back ·
 // back-out · forward-in · toes out
 const SHUFFLES = [[0.08, 0.015, 0.12], [0.012, -0.085, 0.05], [0.055, -0.065, 0.18], [-0.012, 0.075, -0.08], [0.03, -0.02, 0.45]];
 
 // facial expressions: [BROW, BROWY, EYE, MCURVE, MWIDTH, MOPEN, MTILT, SQUINT] deltas from neutral
+// 【表情向量表】表情 = 预设 8 通道增量的线性混合,通道顺序与 XCH 对应:
+//   [眉压 BROW, 眉升 BROWY, 眼睁 EYE, 嘴弯 MCURVE, 嘴宽 MWIDTH, 张嘴 MOPEN, 嘴歪 MTILT, 眯眼 SQUINT]
+// 每行是一个"情绪 Delta 向量",addExpr(P, X, w) 按权重 w 加性叠加到姿态缓冲 P。
+// 后缀 P 的是用力短促版(投掷/发力用)。E_* 是附加通道 [嗤鼻,嘟嘴,脸红]。
 const X_FOCUS = [-0.38, -0.25, -0.08, -0.5, -0.18, 0, 0, 0.25];
 const X_GRIN = [-0.2, 0, -0.05, 0.3, 0.12, 0.22, 0, 0.2];
 const X_EFFORT = [-0.62, -0.35, -0.22, -0.35, 0.22, 0.14, 0, 0.45];
@@ -390,11 +493,13 @@ const X_HUP = [-0.3, 0.3, 0.06, 0.1, 0.06, 0.3, 0, 0.1];               // jump: 
 const X_EFFORTP = [-0.5, -0.2, -0.12, -0.3, 0.2, 0.2, 0, 0.4];         // heave / release: clenched effort
 const X_SIGH = [0.3, 0.1, -0.35, -0.2, -0.1, 0.22, 0, 0];              // deep breath out
 const E_GLOAT = [0.55, 0, 0.2], E_HMM = [0, 0.45, 0], E_BLUSH = [0, 0, 0.45];   // extras: [sneer, pucker, blush]
+// 【表情通道索引表】把表情向量的 8 个分量映射到姿态缓冲 P 的通道偏移。
 const XCH = [BROW, BROWY, EYE, MCURVE, MWIDTH, MOPEN, MTILT, SQUINT];
 // attention kinds (menus): the viewer (camera), a neighbour kid, an idle glance
 const K_NONE = 0, K_VIEWER = 1, K_NEIGHBOUR = 2, K_GLANCE = 3;
 const EYE_MID = new THREE.Vector3(0, 0.188, 0.15);   // between the eyes, head-bone space
 /** Lid closure of a blink `b` (close c · hold h · open o, seconds) at time t: accelerating close, quick-start open. */
+// 【眨眼曲线】闭眼段 u² 加速下压 → 保持 → 开眼段 (1-u)^2.2 减速抬升;t≤0 为 0。
 function blinkCurve(b, t) {
   if (t <= 0) return 0;
   if (t < b.c) { const u = t / b.c; return u * u; }
@@ -403,9 +508,12 @@ function blinkCurve(b, t) {
   return 0;
 }
 /** every live character (menus: neighbours to glance at; bus reactions) */
+// 【存活角色全局集】菜单找邻居、事件广播用。
 const LIVE = new Set();
 // game-bus reactions (one subscription for all kids): splatting someone → a lopsided grin; an ally going down nearby →
 // a wince. Pure face acting — no gameplay coupling.
+// 【事件总线订阅·全角色共用一次】自己泼墨命中敌人→得意歪嘴 grin+竖耳冲量;
+// 附近(14m 内)队友被打倒→倒吸凉气 oof。纯脸部演出,不反向影响玩法。
 let _busOn = false;
 function hookBus() {
   if (_busOn) return; _busOn = true;
@@ -420,14 +528,22 @@ function hookBus() {
     }
   });
 }
+// 【叠加一个表情向量】把 8 通道增量 X 按权重 w 加进 P 的对应通道(表情混合的原语)。
 function addExpr(P, X, w) { if (w <= 0.001) return; for (let i = 0; i < 8; i++) P[XCH[i]] += X[i] * w; }
 
 const FIDGETS = ['goggles', 'twirl', 'look', 'stretch', 'tank', 'bounce', 'shake'];
+// 【小动作键帧】goggles 扶眼镜 · twirl 转枪/打量武器 · look 张望 · stretch 伸懒腰
+//   · tank 敲墨水槽 · bounce 踮脚跳 · shake 甩墨。K_* 为 look/tank/goggles 的
+//   手持关键帧曲线,kf/kc 查值。
 const K_GOG_T = [0, 0.3, 0.45, 0.62, 0.8, 1.0, 1.35], K_GOG_V = [0, 1, 1, 1, 1, 1, 0];
 const K_LOOK_T = [0, 0.35, 0.9, 1.25, 1.8, 2.3], K_LOOK_V = [0, 0.75, 0.75, -0.7, -0.7, 0];
 const K_TANK_T = [0, 0.3, 1.0, 1.3], K_TANK_V = [0, 1, 1, 0];
 const K_MENU_T = [0, 1.2, 1.8, 3.0, 3.5, 5.0, 5.6, 8], K_MENU_V = [0, 0, 0.5, 0.5, -0.4, -0.4, 0.05, 0];
 // kid ⇄ squid gesture keys (see _updateFormScales): EM = squid → kid (emerge), DV = kid → squid (dive)
+// 【变形手势键帧】_updateFormScales 的曲线数据(时间-值对,经 kc 采样):
+//   K_EM_* 鱿鱼→人形(emerge):鱿鱼先缩扁上弹→人形细高弹出→落地回弹;
+//   K_DV_* 人形→鱿鱼(dive):人形下压缩扁→摊成墨渍→鱿鱼从中涨起过冲。
+//   SY/SX = 该端的纵向/横向缩放曲线,KT/ST = 对应时间轴。
 const K_EM_ST = [0, 0.03, 0.07, 0.095], K_EM_SY = [1, 0.72, 1.42, 1.6], K_EM_SX = [1, 1.18, 0.78, 0.62];
 const K_EM_KT = [0.045, 0.1, 0.16, 0.24, 0.32, 0.42], K_EM_KY = [1.36, 1.13, 0.88, 1.05, 0.985, 1], K_EM_KX = [0.68, 0.9, 1.09, 0.975, 1.008, 1];
 const K_DV_KT = [0, 0.03, 0.07, 0.095], K_DV_KY = [1, 0.82, 0.34, 0.16], K_DV_KX = [1, 1.1, 1.4, 1.2];
@@ -476,6 +592,9 @@ HOLD.bow = {
   lobby: { p: [-0.12, 0.76, 0.2], r: [0.5, 0.35, 0.1] }, lobbyTwo: 1,
 };
 const BOW_CANT = -0.85;   // roll of the whole bow about the arrow on the ground (rad; top limb to the kid's left)
+// 【弓的姿态修正】拉弓时把右手拳沿箭杆(-Z)向后拉 drawLen×draw 距离(模型把弓身
+// 等量前滑,所以持弓臂保持不动);开弓进度 draw = 1-(1-c)² 前快后重,松弦后拳在
+// 脸颊旁停一拍再回位;落地侧倾 BOW_CANT、空中自动回正(跳跃时弓 visibly 竖起)。
 function poseBow(ch, P, dt) {
   const w = ch.weapon, len = w.def.drawLen || 0.2;
   // draw 0..1: a quick first pull, heavier toward full. After a release the fist holds at the cheek a beat, then eases
@@ -499,14 +618,18 @@ const K_SL_T = [0, 0.13, 0.25, 0.4, 0.62];
 const K_SL_X = [0, -0.08, 0.02, 0.025, 0], K_SL_Y = [0, -0.22, 0.24, 0.33, 0], K_SL_Z = [0, -0.34, 0.04, -0.04, 0];
 const K_SL_P = [0, -0.55, 1.5, 1.95, 0], K_SL_W = [0, 0.32, -0.08, -0.14, 0];
 
+// 【写武器锚点】把 HOLD 表的一段锚点数据(p+r)整体写进姿态缓冲 D 的 ANC/ANCR 通道。
 function setAnc(D, h) { setE(D, ANC, h.p[0], h.p[1], h.p[2]); setE(D, ANCR, h.r[0], h.r[1], h.r[2]); }
 const FIDGET_LEN = [1.35, 1.2, 2.3, 1.9, 1.3, 1.25, 0.95];
 const DANCE_VARIANTS = { victory: 3, defeat: 3 };
 const FINGER_SPREAD = [-0.1, -0.03, 0.04, 0.11]; // index … pinky, about local X (fan toward the thumb / away)
 
 // ------------------------------------------------------------------------------------------------
-// Character
+// Character(角色主类)
 // ------------------------------------------------------------------------------------------------
+// 【类总览】构造分四段:材质/LOD 挂钩 → _buildRig/_buildTank/_buildBomb/_buildSquid
+// 程序化装配 → 动画"三大件"分配(P/PD/PX/PY 四个姿态缓冲、sp 弹簧岸、tr 计时器)
+// → 几十项每帧状态(根运动/步态/权重/脸部/鱿鱼/头发弹簧)初始化。
 export class Character {
   /**
    * @param {{color?: THREE.Color|string, weapon?: string, style?: {hair?: number, skin?: number, outfit?: number, eyes?: number}, name?: string, isLocal?: boolean}} opts
@@ -575,21 +698,34 @@ export class Character {
     this.weaponKind = null; this.animKind = null;
 
     // ---- animation state ----
+    // 【动画状态·三大件落地】P=主姿态缓冲;PD=舞蹈姿态;PX=一次性动作/空中姿态的
+    // 暂存层(各 _poseXxx 先写 PX 再 poseLerp 回 P,避免破坏已叠加的层);PY=前一舞蹈(淡入用)。
+    // sp=弹簧岸;tr=计时器岸(99=未激活);t=角色私有累计时间(一切周期运动用它,与帧率无关)。
     this.P = new Float32Array(PN); this.PD = new Float32Array(PN); this.PX = new Float32Array(PN); this.PY = new Float32Array(PN);
     this.sp = new Float32Array(SPN);
     this.tr = new Float32Array(TN).fill(99);
     this.t = 0;
     // root motion
+    // 【根运动状态】rp/rv/ra = 上一帧根位置/平滑速度/平滑加速度(rootInit=首帧/瞬移后重置,
+    // 防止把传送当成速度);yaw/prevYaw/yawRate = 朝向与转向率;kvx/kvz 与 kax/kaz = kid 空间
+    // 速度/加速度(动画的一切"体感"都由它们驱动);hs = 水平速率;gnd/airT = 离地高度/悬空时长。
     this.rp = new THREE.Vector3(); this.rv = new THREE.Vector3(); this.ra = new THREE.Vector3(); this.rootInit = false;
     this.yaw = 0; this.prevYaw = 0; this.yawRate = 0; this.kvx = 0; this.kvz = 0; this.kax = 0; this.kaz = 0;
     this.hs = 0; this.gv = 0; this.gs = 0; this.gvx = 0; this.gvz = 0; this.tread = false; this.tvx = 0; this.tvz = 0;
     this.mdx = 0; this.mdz = 1; this.hipTwist = 0; this.vyS = 0; this.gnd = 9; this.airT = 0; this.grounded = true;
     // gait
+    // 【步态状态】phase=步态时钟(0..1 一个完整周期,由 cad 推进);moving=是否行进;
+    // gaitW=步态层权重;runW=跑/走混合(由速度 sstep 出);duty=支撑相占比(走 0.62→跑 0.3);
+    // cad=步频(步/秒);liftH=抬脚高度;feet=左右脚状态机(见 _mkFoot);plantW=世界落地权重;
+    // stance=当前站姿目标(idle/瞄准/锁定三档 lerp);shufT/stVar=待机原地小碎步的计时与偏移。
     this.phase = 0; this.moving = false; this.gaitW = 0; this.runW = 0; this.duty = 0.6; this.cad = 1.5; this.liftH = 0.06;
     this.feet = [this._mkFoot(0), this._mkFoot(1)]; this.feetValid = false; this.replant = true; this.settleCd = 0; this.plantW = 1;
     this.stance = Float32Array.from(STANCE_IDLE); this.footTwist = 0; this.hipDrop = 0; this.stVar = new Float32Array(6); this.shufT = 4 + this.rng() * 6;
     this.stepOfsX = 0; this.stepOfsZ = 0;
     // weights
+    // 【混合权重·一切"姿态状态"的渐变开关】wSub 副武器瞄准 · wAim 主武器瞄准 · wRoll 滚筒
+    // 推行 · wAir 空中 · wDance 舞蹈 · wGlow 大招充能发光 · wLow 墨量低告警 · wTired 疲惫
+    // (血少/沾敌墨)· wGoo 敌墨减速。全部由 damp 指数趋近,进入快、退出慢( organic )。
     this.wSub = 0; this.wAim = 0; this.wRoll = 0; this.wAir = 0; this.wDance = 0; this.wTwo = 0; this.wGlow = 0; this.wLow = 0; this.wTired = 0; this.wGoo = 0;
     this.exert = 0; this.brPh = 0; this.idleT = 0; this.shiftT = 2 + this.rng() * 3; this.shiftTgt = 1;
     this.fidget = -1; this.fidgetT = 0; this.nextFidget = 3 + this.rng() * 3;
@@ -601,6 +737,10 @@ export class Character {
     this.kidScale = 1; this.sqScale = 0; this.kidPop = 1;
     // face: blinks (per-eye close amounts from one blink clock, the right eye trailing by a few ms), gaze (ballistic
     // saccades + fixation micro-saccades), attention target (root-space point), micro-expression impulses
+    // 【脸部状态·四件套】bl=眨眼钟(一次眨眼:加速闭眼 c·保持 h·减速开眼 o,右眼滞后 lag
+    //   几毫秒,amp 部分眨,dbl 二联眨);gz=注视(大角度跳变走弹道式 saccade 最小抖动曲线,
+    //   小角度直接阻尼跟踪(VOR),叠加注视微跳变 mx/my);att=注意目标(对谁看:相机/邻居/游离);
+    //   mx[6]=微表情冲量槽(攻/持/衰三段包络,6 槽复用最弱者)。face=平滑后的对外脸部输出。
     this.blinkK = 0; this.blinkL = 0; this.blinkR = 0;
     this.bl = { t: -1, c: 0.08, h: 0.03, o: 0.16, amp: 1, lag: 0.008, next: 0.6 + this.rng() * 2.5, dbl: false, squeeze: 0 };
     this.gz = { x: 0, y: 0, x0: 0, y0: 0, x1: 0, y1: 0, st: -1, sd: 0.05, fx: 0, fy: 0, mx: 0, my: 0, mT: 0.5 };
@@ -617,10 +757,15 @@ export class Character {
     this.xw = new Float32Array(12); // smoothed expression weights
     this.inkS = 1; this.hurt = 0; this.slosh = 0;
     // squid
+    // 【鱿鱼形态状态】hopPhase/sqYaw 干跳相位与朝向;sqPos/sqQuat 平滑后的枢轴位姿;
+    // sqBlink 复用人形眨眼钟(压扁眼睛网格);sqRoll 游泳滚转;drumAngle 大招滚筒角。
     this.hopPhase = 0; this.hopAir = false; this.sqYaw = 0; this.sqPos = new THREE.Vector3(); this.sqQuat = new THREE.Quaternion(); this.sqInit = false;
     this.sqBlink = 0; this.sqRoll = 0;
     this.drumAngle = 0; this.visible = true; this.ikErr = [0, 0, 0, 0];
     // hair springs
+    // 【头发弹簧状态】hx/hv = 每缕×每段(HAIR_MAX 缕 × HAIR_SEGS 段)× XYZ 的
+    // 角位移/角速度缓冲(各段旋转以轴角向量存储);tipX/tipV = 发梢末端再一级更软的
+    // 甩动弹簧;headPrevPos/Vel/Acc/PrevQuat = 头部惯性跟踪(头发 lag 的来源)。
     const n = HAIR_MAX * HAIR_SEGS * 3;
     this.hx = new Float32Array(n); this.hv = new Float32Array(n);
     this.tipX = new Float32Array(HAIR_MAX * 3); this.tipV = new Float32Array(HAIR_MAX * 3);
@@ -647,6 +792,10 @@ export class Character {
     poseNeutral(this.P);
   }
 
+  // 【单脚状态机】一只脚的全部数据:pw=世界落点 · yaw/n=落点朝向与地面法线 ·
+  // planted/sw=是否 planted/摆动 · mode/su/dur=迈步模式/进度/时长 · from/to=摆动起止
+  // (世界坐标) · lift/toe/land=抬腿高/前掌下压/落地缓冲幅度 · cw/cyaw/cn/pitch=当前
+  // 世界接触点(解算用) · disp/dispYaw=本帧骨骼实际到达处(下次 replant 的起点,防滑步)。
   _mkFoot(i) {
     return {
       i, side: i === 0 ? 1 : -1, name: i === 0 ? 'L' : 'R',
@@ -659,6 +808,10 @@ export class Character {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // 【程序化装配:骨骼】按 BONE_NAMES 建 THREE.Bone 层级(父子相对位移 = rest 差值),
+  // 挂上 Skeleton;再预计算 IK 所需的肢体常量(两段骨长 a/b 与静止方向基矩阵的转置
+  // Mu0T/Mf0T —— 双骨解析 IK 的"回静止姿态"逆映射);最后建头发骨骼索引、每缕指向头
+  // 心的方向 hairIn(防穿发碰撞用)与各段三轴(hairAx 段轴/A1 卷曲面/A2 侧摆面)。
   _buildRig() {
     const hair = getHairStyle(this.style);   // keyed on the style object (hair + hat + brows)
     this.hairMeta = hair.meta;
@@ -752,6 +905,8 @@ export class Character {
   }
 
   // the sub prop held in the left hand while a throw is aimed (any sub kind; see getSubDef)
+  // 【副武器道具(左手"雷")】按 getSubDef 建一个挂在 handL 骨骼下的小组:塑料壳 +
+  // 墨水芯(随队色)+ 可选旋转件/发光件。平时 hidden,_poseSubAim 瞄准副武器时弹出。
   _buildBomb(kind = 'bomb') {
     const d = getSubDef(kind);
     const g = new THREE.Group(); g.position.copy(d.inHandL.pos); g.quaternion.copy(d.inHandL.quat);
@@ -772,6 +927,8 @@ export class Character {
     this._buildBomb(kind);
   }
 
+  // 【背上的墨水槽】玻璃壳(renderOrder 靠后)+ 墨水填充柱;填充高度/液面倾斜由
+  // _updateTank 每帧按墨量 inkS 与摇晃弹簧驱动。挂在可选的 tank 骨骼上,没有则跟随胸骨。
   _buildTank() {
     const sh = getKidShared(); const T = sh.tank;
     const g = new THREE.Group(); g.position.copy(T.offset); g.rotation.x = T.tilt;
@@ -783,6 +940,9 @@ export class Character {
     this.tank = { group: g, glass, fill, h: T.fillHeight, bottom: T.fillBottom, tilt: T.tilt };
   }
 
+  // 【鱿鱼形态网格】与 kid 同级的 squidRoot 下:实体身体 + 幽灵副本(本地玩家游泳时
+  // 的透明显示)+ 深色件 + 眼睛网格(眨眼直接压扁它)。平时整组隐藏,变形时由
+  // _updateFormScales 打开。
   _buildSquid() {
     const sh = getKidShared().squid;
     const pivot = new THREE.Group(); this.squidRoot.add(pivot);
@@ -795,6 +955,9 @@ export class Character {
     this.squidRoot.visible = false;
   }
 
+  // 【取武器实例(带缓存)】每种武器只建一次。双持(dual)再建一个左手实例;
+  // mirrorDual(twins)则用"负 X 镜像" trick:位置 x 取反、四元数 y/z 分量取反,
+  // 几何体包一层 scale.x=-1 的组——纯静态副本 riding 左手姿态,省一份部件动画。
   _getWeapon(kind) {
     if (this.weapons[kind]) return this.weapons[kind];
     const d = getWeaponDef(kind);
@@ -819,6 +982,9 @@ export class Character {
   }
 
   /** One held weapon: pivot at the fist's grip axis (twirls spin about the handle) → off = weapon space. */
+  // 【单个手持武器实例】两级坐标:pivot 在拳心握轴上(转枪 SPIN 绕它转)→ off 把
+  // 武器自身空间对齐。近处=静态壳+可动部件(扳机/泵/灯),远处=合并静态网格两份
+  // LOD 互切;部件的逐帧动画归 animateWeapon(character-weapons.js)所有。
   _weaponInstance(d, left) {
     const hole = left ? GRIP_HOLE_L : FIST_OFFSET, inHand = left ? d.inHandL : d.inHand;
     const pivot = new THREE.Group(); pivot.position.copy(hole);
@@ -865,6 +1031,9 @@ export class Character {
   }
 
   // Dodge roll (twin pistols): one forward tumble about the body centre toward the roll direction, ~0.3 s.
+  // 【twins 翻滚(twins 双枪)】对整个 model 组做一次绕"up×滚动方向"轴的前空翻:
+  // 滚转轴由滚动方向叉乘世界 up 得到;质心保持在轴上(补偿位移)+ 正弦下压,
+  // 结束即复位 model。时长约 0.3s,位移由引擎负责。
   _updateDodge(dt) {
     const m = this.model;
     if (!this.dodge) return;
@@ -887,6 +1056,9 @@ export class Character {
   // getClothGeo(style, lod), plus any `extra` parts they list. A builder that ignores `lod` hands
   // back the same mesh for every tier; the far tier is then decimated here.
   // ---------------------------------------------------------------------------------------------
+  // 【LOD 分层部件清单】英雄/游戏/远景三档各调用一次;builder 支持 lod 参数就给精模,
+  // 否则 far 档在这里按 FAR_TRIS 目标三角形数抽稀(farGeometry)。far 档还只让
+  // 主体(皮肤/衣服)投阴影——60px 小人的小件阴影不可见,纯浪费。
   _tierParts(t) {
     const tn = TIERS[t];
     const K = getKidShared(tn), H = getHairStyle(this.style, tn);
@@ -913,6 +1085,9 @@ export class Character {
   }
 
   /** The body meshes of tier t (built on first use, invisible until shown). */
+  // 【建某档的身体网格】首用即建:SkinnedMesh 绑到唯一 skeleton,手工给包围球
+  // (蒙皮网格默认包围球不可靠),藏起待用。首件网格挂相机钩子 _camHook——
+  // 让角色知道自己被哪台相机以多大视口画出(菜单/实验室的 LOD 依据)。
   _tierSet(t) {
     if (this.lodSets[t]) return this.lodSets[t];
     const S = { t, meshes: {}, list: [] };
@@ -939,6 +1114,8 @@ export class Character {
 
   /** A per-kid material by key: the base set (skin, cloth, hair, eye, dark, squid …) or a character-mats.js factory
    *  named by a builder's extra part (`makeXMaterial(u)` → owned by this kid; `getXMaterial()` → shared). */
+  // 【部件材质取用】优先取本角色基础材质表;否则按名字去 character-mats.js 找工厂:
+  // make 前缀的每角色独享(要随角色销毁),get 前缀的全局共享。
   _matFor(k) {
     let m = this.mats[k];
     if (m) return m;
@@ -957,6 +1134,8 @@ export class Character {
   }
 
   /** Show tier t now (no fade): first frame, menus, forced tiers. */
+  // 【立即切档(无渐变)】首帧/菜单/强制 LOD 用:全部网格只显示目标档、材质复原、
+  // 淡出淡入权重清零。
   _setTier(t) {
     const L = this.lod, S = this._tierSet(t);
     for (let i = 0; i < 3; i++) {
@@ -969,6 +1148,8 @@ export class Character {
   }
 
   /** Rigid props follow the tier too (instant swap — small on screen): squid form, tank glass + fill. */
+  // 【刚性道具随档切换】鱿鱼网格、墨水槽玻璃/填充直接换几何体(far 档对鱿鱼体也抽稀);
+  // far 档下玻璃壳隐藏——14% 透明度的壳在 60px 小人和墨水柱读感一样。
   _tierProps(t) {
     if (!this.squid || !this.tank) return;
     const K = getKidShared(TIERS[t]), sq = K.squid, T = K.tank;
@@ -985,6 +1166,9 @@ export class Character {
 
   /** Projected screen height (CSS px) of the kid for the camera it is seen through (game camera in a match, else the
    *  last camera that drew it). 0 = unknown yet. */
+  // 【屏幕像素高度】LOD 选档的唯一依据:透视投影下"世界高度 × 投影系数 ÷ 距离 ×
+  // 视口高"。取世界矩阵的 Y 缩放以兼容展示台的挤压。inWorld 用比赛相机,否则用
+  // _camHook 记下的最后一台画出相机。
   _screenPx() {
     let e5, vh;
     if (this.inWorld && G.camera && G.camera.isPerspectiveCamera) {
@@ -999,6 +1183,9 @@ export class Character {
   }
 
   /** Pick the tier for this frame; fade between tiers with the screen-door dither (0.3 s) once the kid is on screen. */
+  // 【LOD 选档主逻辑】未预热过的角色首次上屏时补 warmAll;画质设置变更时重建全部档;
+  // 正在渐变则推进渐变;否则按屏幕像素 pickTier(带滞回,防档间抖动)。目标≠当前时:
+  // 未上屏/隐藏/比赛外→立即切;上屏→0.3s 点阵抖动交叉渐变(_startFade)。
   _updateLod(dt) {
     const L = this.lod;
     // fallback when the host did not warm this kid before the match (see warmAll): at first sight, not at first fade
@@ -1030,6 +1217,9 @@ export class Character {
   }
 
   /** Cross-fade from the current tier to t: outgoing parts keep the IGN ≥ f pixels, incoming the rest; 0.3 s. */
+  // 【LOD 交叉渐变】旧档网格换"淡出"点阵材质、新档建出并换"淡入"材质同时显示,
+  // 两材质共享同一阈值 f 从 0→1——屏幕空间一半像素画旧、一半画新,像纱门抖动。
+  // f 过半时切换刚性道具;f=1 落定(_setTier)。
   _startFade(t) {
     const L = this.lod;
     if (L.to >= 0 || t === L.tier) return;
@@ -1040,6 +1230,7 @@ export class Character {
   }
 
   /** Force a tier ('hero' | 'game' | 'far' | index), or null for automatic. Labs / showcase portraits / audits. */
+  // 【强制 LOD】实验室/展示台写真/审计用;null 恢复自动。
   setLod(t) {
     const i = typeof t === 'string' ? TIERS.indexOf(t) : t ?? -1;
     this.lod.force = i >= 0 && i < 3 ? i : -1;
@@ -1056,6 +1247,10 @@ export class Character {
    * tier, dives or throws mid-match. Resolves when the programs are linked. Idempotent per kid; after the first kid of a
    * look/weapon every program is a cache hit (≈ 1–3 ms). Call it for every actor inside the loading fade.
    */
+  // 【着色器预热】把该角色一场比赛可能用到的全部程序(3 档 × {普通,淡出,淡入} 网格、
+  // 鱿鱼+幽灵、雷、墨水槽、武器近/远件、阴影深度变体)在加载期间一次性编译:临时挂一套
+  // 仅用于预热的抖动网格、强制全可见、对着 HDR 目标 compileAsync、再手动跑一遍阴影 pass。
+  // 每个角色只做一次;同外观的后续角色全是缓存命中(1-3ms)。比赛中换档/变身/扔雷零卡顿。
   async warmAll(renderer = G.renderer, camera = G.camera, target = G.scene) {
     if (this._warmed) return this._warmed;
     if (!renderer || !camera || !target || !renderer.compileAsync) return false;
@@ -1098,8 +1293,10 @@ export class Character {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Public API
+  // Public API(对外接口,约定见 docs/CONTRACTS.md §1)
   // ---------------------------------------------------------------------------------------------
+  // 【设队色】墨水材质全部走共享缓存 getInkMaterial(color),换色=重取缓存材质并分发到
+  // 墨水槽填充、武器墨水件、灯管线圈、发光件。
   setColor(color) {
     this.color.set(color);
     this.u.uTeam.value.copy(this.color);
@@ -1119,6 +1316,8 @@ export class Character {
   }
 
   // kind = weapon model; the pose family (animKind) comes from ANIM_OF — new weapons borrow an existing family's animation
+  // 【换武器】kind 是武器模型,animKind 才是姿态族(ANIM_OF 表把新武器映射到既有族);
+  // hold 优先取该 kind 自有的 HOLD(如弓),否则取所属族。旧武器 pivot 从拳骨摘下,新的挂上。
   setWeapon(kind) {
     if (!HOLD[ANIM_OF[kind] || kind]) kind = 'shooter';
     if (kind === this.weaponKind) return;
@@ -1137,6 +1336,9 @@ export class Character {
     this.dual = !!w.left;
   }
 
+  // 【触发 one-shot 动作·动画系统的"事件入口"】统一约定:把对应计时器清零(重放),
+  // 并给相关弹簧一个初速度冲量(后坐/受击/落地等的"弹感"都来自这里),有的顺带踢头发。
+  // 各 case 见内联英文注释;arg 因事件而异(方向/手别/力度)。
   trigger(name, arg) {
     const tr = this.tr, sp = this.sp;
     switch (name) {
@@ -1222,6 +1424,8 @@ export class Character {
     }
   }
 
+  // 【设舞蹈】同名不重设;换舞时旧舞进 prevDance 做 0.45s 交叉淡入;变体号由种子决定
+  // (同角色每次跳同一变体)。胜利/失败的入场瞬间叠加一层情绪微表情(喜悦爆发/泄气叹息)。
   setDance(name) {
     name = name || null;
     if (name === this.dance) return;
@@ -1234,14 +1438,18 @@ export class Character {
     else if (name === 'defeat') { this._mxPlay(X_SIGH, 0.9, 0.3, 0.8, 1.2); this.sigh = 1; }
   }
 
+  // 【受伤染色】hurt 0..1 直接写进 uHurt  uniforms(rgba:敌色 rgb + 受伤度 a),皮肤/衣服
+  // shader 据此做敌墨覆盖效果。
   setHurt(amount, enemyColor) {
     this.hurt = clamp(amount || 0, 0, 1);
     if (enemyColor) this.enemyColor.set(enemyColor);
     const h = this.u.uHurt.value; h.set(this.enemyColor.r, this.enemyColor.g, this.enemyColor.b, this.hurt);
   }
 
+  // 【显隐】隐藏时重置脚/根跟踪,重新出现时落地状态机会重新种植,不会拿旧位置滑步。
   setVisible(v) { this.visible = !!v; this.root.visible = this.visible; if (!this.visible) { this.feetValid = false; this.rootInit = false; } }
 
+  // 【枪口世界坐标】供弹道/特效取发射点;非人形(鱿鱼)或没武器时退回头部位置。
   getMuzzle(out) {
     if (this.form !== 'kid' || !this.weapon) return this.getHeadPosition(out);
     return this.weapon.muzzle.getWorldPosition(out);
@@ -1254,10 +1462,13 @@ export class Character {
   }
 
   /** 0..1 — how far the held weapon is into its aim pose (1 = up and aimed; rollers never "aim"). */
+  // 【瞄准就绪度】武器子弹道用它决定从"瞄准姿态枪口"还是当前枪口出弹;滚筒恒 1。
   aimReady() { return this.form !== 'kid' || !this.weapon || this.animKind === 'roller' ? 1 : this.wAim; }
 
   /** World-space muzzle of the full aim pose at `pitch` — where the gun is springing to when the trigger is pulled
    *  from the carry pose (weapons.js spawns the first shot of a burst there instead of at the hip). false if n/a. */
+  // 【满瞄姿态枪口】把 aim 锚点绕 AIM_PIVOT 转 aimPose 俯仰、套武器 muzzle 偏移、再经
+  // kid 世界矩阵变换——即"枪抬起过程中"的枪口世界位置;首发子弹从这里出,衔接弹道。
   getAimMuzzle(out, pitch) {
     if (this.form !== 'kid' || !this.weapon || this.animKind === 'roller') return false;
     const a = this.hold.aim;
@@ -1270,12 +1481,15 @@ export class Character {
   }
 
   /** World position of the head centre (for name tags, cameras). */
+  // 【头部世界位置】名牌/相机跟随用;人形取头骨骼 × HEAD_CTR,鱿鱼取形态枢轴。
   getHeadPosition(out) {
     if (this.form !== 'kid') return this.squid.pivot.getWorldPosition(out);
     this.bones.head.updateWorldMatrix(true, false);
     return out.copy(HEAD_CTR).applyMatrix4(this.bones.head.matrixWorld);
   }
 
+  // 【销毁】退出 LIVE 集、摘出场景图,释放本角色持有的材质(共享材质不 dispose,
+  // 由各自系统管)、每角色的独享材质、LOD 抖动材质、骨架。
   dispose() {
     LIVE.delete(this);
     this.root.parent?.remove(this.root);
@@ -1294,8 +1508,10 @@ export class Character {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // internal event helpers
+  // internal event helpers(内部事件助手)
   // ---------------------------------------------------------------------------------------------
+  // 【后坐冲量】把"踢击"换算成弹簧初速度:v += kick × ω(×1.35 手调系数),
+  // 上跳/后座/偏航/滚转各有专用弹簧;枪愈重(hz 愈低)同样的 kick 冲得愈远。
   _recoil(k, hand = 0) {
     const rc = this.hold.rc, sp = this.sp, w = TAU * rc.hz;
     if (hand === 1) {
@@ -1309,12 +1525,16 @@ export class Character {
     }
     sp[S_TANKX + 1] += (this.rng() - 0.5) * 0.4 * k; sp[S_TANKL + 1] -= 0.4 * k;
   }
+  // 【踢头发】给全部发段速度缓冲加一个世界方向的冲量(受击/跳落/变形时用)。
   _hairKick(x, y, z) { for (let i = 0; i < this.hv.length; i += 3) { this.hv[i] += z * 0.6 + x * 0.3; this.hv[i + 1] += x * 0.4; this.hv[i + 2] += y * 0.5 - x * 0.2; } }
   _blink(hard = false) { this._blinkStart(1, hard); }
 
   // ---------------------------------------------------------------------------------------------
-  // Update
+  // Update(每帧主入口)
   // ---------------------------------------------------------------------------------------------
+  // 【每帧总控】顺序:推进全部时钟 → 形态切换(_formEnter)→ 根运动跟踪 → 权重混合
+  // → 变形缩放 → 生命等级(LOD 决定脸/手指/头发的精度)→ 若可见且人形在:脚步状态机
+  // → 姿态构建 → 姿态应用;鱿鱼形态独立更新;最后材质与 LOD。隐藏时只养时钟、冻结姿态。
   update(dt, s) {
     dt = clamp(dt || 0, 0, 0.1);
     s = s || EMPTY_STATE;
@@ -1366,6 +1586,10 @@ export class Character {
   }
 
   // Root motion → world velocity/acceleration (+ kid-space versions), turn rate, ground distance while airborne.
+  // 【根运动跟踪】从 root 自身的每帧位移反推世界速度/加速度(32Hz/16Hz 指数平滑),
+  // 再旋转到 kid 空间得 kvx/kvz/kax/kaz——后续所有"体感动画"(前倾、摆臂、武器摆动、
+  // 衣摆)的数据源。treadmill 模式:引擎说在动而 root 不动(实验室预览)时,把"地面
+  // 在脚下反向滑动"合成出来。悬空时向下打射线取离地高 gnd(落地预判用)。
   _trackRoot(dt, s) {
     const r = this.root.position;
     const yaw = this.root.rotation.y;
@@ -1417,6 +1641,11 @@ export class Character {
   }
 
   // Blend weights and slow state (aiming, rolling, air, exertion, tiredness, stance presets, hip twist).
+  // 【权重与慢状态混合】把 AnimState 的瞬时输入(开火/蓄力/滚行/低墨/血量…)全部经
+  // damp 渐变成连续权重(wAim/wRoll/wTired…,进快出慢);同时推导步态参数
+  // (runW/duty/cad/liftH 由速度 sstep/lerp 出)、体力 exert(冲刺积累/休息衰减,
+  // 驱动呼吸频率)、呼吸相位 brPh、髋部横摆 hipTwist(横移时腿"斜着跑")、站姿目标
+  // stance(idle/瞄准/翻滚锁定三档)与待机时钟(换重心 shiftT、小碎步 shufT、小动作 nextFidget)。
   _updateStates(dt, s) {
     const kid = this.kidForm, dance = this.dance, H = this.hold;
     const ch = s.charge ?? 0;
@@ -1497,6 +1726,8 @@ export class Character {
     if (this.shiftT <= 0) { this.shiftTgt = -this.shiftTgt; this.shiftT = 3.2 + this.rng() * 4; }
   }
 
+  // 【开一个小动作】随机挑一个 FIDGETS(避免与上次重复);双持/镜像武器时没空手,
+  // 把需要空手的眼镜/敲槽动作换成转枪或张望。
   _startFidget() {
     let id = (this.rng() * FIDGETS.length) | 0;
     if (id === this.lastFidget) id = (id + 1 + ((this.rng() * 3) | 0)) % FIDGETS.length;
@@ -1511,6 +1742,10 @@ export class Character {
   //   squid → kid: the squid crouches, shoots up thin and pops; the kid springs out of it tall and thin (rising out of
   //                the ink when it was swimming), lands in a squash and wobbles to rest.
   // Rapid toggles start the new gesture where the current shapes are, so nothing ever pops.
+  // 【人形⇄鱿鱼变形·弹性手势】不是交叉淡入,而是一段 0.45s 的双向时间线(下潜 DV /
+  //   现身 EM 两套键帧曲线 kc 采样):kidScale/sqScale 是两端可见度,kidSY/SQXZ 等是
+  //   过冲-回弹的挤压缩放,kidLift 是"从墨里升起"的额外抬升。快速连按时 _formEnter 会
+  //   按当前画面形态把新时间线 seek 到对应相位,杜绝跳变。
   _updateFormScales(dt) {
     const toKid = this.form === 'kid', fromKid = this.formPrev === 'kid';
     const t = this.formT;
@@ -1534,6 +1769,8 @@ export class Character {
   }
 
   /** A form change arriving mid-gesture: enter the new timeline at the point that matches what is on screen now. */
+  // 【手势中途换形】0.1s 内连按时,用当前 kidScale/sqScale 反推新时间线应处的相位
+  // (A 消失一半 → B 从"一半"开始长),视觉上完全连续。
   _formEnter(newForm) {
     const wasKidT = this.formT, prev = this.form;
     this.formPrev = prev; this.form = newForm; this.formT = 0; this.tr[T_FORM] = 0;
@@ -1546,6 +1783,8 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Stepping: world-locked plants, phase-driven gait, settle / catch-up steps
   // ---------------------------------------------------------------------------------------------
+  // 【地面查询】从脚踝上方 0.55m 向下打短射线取落点高度与法线(限坡度:法线 y>0.55),
+  // 出界或失败则退回根平面+世界 up——脚步系统的地基。
   _ground(x, z, n) {
     const ry = this.root.position.y;
     if (this.phys) {
@@ -1561,6 +1800,8 @@ export class Character {
   }
 
   /** Ideal standing plant (world) for a foot under the current body; returns the foot's world yaw. */
+  // 【理想站立落点】站姿 stance(kid 空间 [lx,lz,lyaw, rx,rz,ryaw])经根朝向旋到世界,
+  // 返回该脚的世界偏航——站定/落定步的归位目标。
   _idealFoot(f, out) {
     const st = this.stance, R = this.root.position;
     const kx = (f.side > 0 ? st[0] : st[3]) + this.stepOfsX, kz = (f.side > 0 ? st[1] : st[4]) + this.stepOfsZ;
@@ -1570,6 +1811,9 @@ export class Character {
   }
 
   /** Predicted gait landing (world) for a swing that touches down in tRem seconds. */
+  // 【步态落点预测】核心防"脚下拌蒜"逻辑:按"当前速度 + 截断的加速度积分 + 预测
+  // 偏航(转弯预判)+ 髋摆"外推出 tRem 秒后的身体位置,再把脚放到髋侧适当宽度处,
+  // 横向偏差限 0.3m,最后向地面射线取高度——落地瞬间恰好踩在身体该在的位置。
   _gaitTarget(f, tRem, out) {
     const R = this.root.position;
     const stHalf = (this.duty / this.cad) * 0.5;
@@ -1588,6 +1832,8 @@ export class Character {
     return hy + f.side * lerp(0.1, 0.04, this.runW);
   }
 
+  // 【起摆】把 planted 脚切到摆动相:记录起摆点,按迈步模式给抬腿高/勾 toe/落地缓冲
+  // (随前进方向符号与跑量变化),时长 = 摆动相占比/步频(追赶步固定 0.13s 短促)。
   _liftOff(f, mode) {
     f.planted = false; f.sw = true; f.mode = mode; f.su = 0;
     f.from.copy(f.pw); f.fromYaw = f.yaw; f.to.copy(f.pw); f.toYaw = f.yaw;
@@ -1598,6 +1844,8 @@ export class Character {
     f.dur = mode === M_CATCH ? 0.13 : (1 - this.duty) / this.cad;
   }
 
+  // 【落地】锁定到目标点、同步法线/朝向,清摆动标志;追赶步落地时把步态时钟重新
+  // 对到这只脚(另一只脚按 duty 跟上,节奏不乱);发 footsteps 事件给音频/特效。
   _touchDown(f, loud) {
     f.pw.copy(f.to); f.n.copy(f.tn); f.yaw = f.toYaw;
     f.planted = true; f.sw = false; f.stU = 0; f.su = 0; f.stT = 0;
@@ -1613,6 +1861,8 @@ export class Character {
     }
   }
 
+  // 【落定步】站定/转身/换站姿时,把误差最大的一只脚悄悄挪回理想落点:时长与抬腿
+  // 高都随误差增大,永远是"小碎步归位"而非大步流星。
   _startSettle(f, err) {
     f.planted = false; f.sw = true; f.mode = M_SETTLE; f.su = 0;
     f.from.copy(f.pw); f.fromYaw = f.yaw;
@@ -1622,11 +1872,19 @@ export class Character {
     f.toe = 0.25; f.land = 0.12;
   }
 
+  // 【站姿误差】脚当前位置/朝向与理想落点的偏差(平面距离 + 0.11×朝向角差),
+  // 超过阈值就触发落定步。
   _footErr(f) {
     const yawI = this._idealFoot(f, _v6);
     return Math.hypot(f.pw.x - _v6.x, f.pw.z - _v6.z) + 0.11 * Math.abs(wrapA(f.yaw - yawI));
   }
 
+  // 【脚步状态机主循环】plantOK 以外(变身/跳舞/大招/翻滚中)直接冻结;否则:
+  // 1) treadmill 时把种下的脚随地面反向滑动;2) replant/失效时按理想位重新种植;
+  // 3) 行进中:起步取"最靠后"的脚发短促首步并对钟,之后每只脚按 phase+duty 的
+  // 占空比决定支撑/摆动,边界三种起摆(周期到点/时钟说要摆但另一只承重/身体跑出
+  // 0.37m),步态摆动的落点持续向预测目标 lerp;4) 站定时把在飞步收小落成 settle,
+  // 再对误差最大的脚发落定步;最后更新脚姿态与 footTwist(驱动原地转身的髋反向扭)。
   _updateFeet(dt, s) {
     const F = this.feet, R = this.root.position;
     const plantOK = this.kidForm && this.grounded && !this.dance && this.tr[T_LEAP] > 1.9 && this.tr[T_SLAM] > 1.4 && this.tr[T_DODGE] > this.dodgeDur * 0.86;
@@ -1726,6 +1984,9 @@ export class Character {
   }
 
   /** Current world contact, yaw and pitch of a foot (planted or mid-swing). */
+  // 【脚姿态】planted:接触点即落点,俯仰随支撑进度走 toe-roll/heel-roll(勾 toe
+  // 离地、落地缓冲压后跟);摆动:位置走最小抖动曲线 mj(u) 的插值、高度是 sin 拱
+  // (峰位随跑量前移)、法线/朝向向落点过渡、俯仰 = 勾 toe→放平→压 land。
   _footPose(f) {
     if (f.planted || !f.sw) {
       f.cw.copy(f.pw); f.cyaw = f.yaw; f.cn.copy(f.n);
@@ -1753,6 +2014,13 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Pose construction (gameplay layers → P)
   // ---------------------------------------------------------------------------------------------
+  // 【姿态构建·分层叠加的总装线】从 poseNeutral 出发,各层按固定次序写 P:
+  // 就绪站姿 → 重心换脚/微动 → 步态(骨盆 bob/扭转/前倾)→ 倾斜弹簧(加减速/转弯)
+  // → 冲击弹簧(骨盆弹跳/挤压/受击)→ 疲惫/敌墨 → 摆臂 → 空中 → 武器持握+瞄准
+  // → 各 one-shot(甩击/挥剑/落地/变身/扔雷/翻滚/大招/小动作…)→ 头与脸 → 舞蹈
+  // (写 PD 再 poseLerp 进 P,权重 wDance)→ 生命层(呼吸/微表情/瞳孔,_lifePost)。
+  // 【层间约定】加法通道直接 +=;姿态类通道用 lerpE(以权重向目标收敛);一次性
+  // 大动作先写暂存层 PX 再整体 poseLerp 回 P,避免覆盖已叠加的层。
   _buildPose(dt, s) {
     const P = this.P, sp = this.sp, H = this.hold, tr = this.tr;
     const t = this.t;
@@ -1920,6 +2188,9 @@ export class Character {
   // Air: push-off stretch → knees tuck while rising (a running jump is a leap: the swing knee drives up, the push-off
   // leg trails) → floaty apex → the legs come through and reach for the ground while falling (arms up for balance,
   // windmilling on long falls). The takeoff speed and lead leg are captured by trigger('jump').
+  // 【空中姿态】把整套空中动作(蹬伸→收膝团身→滞空→落地下探)写进 PX 再按 wAir
+  // 混入 P:垂直速度 vyS 分出上升/下落,落地距离 gnd 驱动"伸腿够地",跑步起跳叠加
+  // 跨步式(领先腿信息由 trigger('jump') 捕获),长坠落有风车挥臂。
   _poseAir(P, dt, air) {
     const X = this.PX; X.set(P);
     const vy = this.vyS, jt = this.tr[T_JUMP];
@@ -1972,6 +2243,12 @@ export class Character {
 
   // Weapon anchor (rest-torso kid space) blended over carry / aim / roll + follow weights, stance yaw, recoil, charge.
   // Kinds are data (HOLD): dual wield mirrors the anchor into the left fist; lock / spin / slosh are generic layers.
+  // 【武器姿态层·全程数据驱动】HOLD 表的四档锚点(carry→run→aim,双持另有 lock)逐级
+  // lerpE 混合:瞄准档把锚点绕 AIM_PIVOT 旋转 aimPose 俯仰,并同步站姿偏航分配
+  // (hip/chest)、IK 极向量与跟随权重;charger 蓄力呼吸+满蓄颤抖、双持镜像左手锚点、
+  // splatling 转管起竖/持续射击顶推、滚筒推行、双手前握(wTwo + 左肩前探积分器消除
+  // 握把分离)、持续射击顶肩与泵动、最后各后坐弹簧把 trigger() 给的冲量转成可见的
+  // 枪口上跳/后座(双持左右各一套,交替开火带一点扭转)。
   _poseWeapon(dt, s) {
     const P = this.P, H = this.hold, sp = this.sp, t = this.t;
     const aimP = clamp(s.aimPitch ?? 0, -1.0, 1.15);
@@ -2124,6 +2401,9 @@ export class Character {
 
   // Moving weapon parts are owned by the arsenal stream: animateWeapon(w, st) (character-weapons.js) runs once per held
   // instance per frame with one reused state object. Near/far LOD by camera distance (far = merged static weapon).
+  // 【武器部件逐帧动画·转交 arsenal 流】本函数只做三件事:近/远 LOD 判定(15m 或
+  // far 档 → 换合并静态网格并预抽稀)、填复用状态对象 _wst(时钟/蓄力/开火/地面速度…)、
+  // 调 animateWeapon(双持时左右各一次,手别 0/1)。
   _animWeapon(dt, s, w) {
     let near = true;
     if (this.inWorld && !this.isLocal && G.camera) near = G.camera.position.distanceToSquared(this.root.position) < 15 * 15;
@@ -2149,6 +2429,8 @@ export class Character {
   }
 
   /** The actor's WeaponRunner (read-only: charging / streaming / dodge / lockT …); labs may pass s.runner. */
+  // 【取武器运行器】许多姿态细节(蓄力/喷射/翻滚锁定/kit 状态)来自 actor 的
+  // weaponRunner;实验室场景可通过 AnimState.runner 直接注入。
   _runner(s) {
     if (s && s.runner !== undefined) return s.runner;
     const a = this._owner();
@@ -2156,6 +2438,8 @@ export class Character {
   }
 
   // Roller flick: coiled windup over the shoulder → whip (release at the weapon's windup time) → follow-through.
+  // 【滚筒甩击 one-shot】T_FLICK 时间轴四段:肩上卷紧(0-0.15)→ 鞭甩出手(~0.22 释放)
+  // → 随挥 → 收回(至 ~0.68);躯干随卷/甩反向扭动,full-weight 覆盖 PX。
   _poseFlick(P, ft) {
     const X = this.PX; X.set(P);
     const kUp = ease(ft / 0.15);                 // coil
@@ -2181,6 +2465,8 @@ export class Character {
 
   // Bucket (trigger 'flick'): two-handed underarm throw — dip and swing the pail back beside the hip, heave it forward
   // and up so the mouth tips out (ink leaves at ~0.12 s), follow through, settle back into the hold.
+  // 【泼桶(也是 flick 触发)】低手抛:桶摆回髋侧(0-0.09)→ 向前上猛抛、桶口翻出
+  // (0.09-0.19,墨水在 ~0.12s 离桶)→ 随挥 → 收回;全程双手。
   _poseBucket(P, ft) {
     const X = this.PX; X.set(P);
     const kBack = ease(ft / 0.11);
@@ -2204,6 +2490,7 @@ export class Character {
   }
 
   // Brush: a quick sideways swipe low across the body (alternating direction), torso twisting with the sweep.
+  // 【画笔横扫】快速低扫,方向由 swipeSide 交替(±1),躯干随扫动扭转,0.35s 收完。
   _poseSwipe(P, ft) {
     const X = this.PX; X.set(P);
     const sd = this.swipeSide || 1;
@@ -2221,6 +2508,9 @@ export class Character {
   }
 
   // ---- Brine Cutlass (kits/blade.js) ------------------------------------------------------------------------------
+  // 【海盐水刀·挥砍层】三套动作合一:蓄力举刀(肩后蓄力、身体拧紧、满蓄颤抖,权重
+  // blRaise)→ 快斩(拳绕胸骨前一点划平面斜弧,刃领先,躯干鞭甩,左右交替)→ 蓄力
+  // 重劈(过头→水平→劈低,身体随之前扑)。自维护 blT 时钟,无触发时自动归零退出。
   // Quick cut ('blade_slash', side ±1): the fist sweeps a flat, slightly diagonal arc across the chest round a point in
   // front of the sternum, the edge leading (+1: right, high → left, low; −1: back again, rising), the torso whipping round
   // with it; follow-through, then back to the guard. Charging (runner charge > 0): the blade rises over the right
@@ -2285,6 +2575,9 @@ export class Character {
   // Heavy landing (falls from height): the springs give the squash; this adds the absorb — a deep squat with the chest
   // folding over the knees, the free arm flung down and out (a hand to the deck on the biggest drops), head dipping,
   // then a push back up. Scaled by the impact; small hops only get the springs.
+  // 【重落地吸收层】弹簧负责挤压回弹,本层加"人"的部分:深蹲+胸叠膝上+自由臂下甩
+  // (最大冲击时手掌拍地,左手 IK 目标切到地面点)、眯眼抿嘴,冲击幅度 landAmp 由
+  // trigger('land') 按下落速度算出。
   _poseLand(P, lt) {
     const a = this.landAmp, X = this.PX; X.set(P);
     const k = win(lt, 0, 0.035, 0.07 + 0.13 * a, 0.3 + 0.38 * a) * sstep(0.3, 0.75, a);
@@ -2304,6 +2597,9 @@ export class Character {
 
   // Locker one-shots: 'admire' (glance down at the new outfit, tug the tee hem, a satisfied nod), 'hairflip' (a head
   // toss that flings the tentacles, the free hand brushing past), 'wink' (tilt, wink, grin).
+  // 【衣帽间小动作三合一】换装的欣赏(低头打量+拽衣角+点头,拽角瞬间给衣摆弹簧
+  // 冲量)、甩发(头甩+手拂过,0.2s 处踢头发)、眨眼(歪头+单眼眨+咧嘴);权重取
+  // 三者最大,4 倍速快进式淡入。
   _poseLocker(P) {
     const tr = this.tr, X = this.PX; X.set(P);
     let w = 0;
@@ -2337,6 +2633,9 @@ export class Character {
 
   // Kid-side acting for the transform: diving in, a dip with the free arm thrown up (like diving into water); springing
   // out, the free arm flings up and out, ears perk, a quick grin — the kid arrives with a flourish, not a fade.
+  // 【变形的"人形侧"演出】下潜:自由臂上举如扎入水中、闭眼、耳朵下垂;现身:臂
+  // 向外甩、耳朵竖起、惊喜表情,并在 0.045s 瞬间把头发弹簧清零再向上猛踢(从墨中
+  // 弹出的发丝从静止开始被甩起)。
   _poseForm(P) {
     const t = this.formT;
     if (this.form !== 'kid' && this.formPrev === 'kid') {
@@ -2362,6 +2661,9 @@ export class Character {
   // Slosher heave (trigger 'slosh' at the start of the windup; the ink leaves at +0.13 s): dip the bucket back and low,
   // a big upward-forward heave that turns the open top to the target over the lip, follow-through, settle by ~0.6 s.
   // The support hand lets go of the carry bar for the throw and swings back for balance.
+  // 【泼桶大招式 heave】锚点位移/旋转直接叠加 kc 键帧曲线(K_SL_*):后摆蓄力 →
+  // 向前上方猛抛、桶口翻向目标(0.12s 时给墨水槽/头发冲量)→ 随挥;期间踮脚、
+  // 支撑手离杆后摆维持平衡(0.06-0.56s 左手 IK 让位)。
   _poseSlosh(P, st) {
     const X = this.PX; X.set(P);
     const dx = kc(st, K_SL_T, K_SL_X), dy = kc(st, K_SL_T, K_SL_Y), dz = kc(st, K_SL_T, K_SL_Z);
@@ -2390,6 +2692,9 @@ export class Character {
   // Dualies dodge roll (trigger 'dodge' { x, z, t }; root motion comes from the engine): squash → tucked roll over the
   // shoulder along the roll direction, pistols hugged to the chest → unfurl with the feet landing wide, straight into
   // the lock stance. The tumble itself is a kid-group rotation (this.tumble about this.tumbleX/Z) applied in _applyPose.
+  // 【双枪翻滚 one-shot】三段:蜷缩团身(双脚离地权重清零、双枪抱胸、眯眼)+ 绕
+  // up×方向轴一整周的空翻(角度曲线快出缓入,存在 tumble/tumbleX/Z 由 _applyPose 应用)
+  // + 展开落进宽站姿(STANCE_LOCK)直接衔接锁定炮台姿态。
   _poseDodge(P, tt) {
     const X = this.PX; X.set(P);
     const D = this.dodgeDur, u = clamp(tt / D, 0, 1);
@@ -2418,6 +2723,8 @@ export class Character {
   }
 
   // Bomb / storm throw with the free (left) arm: cocked → whip → follow-through (the projectile leaves at t≈0).
+  // 【扔雷(左手)】后拉蓄力(0-0.06)→ 鞭甩(0-0.1,雷在此时离手)→ 随挥收势;
+  // 期间左手完全脱离武器 IK(IKL=0)与显式目标(LTW=0),由本层直接写手臂通道。
   _poseThrow(P, tt) {
     const X = this.PX; X.set(P);
     const w = win(tt, 0, 0.03, 0.4, 0.62);
@@ -2435,6 +2742,7 @@ export class Character {
   }
 
   // Holding the splat bomb up behind the head (free arm cocked, chest turned), ready to throw.
+  // 【举雷瞄准】把雷举在头后(自由臂后拉、转身对目标),由 wSub 权重渐入。
   _poseSubAim(P, w) {
     const X = this.PX; X.set(P);
     X[IKL] = 0; X[LTW] = 0;
@@ -2447,6 +2755,8 @@ export class Character {
   }
 
   // Respawn drop: superhero dive → three-point landing → pop up.
+  // 【重生入场】两段:空降(并腿下指、臂张开、低头看落点,0.12s 内淡入)→ 落地后
+  // 的三点式着地(左手撑地 IK 目标贴地 + 深蹲)再向上弹起亮相(pop),最后整体淡出交还常态。
   _poseSpawn(P, st) {
     const X = this.PX; X.set(P);
     const landed = this.tr[T_LAND] < st; // landed during this spawn
@@ -2481,6 +2791,8 @@ export class Character {
   }
 
   // Tidal Slam: crouch → launch stretch → forward somersault → overhead hang (engine: rise 0.55 s, hang 0.25 s).
+  // 【大招·潮汐跳劈(腾空段)】蹬地伸展 → 团身前空翻(MODELR 通道写 kid 组旋转)
+  // → 双手举武器过头悬停;与 _poseSlam 通过 leapEnd 平滑交接,IKL 权重在举过顶/收起间切换。
   _poseLeap(P, lt) {
     const X = this.PX; X.set(P);
     const launch = win(lt, 0, 0.04, 0.12, 0.24);
@@ -2518,6 +2830,8 @@ export class Character {
   }
 
   // Slam: whip the weapon down while diving, then a crouched impact with the weapon smashed into the ground.
+  // 【大招·下砸段】下潜挥武器下劈 → 触地瞬间(slamGround 置位并清零 T_IMPACT、压弹
+  // 簧+踢头发)→ 砸地蹲姿(武器插地、宽低马步),冲击窗由 T_IMPACT 驱动。
   _poseSlam(P, st) {
     const X = this.PX; X.set(P);
     if (!this.slamGround && this.grounded && st > 0.02) { this.slamGround = true; this.tr[T_IMPACT] = 0; this.sp[S_SQ + 1] -= 3.2; this.sp[S_PELY + 1] -= 0.8; this._hairKick(0, -3, 0); }
@@ -2546,6 +2860,10 @@ export class Character {
 
   // ---- Sponge Mitts (the mechanics live in kits/mitts.js; this is only its body motion) -------------------------------
   // Reads the runner's kit state (charging / charge, leaping, landT, cling + clingN / clingPt in world space).
+  // 【海绵拳套·身体演出层】机制在 kits/mitts.js,这里只读 kit 状态并写姿态:
+  // 出拳(左右拳各自沿 aimP 方向冲 45ms 回 210ms,双肩/胸顺拳扭转)、蓄力蹲(拳收髋侧、
+  // 满蓄颤抖+用劲表情)、飞跃(上升超人式→下降举拳过顶)、落地双拳砸地、贴墙
+  // (墙法线/触点转 kid 空间,身体贴入 10cm,左掌贴墙、双脚蹬墙、右拳保持架挡)。
   //  · punches: each glove thrusts out along the aim and snaps back (right = tr[T_SHOOT], left = tr[T_SHOOTL]),
   //    knuckles turning in, chest and shoulder driving it
   //  · leap charge: a coiled crouch, gloves drawn back low by the hips, trembling at full charge
@@ -2647,6 +2965,9 @@ export class Character {
   }
 
   // Idle fidgets (hand-keyed-style one-offs while standing around).
+  // 【待机小动作】七种手调 one-shot(推眼镜/转枪或打量武器/张望/伸懒腰/敲墨水槽/
+  // 踮脚跳/甩墨),按 FIDGET_LEN 时长走 win 淡入淡出;不少动作附带微表情与道具弹簧
+  // 冲量(敲槽让墨水晃、甩墨逐帧踢头发)。
   _poseFidget(P, id, ft) {
     const X = this.PX; X.set(P);
     const L = FIDGET_LEN[id];
@@ -2734,6 +3055,10 @@ export class Character {
   // yaw/pitch targets for the stabilised head (springs: the eyes lead, the head follows with a slight overshoot).
   // In a match: the aim / nearby actors (enemies first) / the attacker right after a hit / into turns and the travel
   // direction / idle glances. Out of one (showcase, locker, lobby, podium): see _attendMenu.
+  // 【注视决策层】比赛内:优先瞄准方向,其次每隔 0.9-3.1s 挑一个有趣对象看(_pickLook
+  // 按"敌方优先×前方×距离"打分),再混合行进方向与转弯,受击瞬间视线甩向攻击者;
+  // 头用一对弹簧(HLY/HLP)追赶目标(眼先动头后动),头冲击弹簧叠加其上,转头
+  // 时头部做稳定器补偿(滚动小于身体)。输出:注视点 A.p + P[HLY/HLP/LOOKX/Y]。
   _poseLook(dt, s) {
     const P = this.P, sp = this.sp, A = this.att;
     let ty = 0, tp = 0;
@@ -2794,6 +3119,9 @@ export class Character {
   // Out of a match the kid mostly looks at the viewer (the camera it is drawn with), with glances at a neighbour (a
   // kid sharing its parent within 4 m: lobby line-up, podium) and idle glances away. Dances bias it (victory: the
   // viewer; defeat: mostly away). A glance applied by the showcase (it turns the head after our update) takes over.
+  // 【菜单注视】比赛外:按舞蹈倾向(胜利爱看镜头/ defeat 躲视线)抽签看"观众(相机)/
+  // 邻居 kid(同父节点 4m 内)/ 游离一瞥",刚切到观众时常伴随挑眉+微笑微表情;
+  // 展架若已代转头(extGl),眼睛让位不再注视。输出仍是 A.p(root 空间注视点)。
   _attendMenu(dt) {
     const A = this.att;
     A.t -= dt;
@@ -2823,6 +3151,7 @@ export class Character {
   }
 
   /** Nearest other visible kid sharing our parent (≤ 4 m) — the lobby line-up / podium neighbour to glance at. */
+  // 【找邻居】在 LIVE 全局集里找同父节点、可见、4m 内(且不自重合)的最近角色。
   _neighbour() {
     const par = this.root.parent; if (!par) return null;
     let best = null, bd = 16;
@@ -2836,6 +3165,10 @@ export class Character {
 
   // Post-dance life layer (runs after every pose layer incl. dances, so menus get it too): micro-expression impulses +
   // idle flickers, the menu head turn toward the attention target, pupils.
+  // 【生命层·所有姿态之上的最后润色】far 档直接跳过;内容:呼吸(_breathe)、菜单里
+  // 头对注视点的部分跟随(先算当前头朝向再取差值,S_ATTY/ATP 弹簧平滑)、待机微表情
+  // 抽签(抿嘴/半笑/挑眉/撇嘴/微笑,连续不重复)、腮红(用力/疲惫/胜利/被夸)、瞳孔
+  // (兴奋放大/瞄准收窄/见观众放大)。
   _lifePost(dt) {
     const P = this.P, sp = this.sp, A = this.att;
     if (this.lifeLv === 0) return;
@@ -2878,6 +3211,9 @@ export class Character {
   // Breathing: inhale (~40 %) → exhale (~45 %) → a short pause; each breath a little different in depth and length; now
   // and then a deep sigh when idle. The rib cage lifts and opens (chest extends, shoulders ride up, arms float out a
   // hair), the head counters so it stays level. Rate + depth follow exertion / tiredness (brPh in _updateStates).
+  // 【呼吸】一个 brPh 相位钟:吸气 40% → 呼气 45% → 停顿;每次呼吸的幅度/时长由 rng
+  // 抖动(不是机械循环);肋廓开合(胸骨伸展+锁骨上抬+臂微张),头反向补偿保持水平;
+  // 速率与深度随 exert/wTired 增大,待机久了穿插一声长叹(嘴微张、眉收、肩松)。
   _breathe(P) {
     const bu = frac(this.brPh), bn = Math.floor(this.brPh);
     if (bn !== this.brN) {
@@ -2905,11 +3241,15 @@ export class Character {
 
   /** Start a micro-expression impulse: X = expression vector, w = weight (negative flips MTILT: the other side),
    *  a/h/d = attack/hold/decay (s), bras = brow asymmetry (+ left brow up). Reuses the weakest of 6 slots. */
+  // 【发一个微表情冲量】6 个槽复用:挑"权重最小或已播完"的槽覆写,参数 = 表情向量/
+  // 权重(负值把嘴歪镜像到另一侧)/攻-持-衰三段时长/眉不对称/附加通道(嗤鼻/嘟嘴/脸红)。
   _mxPlay(X, w, a = 0.1, h = 0.2, d = 0.4, bras = 0, E = null) {
     let best = this.mx[0], bw = Infinity;
     for (const m of this.mx) { const r = m.t > m.a + m.h + m.d ? -1 : m.w * m.w; if (r < bw) { bw = r; best = m; } }
     best.X = X; best.w = w; best.t = 0; best.a = a; best.h = h; best.d = d; best.bras = bras; best.E = E;
   }
+  // 【微表情推进】逐槽:过期的清掉;否则按 攻→持→衰 包络取权重,把表情向量按通道
+  // (XCH 顺序)加性叠加进 P,MTILT 通道吃权重符号(实现"歪向另一边")。
   _mxTick(P, dt) {
     for (const m of this.mx) {
       if (!m.X) continue;
@@ -2925,6 +3265,7 @@ export class Character {
   }
 
   /** The actor that owns this character (read-only: team, sub-weapon aim), found once per match. */
+  // 【找宿主 actor】反查 G.actors(每帧最多一次);缓存并保持直到 actor.character 不再是自己。
   _owner() {
     if (this.actor && this.actor.character === this) return this.actor;
     if (!this.inWorld || !G.actors) return null;
@@ -2935,6 +3276,8 @@ export class Character {
     return this.actor;
   }
 
+  // 【挑要看的人】对 0.5-18m 内、前方 120° 的存活 actor 打分:敌人 ×2.2、越正前越高、
+  // 越远越低,加 rng 抖动避免全场同步;85% 概率真正采纳。
   _pickLook() {
     const acts = G.actors;
     const me = this._owner();
@@ -2959,6 +3302,10 @@ export class Character {
   // (≈150 ms); the right lid trails by a few ms; some are partial; ~14 % come as doubles. Spontaneous intervals are
   // skewed-random around a state mean (focus/aim/charging suppress, exertion/tiredness raise); saccades, hits and hard
   // landings trigger their own (_blinkStart).
+  // 【眨眼钟】一只时钟驱双眼:闭眼加速(≈75ms)→ 短停 → 开眼减速(≈150ms),右眼
+  // 滞后几毫秒,部分眨(amp<1),14% 二联;间隔按状态均值偏态抽样(瞄准/蓄力抑制,
+  // 疲惫/用力加密,约 12-15 次/分);快速甩头(>5.5rad/s,最多 1 次/秒)有 70% 带一个
+  // 眨眼(真实的眼球运动联动)。
   _blinkTick(dt) {
     const b = this.bl;
     b.next -= dt;
@@ -2987,6 +3334,8 @@ export class Character {
     this.blinkL = L; this.blinkR = R; this.blinkK = Math.max(L, R);
   }
   /** Start a blink now (amp 0..1; hard = a squeezed, held blink for hits). */
+  // 【起眨】正在闭眼途中忽略;随机化 闭/停/开 三段时长(受击的 hard 眨:闭眼快、
+  // 保持久、开眼慢),随机决定二联与下一次自发间隔。
   _blinkStart(amp = 1, hard = false) {
     const b = this.bl;
     if (b.t >= 0 && b.t < b.c) return;    // already closing
@@ -2998,6 +3347,11 @@ export class Character {
   }
 
   // Facial animation: expression mixing from state (gameplay), mouth breathing.
+  // 【表情混合层】far 档整个脸停掉;否则:先推进眨眼钟,再把状态译成 9 个平滑权重
+  // xw[0..8](专注/开火 grin/用力/受击 wince/缺墨 worry/大招 determ/出生惊喜/疲惫
+  // tired/出生喜悦),按 addExpr 把预定义表情向量(X_*,相对中性的 8 通道增量)线性
+  // 叠加进 P——【表情 = 预设向量按权重线性混合,没有骨骼级表情动画】;耳朵姿态、
+  // 受击张手、用力时的嘴呼吸与奔跑张嘴也在此收束。
   _poseFace(dt, s) {
     const P = this.P, tr = this.tr;
     if (this.lifeLv === 0) { this._effort = 0; this.blinkL = this.blinkR = this.blinkK = 0; return; }
@@ -3033,6 +3387,8 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Dances / showcase poses (kid-space feet; variants picked per character)
   // ---------------------------------------------------------------------------------------------
+  // 【舞蹈分派】按名字与角色种子选的变体号(0/1/2)分派到具体舞蹈;所有舞蹈直接写
+  // D 缓冲( kid 空间脚目标),并清掉步态/IK/跟随权重——舞蹈全权接管。
   _poseDance(D, name, t, dt) {
     D[WPL] = 0; D[WPR] = 0; D[STAB] = 0; D[AFOLT] = 0; D[AFOLR] = 0;
     if (name === 'victory') {
@@ -3053,6 +3409,8 @@ export class Character {
   }
 
   // Victory A: bouncing fist pumps → hop-spin → hero pose + wink (8 beats @ 126 bpm)
+  // 【胜利舞 A】弹跳挥拳 4 拍(每拍冲击式下蹲+头点)→ 蓄蹲→空中转体 360°(MODELR)
+  // → 英雄定型(宽站、持枪手举、自由手张开、抛媚眼,backOut 过冲入位)。
   _dVictoryPump(D, t) {
     const H = this.hold;
     const b = (t * 2.1) % 8, bf = frac(b);
@@ -3096,6 +3454,8 @@ export class Character {
   }
 
   // Victory B: anticipation dip → weapon twirl overhead on tiptoe → point it at the camera, hand on hip, wink
+  // 【胜利舞 B】预蹲 → 踮脚头顶转枪两圈(SPIN 通道,重武器按 NO_TWIRL 表跳过)
+  // → 指向镜头定格,自由手叉腰、歪头眨眼,期间随节拍小弹跳。
   _dVictoryFlourish(D, t) {
     const H = this.hold;
     const c = t % 4.6;
@@ -3124,6 +3484,8 @@ export class Character {
   }
 
   // Victory C: side-to-side happy hops with alternating arm waves → big V jump (8 beats @ 150 bpm)
+  // 【胜利舞 C】左右交替小跳 6 拍(重心左右摆、挥臂、压缩-伸展)→ 深蹲起跳大 V
+  // 字(滞空伸展、落地压弹),全程咧嘴竖耳。
   _dVictoryHops(D, t) {
     const H = this.hold;
     const b = (t * 2.5) % 8, bf = frac(b), bi = Math.floor(b);
@@ -3159,6 +3521,8 @@ export class Character {
   }
 
   // Defeat A: slumped sway, big sigh, head drop
+  // 【失败舞 A】垂头垮肩地缓慢摇摆,周期中一次大叹气(肩耸→落下)后头部再沉一下,
+  // 眉眼低垂、耳朵下垂。
   _dDefeatSlump(D, t) {
     const H = this.hold;
     const cyc = t % 6;
@@ -3179,6 +3543,8 @@ export class Character {
   }
 
   // Defeat B: two frustrated stomps → turn away, arms crossed, pouting, sneaking a glance back
+  // 【失败舞 B】连跺两脚(带冲击下蹲)→ 转身背对、抱臂噘嘴,中途回头偷瞄一眼
+  // (颈部与眼神单独加权,挑眉在偷瞄时松开)。
   _dDefeatSulk(D, t) {
     const c = t % 6.5;
     const st1 = win(c, 0.1, 0.25, 0.3, 0.42), st2 = win(c, 0.55, 0.7, 0.75, 0.87);
@@ -3205,6 +3571,7 @@ export class Character {
   }
 
   // Defeat C: droop, scuff the ground with a foot, sigh, sniff
+  // 【失败舞 C】低垂站姿,脚尖来回蹭地两次,一次叹气后再吸下鼻子(头随 sniff 一点)。
   _dDefeatKick(D, t) {
     const c = t % 5.2;
     const k1 = win(c, 0.6, 0.85, 0.95, 1.2), k2 = win(c, 1.4, 1.65, 1.75, 2.05);
@@ -3223,6 +3590,8 @@ export class Character {
   }
 
   // Menu idle: relaxed weight shifts + fidgets + look-arounds (same systems as gameplay idle, feet in kid space)
+  // 【菜单待机】8s 周期的左右重心摇摆 + 缓慢的环视(kc 曲线驱头与眼)+ 每周期一次
+  // 武器小展示(轻武器转枪两圈,重武器只抬枪致敬);脚用 kid 空间固定站位。
   _dMenuIdle(D, t) {
     const H = this.hold;
     const cyc = t % 8;
@@ -3255,6 +3624,8 @@ export class Character {
   }
 
   // Locker: relaxed hand-on-hip weight shifts, looking at the camera (the viewer), a head tilt now and then
+  // 【衣帽间待机】叉腰站立的慢摇摆(6.5s 周期),周期中一次歪头 + 一次看向镜头,
+  // 自由手始终叉腰(LTW=1 左手 IK 到髋点),笑容常驻。
   _dLocker(D, t) {
     const H = this.hold;
     const w = Math.sin(t * TAU / 6.5), br = 0, cyc = t % 9;   // breathing: _breathe
@@ -3274,6 +3645,8 @@ export class Character {
   }
 
   // Loadout / lobby: confident weapon-presenting stance with breathing and a periodic flourish
+  // 【大厅展示】自信地持枪亮械站姿,7s 周期末尾一次重新握持/转枪的小花哨动作+
+  // 骄傲抬头;双手武器两手同持,单手武器自由手叉腰。
   _dLobby(D, t) {
     const H = this.hold;
     const br = 0;   // breathing: _breathe
@@ -3303,6 +3676,12 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Pose application: kid transform → pelvis reach → torso FK → head → leg IK → arm IK → face → hair → tank
   // ---------------------------------------------------------------------------------------------
+  // 【姿态应用·把 P 变成真实骨骼】IK 兜底的分工:P 里的 FK 姿态直接写旋转,但四肢
+  // 末端(脚踝/手腕)由解析双骨 IK 解到目标——FK 再夸张也不会断肢。顺序:
+  // kid 组变换(挤压缩放/位移/翻滚)→ 脚目标混合(世界 planted 与姿态目标按 WPL/R
+  // 混合)→ 骨盆(位置 + 可达性下沉)→ 躯干 FK → 稳定头 → 腿 IK → 武器部件动画 →
+  // 右臂 IK 到武器锚点 → 左臂(前握把/显式目标/闲置)→ 脸 → 头发 → 墨水槽 →
+  // 枪管旋转 → 翻滚 → 抖动骨 → 手指 → 记录脚实际位置(下帧 replant 用)。
   _applyPose(dt, s) {
     const P = this.P, B = this.bones, R = this.root.position, sp = this.sp;
     // ---- hand-held splat bomb: appears (pop) when the sub is aimed, leaves the hand on 'throw'
@@ -3558,6 +3937,9 @@ export class Character {
   // Gaze: eye yaw/pitch in head space. Big changes of the wanted direction fire a saccade (minimum-jerk, main-sequence
   // duration ≈ 22 ms + 100 ms/rad, big ones undershoot and land with a correction, may trigger a blink); small ones are
   // tracked at once (the eyes stay locked on target while the head moves — VOR) with fixation micro-saccades on top.
+  // 【眼球跳动 saccade】>0.075rad 的视向变化触发一次弹道式眼跳:最小抖动曲线 mj,
+  // 时长符合主序律 22ms+100ms/rad,大跳变欠射 10% 落地再修;大跳伴随眨眼/挑眉。
+  // 小变化直接 45Hz 阻尼跟踪(头动时眼球锁定目标,即前庭眼反射),上面再叠注视微跳。
   _gazeTick(dt, dx, dy) {
     const g = this.gz;
     dx = clamp(dx, -0.62, 0.62); dy = clamp(dy, -0.42, 0.38);
@@ -3582,6 +3964,11 @@ export class Character {
     g.x = damp(g.x, g.fx + g.mx, 45, dt); g.y = damp(g.y, g.fy + g.my, 45, dt);
   }
 
+  // 【脸的应用·姿态通道 → 骨骼与 uniform】顺序:注视方向(P 的 LOOK 或注意点反算的
+  // 精确眼位)→ saccade 推进 → 眼睛缩放(blink/wink/squint,上睑随注视上下)→ 眉
+  // (旋转+位移,BRAS 不对称)→ 嘴 decal uniform(uMouth:弯曲/宽度/张/歪)→ 眼球
+  // 与材质钩子(uGaze 双眼汇聚到注视距离/uLid 下睑/uPupil/uMouth2)→ 对外 face
+  // 通道表(供其他系统读)→ 可选骨骼(下颌/脸颊隆起/眼睑骨)。
   _applyFace(P, dt) {
     const B = this.bones, F = this.face, A = this.att;
     // ---- gaze: exact eye-in-head direction to the attention point (real head orientation: dances, lobby turns)
@@ -3652,6 +4039,9 @@ export class Character {
     if (xb.lidR) xb.lidR.rotation.x = (1 - openR) * 1.2;
   }
 
+  // 【抖动骨·次级运动小件】脚趾(保持贴地、踝后跟上卷时前掌下压)、T 恤下摆(前/后
+  // 两片+整圈:随加减速后拖/前甩、下落上飘、侧摆、步频颤动)、背包(挂带上的钟摆:
+  // 加速度后甩、步频弹跳、侧摇)、耳朵(情绪竖垂、随头转动拖曳、随机抖动、帽子压垂)。
   _applyJiggle(P, dt) {
     const xb = this.xb, sp = this.sp;
     // toes stay flat on the ground while the heel peels up (planted feet; posed feet only when they touch the ground)
@@ -3701,6 +4091,9 @@ export class Character {
 
   // Articulated hands (docs/RIG.md → Fingers). h: −1 fist · 0 grip (rest) · 1 relaxed · 2 open. Curl is about local Z
   // (left + opens, right mirrored); spread about local X (same sign both sides). A gripped weapon or the bomb forces 0.
+  // 【手指】手型标量 h(-1 拳·0 握·1 放松·2 张开)由 hk 查值映射到每节卷曲;握枪/持雷
+  // 强制 0 型;叠加:射击/受击的握把挤压弹簧(逐指衰减、小指侧多卷)、放松态的生命
+  // 微动、扳机指跟武器 trig 联动、拇指单独轨迹、张开度决定扇形展开。
   _applyFingers(P, dt) {
     const bombOn = this.bomb && this.bomb.group.visible, sp = this.sp;
     const gL = Math.max(clamp(P[IKL], 0, 1) * (1 - clamp(P[LTW], 0, 1)), bombOn ? 1 : 0);
@@ -3734,6 +4127,8 @@ export class Character {
     }
   }
 
+  // 【墨水槽】液面倾斜与侧向弹簧由身体加速度驱动(低刚度低阻尼 → 液体的滞后晃荡),
+  // 液柱高度 = 墨量 inkS × 满柱高(随晃动 ±8%),墨量归零隐藏;人形隐藏时直接按墨量摆。
   _updateTank(dt) {
     const sp = this.sp, T = this.tank;
     // slosh driven by body acceleration (kid space), lagging and ringing like a liquid
@@ -3749,6 +4144,8 @@ export class Character {
   }
 
   /** kid-space transform of a bone (walks up to this.kid; ignores bone scale). */
+  // 【骨骼的 kid 空间变换】沿父链把位置/旋转累积到 kid 组(忽略缩放);IK 目标换算
+  // 与武器跟随都靠它。
   _kidXform(bone, pos, quat) {
     pos.set(0, 0, 0); quat.identity();
     let o = bone;
@@ -3757,6 +4154,10 @@ export class Character {
   }
 
   /** Analytic two-bone IK in kid space. target = end-bone origin, pole = bend direction, endQuat = kid-space end orientation. */
+  // 【解析双骨 IK·四肢的兜底解算】经典两骨闭式解:目标距离钳到 [|a-b|+ε, a+b] 内
+  // (超出量记入 ikErr 供握把前探用),余弦定理求肘/膝角,极向量决定弯向;再用两段
+  // 静止方向基矩阵(Mu0T/Mf0T)把世界弯向换算回各骨局部,按 weight 与当前姿态
+  // slerp 混合——FK 与 IK 永远平滑过渡,不会瞬跳。
   _solveLimb(L, target, pole, endQuat, weight, errSlot) {
     if (endQuat) _sEnd.copy(endQuat);
     _sT.copy(target); _sPole.copy(pole);
@@ -3800,6 +4201,14 @@ export class Character {
   // Hair: per-strand spring chains driven by head inertia (linear + angular), drag and gravity; the "into the head"
   // component of every bend is removed so strands never swing through the skull.
   // ---------------------------------------------------------------------------------------------
+  // 【头发物理·每缕每段一条弹簧链】驱动力是头部惯性:头心世界速度/加速度(限幅,
+  // 防引擎瞬移把发丝拍平)换算成头空间的"表观重力+阻力";头部角速度(由本帧与上帧
+  // 头四元数差求得)从每段角位移里反向扣除(发丝因此滞后头转)。每段:半隐式欧拉
+  // 弹簧(K 随段号递减 → 越梢越软)子步进(≤1/60s),约束三步:【防穿头】沿"dir×
+  // 指向头心"方向的分量整段投影掉;【限幅】角位移钳 ±HCL;【防糖纸扭曲】绕段轴的
+  // 扭转分量投影掉(发片是 LBS 带,扭转会压扁截面,故只保留 ±0.12rad),最后轴角
+  // 向量写骨骼。发梢再挂一级更软的"棒槌尖"弹簧,做鞭尾随挥;待机时一缕慢波沿线
+  // 传播+发尖卷舒。
   _updateHair(dt) {
     const B = this.bones;
     this.model.updateWorldMatrix(true, false);
@@ -3914,6 +4323,12 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Squid form: transform pops, dry hops with anticipation, dolphin arcs, swim undulation, climb wiggle, blinks.
   // ---------------------------------------------------------------------------------------------
+  // 【鱿鱼形态·按状态五态】攀爬(腹贴墙、外套膜朝上、侧扭+沿墙小游走)、贴地游
+  // (俯身波动前进,滚转随转弯)、空中海豚弧(头朝速度方向、沿迹线拉伸)、干地跳跃
+  // (预蹲→腾空→啪叽落地三段挤压缩放+倾斜)、干地待机(呼吸浮沉)。位姿经 sqPos/
+  // sqQuat 指数平滑,变形手势缩放(sqSY/SQXZ)最后叠乘;摆动参数(幅度/频率/前进
+  // 占比)喂给 shader 的 uWig 做行进波动画;眼睛眨眼=整体压扁;本地玩家游/爬时
+  // 显示幽灵壳、隐藏实体眼。
   _updateSquid(dt, s) {
     const sq = this.squid, sp = this.sp;
     if (this.sqScale <= 0.001) { this.sqInit = false; return; }
@@ -4018,10 +4433,15 @@ export class Character {
     if (!this.kidForm) this._squidBlink(dt);
   }
 
+  // 【鱿鱼眨眼】复用人形的眨眼钟(sqBlink 由 _blinkTick 供),鱿鱼形态没有眼皮骨骼,
+  // 直接压扁眼睛网格并下移。
   _squidBlink(dt) { this._blinkTick(dt); }
 
   /** Rim light inputs: in a match from the environment (sky horizon + sun colour, sun direction → view space); out of
    *  one the showcase lights its own stage, so the rim stays a faint neutral edge. CHAR_RIM scales it (0 = off). */
+  // 【轮廓光输入】比赛内取天空/太阳色与太阳方向(转视空间)喂给 uIwRim/uIwRimL,
+  // 夜晚按比例衰减;补光 uIwFill 按太阳高度自适应(低角度黄金时刻脸背光→补光加强,
+  // 按地平线亮度归一化);比赛外只留微弱中性边缘。
   _updateRim() {
     const R = this.u.uIwRim.value, Ld = this.u.uIwRimL.value, Fl = this.u.uIwFill.value, k = CHAR_RIM.k, kf = CHAR_RIM.fill;
     const sky = this.inWorld ? skyColors() : null;
@@ -4042,6 +4462,8 @@ export class Character {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // 【材质逐帧更新】无敌闪烁(uFlash)、大招发光呼吸(uGlow)、墨量低告警闪烁(填充物
+  // 自发光)、蓄力/满蓄/释放的武器发光强度、人形隐藏时的墨水槽直摆。
   _updateMaterials(dt, s) {
     const t = this.t; const u = this.u;
     this._updateRim();

@@ -1,3 +1,52 @@
+// ============================================================================
+// 【中文导读】程序化道具系统 PropKit(零模型文件、零贴图文件)
+//
+// 【模块定位】INKWAVE 的场景陈设(set dressing)库:码头/滑板场/集装箱堆场等
+//   竞技场的全部道具(栏杆、长椅、贩卖机、集装箱门、市集摊、自行车……)
+//   都不是资产文件,而是由本文件用【图元原语 + 一张共享 2048² Canvas 图集】
+//   在运行时即时生成。
+//
+// 【三步生命周期】
+//   1. new PropKit(scene, { castShadow, quality }) —— 建共享图集、约 9 种共享
+//      材质、一个 Builder 实例;quality(low/medium/high)折算成分段系数 qf 全局降档。
+//   2. kit.add(type, opts) —— 查声明式类型表 D[type],用 Builder 原语
+//      (B.cyl/box/sph/tor/lathe/tube/decal/blob)攒下一批【零件】
+//      { 几何, 矩阵, 颜色 },【不建 Mesh】;顺带登记碰撞盒/旋转件/闪烁灯/旗帜。
+//      可调用任意多次。
+//   3. kit.build() —— 零件按【材质桶】mergeParts 合并、每桶一个 Mesh;
+//      旋转件、闪烁灯、旗帜、横幅各建一个 InstancedMesh。之后用
+//      update(dt,time) / setTeamColors / setNight / clear / dispose 维护。
+//
+// 【核心机制】
+//   - 【零件不建 Mesh】add() 期零 GPU 对象分配;全部静态件在 build() 里一次性
+//     烘焙成每材质一个的合并几何,约 150 个道具只占约 9 个合并 draw call
+//     + 5 个实例 draw call(及各自阴影通道)。
+//   - 【共享材质按视觉分类】paint 哑光漆 / gloss 清漆 / metal 半金属 / wood /
+//     rubber / foliage 双面植被 / glow 自发光 / fence 链条网 alpha / blob 地面假
+//     AO;调色板走顶点色,招牌贴画走图集 UV。
+//   - 【类型表 D 是声明式注册】每种道具一条记录 { desc, params, variants,
+//     mount, build(B,o) };build 是纯配方,只描述形状,可读性优先。
+//   - 【外挂包与失败回滚】marina 船/船坞与关卡包(stages 下的 register)只拿
+//     Builder API 往 D 里注入自己的类型;注册失败只回滚删掉自己新增的类型,
+//     不影响本体与其他包。
+//   - 【headless 模式】无 DOM 时不建材质、不画图集,仅供 PropKit.triangles()
+//     做三角形预算统计。
+//
+// 【新手阅读地图】(不写行号,会漂移,按区段找)
+//   - 调色板与确定性随机数:文件最上方(PALETTE / col / mulberry32)
+//   - 几何原语:GB 攒批器、chamferBox、roundBox、latheGeo、tubeGeo、
+//     extrudeGeo、blobGeo、puffGeo,及几何模板缓存 TPL/G
+//   - 共享图集:REG 区块布局表、drawAtlas、街头印刷品 drawStreetPrint
+//   - 布料:clothMaterial / flagGeo / bannerGeo(顶点着色器里飘动)
+//   - 合并器 mergeParts(顶点色 × 地面 AO × 图集 UV 的烘焙炉)
+//   - Builder 类:每种原语上方有一行中文注
+//   - 类型表 D:按 栏杆隔离/街道家具/植物/机器设备/墙面管线/招牌/旗帜装饰/
+//     舞台音响/箱桶货物/路障/照明/集装箱与滑板场/浮标救生/街头小件/
+//     海报路牌/自行车/滑板/市集餐车/灯串线缆市政/港口杂物 分组,组头有中文
+//   - class PropKit:构造、材质、add、_xfCols、build、update、stats、dispose
+//
+// 【配套阅读】docs/BOOT.zh-CN.md §6(道具先行)、docs/ASSETS-WEAPONS.zh-CN.md §5
+// ============================================================================
 // INKWAVE prop kit: procedural set dressing for the harbor / skatepark / container-yard arenas.
 //
 //   const kit = new PropKit(scene, { castShadow: true, quality: 'high' });
@@ -22,6 +71,8 @@ const PI = Math.PI, TAU = PI * 2, HP = PI / 2;
 
 // ------------------------------------------------------------------------------------------------ palette
 // Neutral bases + muted accents. Saturation stays below the team inks so ink is always the loudest thing on screen.
+// 【调色板】全部道具只从这里取色(烘焙进顶点色,不写死材质色);中性灰白打底 +
+// 低饱和点缀,刻意让队墨永远是画面里最跳的颜色。
 export const PALETTE = {
   white: '#ffffff', offwhite: '#f2eee6', cream: '#eee2c8', concrete: '#d2cdc3', concreteDark: '#b3ada2', warmgrey: '#a39c90',
   grey: '#7c776f', charcoal: '#474950', ink: '#2c2e35', railing: '#dde2e6',
@@ -31,8 +82,11 @@ export const PALETTE = {
   lavender: '#a79be0', lavenderdark: '#7c70bd', sky: '#7fc0df', mint: '#a1d7b7', pink: '#eea0bf', navy: '#35405a',
   leaf: '#5ba257', leafdark: '#3f8249', leaflight: '#8fc46b', rubber: '#34353c', cone: '#ec8a57',
 };
+// 【点缀色轮】需要"随机挑一个好看颜色"时(塑料筐、轮胎涂装、彩旗……)从这里抽。
 const ACCENTS = ['teal', 'coral', 'mustard', 'lavender', 'sky', 'mint', 'pink'];
 
+// 【颜色解析与缓存】接受调色板名 / 十六进制串 / THREE.Color,统一缓存成
+// THREE.Color 复用;shade 变暗、mixc 混色都是克隆出新色,不污染缓存。
 const _colCache = new Map();
 function col(c) {
   if (c && c.isColor) return c;
@@ -46,15 +100,22 @@ function col(c) {
 const shade = (c, k) => col(c).clone().multiplyScalar(k);
 const mixc = (a, b, t) => col(a).clone().lerp(col(b), t);
 
+// 【确定性随机数】种子哈希 PRNG:同一种子序列必相同 —— 布局抖动、木纹色差、
+// 海报张贴都靠它做到"每个客户端长一个样"。
 function mulberry32(a) {
   return function () { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 
 // ------------------------------------------------------------------------------------------------ geometry builder
+// 【几何攒批器 GB】所有自定义原语共用的"原始顶点流":p 位置 / n 法线 / uv / c 顶点色 /
+// idx 索引五个平铺数组,逐顶点、逐三角形 push;geo() 收尾打包成 BufferGeometry。
+// 好处是任何奇形怪状都能按同一套 v/tri/quad 手写,且天然兼容后面的 mergeParts 合并。
 class GB {
   constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
   v(x, y, z, nx, ny, nz, u = 0, v = 0, c = 1) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(u, v); this.c.push(c, c, c); return this.p.length / 3 - 1; }
   // Triangles are auto-oriented so their winding agrees with the supplied vertex normals (all our shapes supply outward normals).
+  // 【三角形自动定向】叉积方向与三顶点法线之和点积判号,绕向永远对齐外向法线
+  // (本项目所有形状都供外法线),手写顶点时不必关心顺逆时针。
   tri(a, b, c) {
     const P = this.p, N = this.n;
     const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
@@ -78,6 +139,8 @@ class GB {
 }
 
 // Box with 45° chamfered edges and interpolated normals (reads as rounded): 44 triangles.
+// 【倒角方盒】45° 小倒角 + 插值法线,读起来是圆角盒:6 面 + 12 倒角 + 8 角共 44
+// 三角形,是中件盒体的默认选择(见 Builder.box)。
 function chamferBox(w, h, d, r) {
   const H = [w / 2, h / 2, d / 2];
   r = Math.max(0.0005, Math.min(r, H[0] * 0.48, H[1] * 0.48, H[2] * 0.48));
@@ -110,6 +173,8 @@ function chamferBox(w, h, d, r) {
 }
 
 // Rounded box (true 2-segment radius on every edge, smooth corners): 108 triangles. Used for hero-size shapes.
+// 【真圆角方盒】每条边 2 段真圆弧、法线沿径向插值,拐角完全圆润:108 三角形。
+// 只给主角级近景大件用(贩卖机、冰柜这类),普通件用倒角盒足矣。
 function roundBox(w, h, d, r) {
   const H = [w / 2, h / 2, d / 2];
   r = Math.max(0.001, Math.min(r, H[0] * 0.48, H[1] * 0.48, H[2] * 0.48));
@@ -134,6 +199,9 @@ function roundBox(w, h, d, r) {
 }
 
 // Lathe around +Y. profile = [[r, y], ...] ordered bottom→out→up→in; `null` entries split strips (hard crease).
+// 【车削原语】绕 +Y 轴旋转 (r, y) 剖面成回转体;剖面按"下→外→上→内"给出,
+// null 元素把剖面切成多段(段间断开成硬折痕,如油桶加强环、消防栓帽檐)。
+// 法线由剖面邻点切线推得;closed 时首尾环相接(轮胎、救生圈)。
 function latheGeo(profile, seg, closed = false) {
   const g = new GB();
   const strips = [[]];
@@ -166,6 +234,9 @@ function latheGeo(profile, seg, closed = false) {
 }
 
 // Tube along a polyline (parallel-transport frames). radius may be a function of t in [0,1].
+// 【管道原语】沿折线扫掠圆截面,平行传输标架(parallel transport)避免急弯处截面
+// 扭曲;radius 可以是函数(锥形枝干、渐细旗杆)。up 提示用于"面朝观众"的平面
+// 霓虹管定截面基准。
 function tubeGeo(pts, radius, radial = 8, closed = false, up = null) {
   const n = pts.length, g = new GB();
   const P = pts.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
@@ -199,6 +270,9 @@ function tubeGeo(pts, radius, radial = 8, closed = false, up = null) {
 }
 
 // Extrude a closed (z, y) profile along X, with chamfered end caps (bevel b). Creases where the profile turns > 40°.
+// 【多边形挤出原语】把 (z, y) 闭合剖面沿 X 挤出成棱柱,端面内缩出 b 宽的倒角。
+// polyNormals 求外法线;offsetPoly 把剖面等距外扩/内缩(做包边侧板);
+// 相邻面夹角大于 40° 处保留硬折痕,否则法线平滑过渡。
 function polyNormals(prof) {
   const n = prof.length;
   let A = 0;
@@ -248,6 +322,8 @@ function extrudeGeo(prof, L, b) {
 }
 
 // Lumpy smooth blob for foliage (vertex-colour gradient: shaded underside, sunlit top).
+// 【植被团块】icosphere 去重顶点后按正弦噪声捏出疙瘩,顶点色烘焙"背阴面暗、
+// 向阳面亮"的渐变 —— 低成本让一坨球读起来像植物而不是石头。
 function blobGeo(r, detail, seed, lump = 0.13, lo = 0.72, hi = 1.12) {
   let g = new THREE.IcosahedronGeometry(r, detail);
   g.deleteAttribute('normal'); g.deleteAttribute('uv');
@@ -273,6 +349,8 @@ function blobGeo(r, detail, seed, lump = 0.13, lo = 0.72, hi = 1.12) {
 }
 
 // Smooth foliage puff: low-noise UV sphere with a baked top-light gradient (cauliflower clusters read as leafy, not rocky).
+// 【植被云团】比 blobGeo 更低噪的 UV 球 + 顶部受光渐变,专做灌木/树冠的
+// "花椰菜"小球:多个叠加出蓬松轮廓,见 bushCluster / canopy。
 function puffGeo(det, seed) {
   const [ws, hs] = [[7, 5], [10, 7], [12, 8]][det];
   let g = new THREE.SphereGeometry(1, ws, hs);
@@ -297,6 +375,9 @@ function puffGeo(det, seed) {
 }
 
 // Geometry template cache (CPU-side templates only; they are merged, never rendered directly).
+// 【几何模板缓存】原语函数用完整参数签名做 key,同参几何全进程只建一次、
+// 反复引用(合并时逐顶点拷贝,所以共享安全);这些模板【只存在于 CPU 侧,
+// 从不直接渲染】。
 const TPL = new Map();
 const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
 function tpl(key, fn) { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; }
@@ -313,6 +394,8 @@ const G = {
   puff: (det, seed) => tpl(['pf', det, seed].map(kf).join('|'), () => puffGeo(det, seed)),
 };
 // Rounded-cylinder lathe profile, centred on y = 0.
+// 【圆角圆柱剖面】车削专用 (r, y) 剖面生成器:平底 + 圆角肩,居中 y=0。
+// flangeProf 是"法兰盘"(栏杆脚、通风口底座这类贴地小圆盘)。
 const rcylProf = (r, h, b) => {
   const y0 = -h / 2, y1 = h / 2;
   return [[0, y0], [r - b, y0], [r, y0 + b], [r, y1 - b], [r - b, y1], [0, y1]];
@@ -320,6 +403,10 @@ const rcylProf = (r, h, b) => {
 const flangeProf = (R, h) => [[0, 0], [R, 0], [R, h * 0.5], [R * 0.82, h], [0, h]];
 
 // ------------------------------------------------------------------------------------------------ atlas (sign art)
+// 【共享画布图集】全部店招/贴画/海报都画在一张 2048² 离屏 Canvas 上,道具几何只存
+// 图集 UV;运行时生成、零贴图文件。REG 是【区块布局表】:名字 → [x, y, w, h]
+// (像素);下方用四个循环批量登记贴纸 stk0..15、路牌 sg0..7、指刀片 bl0..7、
+// 小标签 lb0..15 四族区块。
 const AW = 2048, AH = 2048;
 const REG = {
   sign0: [0, 0, 512, 256], sign1: [512, 0, 512, 256], sign2: [1024, 0, 512, 256], sign3: [1536, 0, 512, 256],
@@ -345,12 +432,19 @@ for (let i = 0; i < 16; i++) REG['stk' + i] = [448 + (i % 8) * 64, 1792 + Math.f
 for (let i = 0; i < 8; i++) REG['sg' + i] = [960 + i * 128, 1792, 128, 128];
 for (let i = 0; i < 8; i++) REG['bl' + i] = [448 + (i % 4) * 256, 1920 + Math.floor(i / 4) * 64, 256, 64];
 for (let i = 0; i < 16; i++) REG['lb' + i] = [1472 + (i % 4) * 128, 1920 + Math.floor(i / 4) * 32, 128, 32];
+// 【区块 → UV】把 REG 里的像素矩形换算成 0..1 UV,四周各内缩 pad 像素,
+// 防止 mipmap 采样渗到邻区颜色。
 function regUV(name, pad = 3) {
   const [x, y, w, h] = REG[name];
   return [(x + pad) / AW, 1 - (y + h - pad) / AH, (x + w - pad) / AW, 1 - (y + pad) / AH];
 }
+// 【图集纯白点】white 区块的中心 UV —— 不需要贴画的零件把 UV 全部钉在这里,
+// 采样必定命中纯白,顶点色即最终色(mergeParts 的默认 UV 分支)。
 const WHITE_UV = (() => { const [x, y, w, h] = REG.white; return [(x + w / 2) / AW, 1 - (y + h / 2) / AH]; })();
 
+// 【字体装载】图集上手写风标题(Titan One)与正文(Rubik)是打包的 woff2 字体,
+// FontFace 异步加载,就绪后重画图集(文字从回退字体换成正主);无 DOM 环境
+// (headless/SSR)直接跳过。
 let _fontPromise = null;
 const FONT_D = 'InkwavePropsDisplay', FONT_T = 'InkwavePropsText';
 function loadFonts() {
@@ -389,6 +483,9 @@ function squidPath(x, cx, cy, s) {
   x.bezierCurveTo(cx - 0.45 * s, cy - 0.45 * s, cx - 0.35 * s, cy - 0.7 * s, cx, cy - 1.0 * s);
   x.closePath();
 }
+// 【图集绘制总控】按 REG 区块逐个 region() 作画:四大店招、贩卖机发光橱窗、
+// 徽章、集装箱模板字、危险条纹、涂鸦、风扇格栅……每一区都是纯 Canvas 手绘的
+// 原创图案;画完再调 drawStreetPrint() 追加街头印刷品区。
 function drawAtlas(x) {
   x.clearRect(0, 0, AW, AH);
   // --- sign0: KRAKEN LINES (shipping line)
@@ -535,6 +632,9 @@ function drawAtlas(x) {
 // ------------------------------------------------------------------------------------------------ atlas: street print
 // Posters, flyers, stickers, street signs, shop headers and small labels. All art is original, muted print colours
 // (sun-faded inks on paper), deterministic (seeded) so the atlas is identical on every client.
+// 【街头印刷品区】海报/传单/贴纸/路牌/店招横幅/小标签的第二调色板(做旧纸墨
+// 色系,与道具漆色 PALETTE 刻意区分);全部图案带种子做确定性随机,每台客户端
+// 画出的图集逐像素一致(联网对局的硬要求)。
 const INK = { navy: '#2f3a57', cream: '#f4ecd8', paper: '#f6f2e8', coral: '#df7c66', coraldk: '#c25f4c', teal: '#3f9f97', tealdk: '#2c7a74',
   mustard: '#e2b64c', lav: '#a397dc', pink: '#e79ab8', sky: '#7fbcd9', mint: '#98cfb0', ink: '#2c2e35', kraft: '#d2b287', grey: '#8b8f98', red: '#d0584a' };
 function paperBG(x, w, h, base, seed, fiber = 0.06, folds = true) {
@@ -1005,6 +1105,8 @@ function drawStreetPrint(x) {
   lbl(12, 'MIND THE GAP', '#f1c95c', I.ink, true); lbl(13, 'MOORING 12', '#fff', I.navy); lbl(14, 'NO PARKING', '#fff', I.red); lbl(15, 'WASH DOWN', '#3f6fb0', '#fff');
 }
 
+// 【小贴图工厂】链条网(chain)、地面假 AO(blobTex)这类独立小 Canvas 贴图的
+// 通用生成器;repeat 时开 RepeatWrapping 供 UV 平铺(网格、渔网的编织感)。
 function canvasTex(w, h, draw, repeat = false) {
   const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
   draw(cv.getContext('2d'), w, h);
@@ -1015,6 +1117,9 @@ function canvasTex(w, h, draw, repeat = false) {
 }
 
 // ------------------------------------------------------------------------------------------------ cloth (flags / banners)
+// 【布料系统】旗帜与横幅不做骨骼动画,而是 InstancedMesh + 顶点着色器波动:
+// 每顶点带 flex(自由端权重)与 wave(速度/频率/幅度)两个 attribute,
+// uTime 由 PropKit.update() 每帧推进;深度材质注入同一波动,投影也会跟着飘。
 const CLOTH_VERT_PARS = `uniform float uTime;\nattribute float flex;\nattribute vec3 wave;\n`;
 const CLOTH_FN = `
   vec3 ipos = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
@@ -1023,6 +1128,9 @@ const CLOTH_FN = `
   float cb = uTime * wave.x * 2.3 + cph * 1.7 + position.y * 3.0;
   float cw = sin(ca) + 0.35 * sin(cb);
 `;
+// 【布料主材质】MeshStandardMaterial 上 onBeforeCompile 注入三段:
+// beginnormal 阶段用法线偏转伪造受光起伏;begin_vertex 阶段把波动加在 z 上;
+// 片元阶段图集按 alpha 与顶点色混合(徽章区透明处透出实例/队伍色)。
 function clothMaterial(atlas, uTime) {
   const m = new THREE.MeshStandardMaterial({ map: atlas, roughness: 0.82, metalness: 0, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
@@ -1039,6 +1147,8 @@ function clothMaterial(atlas, uTime) {
   };
   return m;
 }
+// 【布料深度材质】阴影贴图用的 MeshDepthMaterial 注入同一顶点波动,
+// 让旗帜在地上的投影同步飘动(不配的话投影会是僵直一片)。
 function clothDepthMaterial(uTime) {
   const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
@@ -1049,6 +1159,8 @@ function clothDepthMaterial(uTime) {
   };
   return m;
 }
+// 【三角旗几何】Plane 收窄成三角旗形,UV 全部钉在图集透明区(纯色靠实例色),
+// flex 从旗杆侧(t=0)到自由侧(t=1)按幂次递增,根部不动尖部狂摆。
 function flagGeo() {
   const W = 0.28, Hf = 0.34;
   const g = new THREE.PlaneGeometry(W, Hf, 2, 4);
@@ -1066,6 +1178,8 @@ function flagGeo() {
   g.computeVertexNormals();
   return g;
 }
+// 【横幅几何】4×10 段的竖幅,UV 映射到图集 emblem 区(鱿鱼徽章),
+// 顶边固定、底边自由飘;挂臂位置由实例矩阵决定。
 function bannerGeo(w, h) {
   const g = new THREE.PlaneGeometry(w, h, 4, 10);
   const P = g.attributes.position, n = P.count, uv = g.attributes.uv, r = regUV('emblem', 2);
@@ -1083,11 +1197,16 @@ function bannerGeo(w, h) {
 }
 
 // ------------------------------------------------------------------------------------------------ merge
+// 【零件合并器】build() 的烘焙炉:把同一材质桶里的全部零件烤成一个 BufferGeometry。
+// 逐零件:顶点经零件矩阵进世界,法线经法线矩阵;顶点色 = 零件调色 × 几何自带
+// 色 × 地面 AO;UV 三种来源(图集矩形 / 平铺系数 / 纯白点);矩阵行列式为负
+// (镜像)时翻转三角形绕向,保证镜像件不黑面。
 const _v = new THREE.Vector3(), _nm = new THREE.Matrix3();
 function mergeParts(parts) {
   let nv = 0, ni = 0;
   for (const p of parts) { const c = p.g.attributes.position.count; nv += c; ni += p.g.index ? p.g.index.count : c; }
   const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), colr = new Float32Array(nv * 3), uv = new Float32Array(nv * 2);
+  // 【索引宽度自适应】顶点总数超 65535 必须升 32 位索引,否则大场景合并体溢出回绕。
   const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
   let vo = 0, io = 0;
   for (const p of parts) {
@@ -1099,17 +1218,21 @@ function mergeParts(parts) {
       _v.fromBufferAttribute(P, i).applyMatrix4(p.m);
       const o = (vo + i) * 3;
       pos[o] = _v.x; pos[o + 1] = _v.y; pos[o + 2] = _v.z;
+      // 【烘焙地面 AO】零件的 ao 记的是道具落点地面高度;顶点离地面越近越压暗,
+      // 0.55 m 内平滑过渡(带系数)—— "道具长在地上"的接触感不花一分钱光照。
       let ao = 1;
       if (p.ao != null) { const hh = Math.max(0, _v.y - p.ao); const t = Math.min(1, hh / 0.55); ao = 0.72 + 0.28 * t * t * (3 - 2 * t); }
       _v.fromBufferAttribute(N, i).applyMatrix3(_nm).normalize();
       nor[o] = _v.x; nor[o + 1] = _v.y; nor[o + 2] = _v.z;
       const k = C ? C.getX(i) : 1, k2 = C ? C.getY(i) : 1, k3 = C ? C.getZ(i) : 1;
       colr[o] = cr * k * ao; colr[o + 1] = cg * k2 * ao; colr[o + 2] = cb * k3 * ao;
+      // 【UV 三选一】图集矩形映射(贴画)/ uvs 平铺系数(网格)/ 默认纯白点(纯色件)
       const u = (vo + i) * 2;
       if (p.uv) { const r = p.uv; uv[u] = r[0] + U.getX(i) * (r[2] - r[0]); uv[u + 1] = r[1] + U.getY(i) * (r[3] - r[1]); }
       else if (p.uvs) { uv[u] = U.getX(i) * p.uvs[0]; uv[u + 1] = U.getY(i) * p.uvs[1]; }
       else { uv[u] = WHITE_UV[0]; uv[u + 1] = WHITE_UV[1]; }
     }
+    // 【镜像绕向修正】负行列式(镜像缩放/翻面)会翻转三角形朝向,交换索引后两位纠正
     if (g.index) {
       const I = g.index.array;
       for (let j = 0; j < I.length; j += 3) {
@@ -1130,59 +1253,96 @@ function mergeParts(parts) {
   g.computeBoundingSphere(); g.computeBoundingBox();
   return g;
 }
+// 【三角形计数】索引数(或非索引顶点数)÷ 3;预算统计与旋转件模板计数共用。
 const triCountOf = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
 
 // ------------------------------------------------------------------------------------------------ builder context
+// 【矩阵合成器】位置 + YXZ 欧拉角 + 缩放 → Matrix4;全部零件的局部位姿都经它。
 const _e = new THREE.Euler(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3();
 function compose(x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
   return new THREE.Matrix4().compose(_p.set(x, y, z), _q.setFromEuler(_e.set(rx, ry, rz, 'YXZ')), _s.set(sx, sy, sz));
 }
+// 【Builder:道具搭建上下文】add() 期间复用的唯一实例(零分配设计):
+// begin() 按本次道具的 pos/rotY/scale/seed 重置基矩阵与随机流;
+// push/pop 维护【变换栈】(斜靠背、翻盖、车篮这类子装配不用手算坐标);
+// 各原语(box/cyl/sph/tor/lathe/tube/decal/blob)只调 add() 攒零件;
+// col 记碰撞盒;spin/blink/flag/banner 登记四类"实例件"(留给 build() 实例化)。
 class Builder {
   constructor(kit) { this.k = kit; this.stack = [new THREE.Matrix4()]; this.base = new THREE.Matrix4(); this.cols = []; this.aoBase = 0; this.rng = Math.random; this.tris = 0; }
+  // 【开工】基矩阵 = 平移 × rotY × 均匀缩放;aoBase 记地面高度(墙挂件置 null 不做
+  // 地面 AO);rng 换成本次种子的 mulberry32,后续 B.r() 全部确定性。
   begin(pos, rotY, scale, seed, ao) {
     this.base = compose(pos[0], pos[1], pos[2], 0, rotY, 0, scale, scale, scale);
     this.stack = [new THREE.Matrix4()]; this.cols = []; this.aoBase = ao ? pos[1] : null; this.rng = mulberry32(seed); this.scale = scale;
   }
   get top() { return this.stack[this.stack.length - 1]; }
+  // 【变换栈】push 在栈顶再叠一段局部位移 + 旋转(可选均匀缩放),pop 还原;
+  // 注意参数顺序是 (x, y, z, ry, rx, rz, s) —— yaw 在前,因为绕 Y 最常用。
   push(x = 0, y = 0, z = 0, ry = 0, rx = 0, rz = 0, s = 1) { this.stack.push(this.top.clone().multiply(compose(x, y, z, rx, ry, rz, s, s, s))); }
   pop() { this.stack.pop(); }
+  // 【分段数随画质折减】qf(quality factor)全局缩放圆的分段,low 档省顶点。
   seg(n) { return Math.max(3, Math.round(n * this.k.qf)); }
+  // 【区间随机】走本次道具的种子流,同位置同种子的道具逐件一致。
   r(a = 0, b = 1) { return a + (b - a) * this.rng(); }
   _m(x, y, z, o) {
     const s = o.s ?? 1;
     return this.base.clone().multiply(this.top).multiply(compose(x, y, z, o.rx || 0, o.ry || 0, o.rz || 0, o.sx ?? s, o.sy ?? s, o.sz ?? s));
   }
+  // 【攒零件的唯一入口】把 { 几何, 矩阵, 颜色, UV 映射, AO 基线 } 推进对应材质桶;
+  // glow/blob 材质与 o.ao:false 的零件跳过地面 AO;o.glow 亮度直接乘进顶点色。
   add(mat, g, c, x, y, z, o = {}) {
     let cc = col(c);
     if (o.glow) cc = cc.clone().multiplyScalar(o.glow);
     this.k._push(mat, { g, m: this._m(x, y, z, o), c: cc, uv: o.uv || null, uvs: o.uvs || null, ao: o.ao === false || mat.startsWith('glow') || mat.startsWith('blob') ? null : this.aoBase });
     this.tris += triCountOf(g);
   }
+  // 【方盒】默认小倒角盒(chamferBox);o.round 换真圆角盒(roundBox, hero 大件)。
   box(mat, c, w, h, d, x, y, z, o = {}) {
     const r = o.r ?? Math.min(0.045, Math.min(w, h, d) * 0.22);
     this.add(mat, o.round ? G.rbox(w, h, d, r) : G.cbox(w, h, d, r), c, x, y, z, o);
   }
+  // 【圆柱】o.bevel 时改车削圆角肩(rcylProf);o.r2 变圆锥台;o.open 空桶(省两端盖)。
   cyl(mat, c, r, h, x, y, z, o = {}) {
     const seg = this.seg(o.seg ?? 12);
     const g = o.bevel ? G.lathe(rcylProf(r, h, o.bevel), seg) : G.cyl(o.r2 ?? r, r, h, seg, !!o.open);
     this.add(mat, g, c, x, y, z, o);
   }
+  // 【球】ws/hs 分段经 seg() 随画质折减;o.half 半球(罩、盖、碗)。
   sph(mat, c, r, x, y, z, o = {}) { this.add(mat, G.sph(r, this.seg(o.ws ?? 12), Math.max(3, this.seg(o.hs ?? 8)), o.half), c, x, y, z, o); }
+  // 【圆环】o.rs 管分段 / o.ts 圆周分段 / o.arc 可截弧(只画一段弧,如挡泥板)。
   tor(mat, c, R, r, x, y, z, o = {}) { this.add(mat, G.tor(R, r, o.rs ?? 6, this.seg(o.ts ?? 20), o.arc ?? TAU), c, x, y, z, o); }
+  // 【车削】剖面数组见 latheGeo;o.closed 首尾相接(轮胎、救生圈)。
   lathe(mat, c, prof, x, y, z, o = {}) { this.add(mat, G.lathe(prof, this.seg(o.seg ?? 16), o.closed), c, x, y, z, o); }
+  // 【管道】折线扫掠,见 tubeGeo;坐标走 o.x/o.y/o.z,o.up 给平面霓虹管定截面基准。
   tube(mat, c, pts, r, o = {}) { this.add(mat, tubeGeo(pts, r, o.radial ?? 8, !!o.closed, o.up || null), c, o.x || 0, o.y || 0, o.z || 0, o); }
+  // 【贴画】平面贴上指定图集区块(decal 走 paint 桶,o.glow 走 glow 发光桶);
+  // 招牌、橱窗、涂鸦、贴纸全靠它,强制 ao:false(不压暗画面)。
   decal(name, w, h, x, y, z, o = {}) { this.add(o.glow ? 'glow' : 'paint', G.plane(w, h), o.tint ?? 'white', x, y, z, { ...o, uv: regUV(name), ao: false }); }
+  // 【地面假 AO】贴地的一张径向渐变片(材质桶 blob,不投影不深写),给道具一圈
+  // 软接触影;墙挂件(aoBase 为 null)直接跳过。tris 减 2 是不把它计入预算。
   blob(w, d, x = 0, z = 0) { if (this.aoBase == null) return; this.add('blob', G.plane(1, 1), 'white', x, 0.012, z, { rx: -HP, sx: w, sy: d, uvs: [1, 1] }); this.tris -= 2; }
+  // 【碰撞盒】局部轴对齐盒(米),add() 后由 _xfCols 变换进关卡坐标。
+  // 可选标志位(stage 包也在用):o.roof = 禁墨顶面(上不去、墨不沾);
+  // o.perch = 可站但不可涂;o.rail = 栏杆(挡人,墨弹/墨/鱿鱼都穿得过)。
   // collision box (local, metres). Optional flags (stage packs): o.roof = an off-limits top (never inkable, you slide
   // off), o.perch = a top you can stand on but never ink, o.rail = a railing (kids blocked; shots / ink / squids pass)
   col(x0, y0, z0, x1, y1, z1, o) { const f = (o && o.roof ? 1 : 0) | (o && o.rail ? 2 : 0) | (o && o.perch ? 4 : 0); this.cols.push(f ? [x0, y0, z0, x1, y1, z1, f] : [x0, y0, z0, x1, y1, z1]); }
+  // 【旋转件登记】不进静态合并;build() 时按 kind 各建一个 InstancedMesh,
+  // update() 里绕局部轴匀转(speed 弧度/秒,phase 随机错峰)。三角形按模板预算。
   spin(kind, x, y, z, o = {}) { this.k._spin.push({ kind, base: this._m(x, y, z, o), speed: o.speed ?? 8, phase: this.r(0, TAU) }); this.tris += this.k._tplTris(kind); }
+  // 【闪烁灯登记】build() 时全部进一个 InstancedMesh,update() 里正弦呼吸
+  // (rate 频率,lo/hi 亮度包络);size 默认 0.045。
   blink(c, x, y, z, o = {}) { this.k._blink.push({ m: this._m(x, y, z, { s: o.size ?? 0.045 }), color: col(c).clone(), rate: o.rate ?? 1, phase: o.phase ?? this.r(0, TAU), lo: o.lo ?? 0.25, hi: o.hi ?? 5 }); this.tris += 84; }
+  // 【旗帜登记】进 cloth 实例网格;o.team 指定队伍(染色走 _applyColors),
+  // 否则用 o.color;tint 向白色偏移量。三角旗约 16 三角形。
   flag(x, y, z, o = {}) { this.k._flags.push({ m: this._m(x, y, z, o), team: o.team ?? null, color: col(o.color ?? 'offwhite').clone(), tint: o.tint ?? 0 }); this.tris += 16; }
+  // 【横幅登记】与 flag 同类,但 UV 固定图集 emblem 徽章区;team 优先,否则 o.color。
   banner(x, y, z, o = {}) { this.k._banners.push({ m: this._m(x, y, z, o), team: o.team ?? null, color: col(o.color ?? 'lavender').clone(), tint: 0 }); this.tris += 80; }
 }
 
 // ------------------------------------------------------------------------------------------------ neon path helpers
+// 【霓虹路径小工具】圆采样点 / Catmull-Rom 平滑 / 多边形圆角,供 NEON 表的灯管
+// 折线用(霓虹 = 细管沿 2D 路径扫掠,见 D.neon)。
 function circlePts(cx, cy, r, n) { const a = []; for (let i = 0; i < n; i++) { const t = (i / n) * TAU; a.push([cx + Math.cos(t) * r, cy + Math.sin(t) * r]); } return a; }
 function smoothPts(pts, closed, n) {
   const c = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(p[0], p[1], 0)), closed, 'centripetal');
@@ -1203,9 +1363,21 @@ function roundPoly(pts, r, k = 3) {
 }
 
 // ------------------------------------------------------------------------------------------------ prop definitions
+// 【类型注册表 D】声明式道具系统的心脏:每种道具一条记录
+// { desc, params, variants, mount, build(B, o) }。
+//   desc     一句话描述(被 PROP_TYPES 导出,供工具/文档引用)
+//   params   可调参数与默认值说明
+//   variants 变体数;build 里用 (o.variant ?? 0) % variants 选取
+//   mount    'ground' 落地(pos = 地面点)/ 'wall' 墙挂(墙面 z=0,向 +Z 伸出)/
+//            'ground|wall' 两种皆可(内部用 o.wall 分支)
+//   build    配方本体:只用 Builder 原语描述形状,【绝不 new Mesh】
+// 下方按道具类别分组注册,每组带中文组头;文件尾部外挂包(船坞/关卡)继续注入。
 const D = {};
 const P3 = (x, y, z) => [x, y, z];
 
+// ---- 栏杆与隔离组(沿 +X 伸展的"条状"边缘构件)----
+// 【栏杆/围栏/桩】栏杆与围栏用 rail 碰撞(挡人、挡不住墨弹与鱿鱼),桩类是实心
+// 盒碰撞;三者都是码头、看台、栈桥边缘最常见的安全构件。
 D.railing = {
   desc: 'Painted steel handrail (posts every ~1.2 m, rounded top rail, mid + toe rails, flanged feet). Runs from pos along local +X.',
   params: { length: 'm (4)', height: 'm (1.0)', color: 'paint (railing)' }, variants: 1, mount: 'ground',
@@ -1281,6 +1453,7 @@ D.bollard = {
   },
 };
 
+// ---- 街道家具组(广场上的坐与扔)----
 D.bench = {
   desc: 'Plaza bench: wood slats on painted steel side frames. Seat faces +Z. variant 0 = with backrest, 1 = backless.',
   params: { length: 'm (1.8)', color: 'frame paint (tealdark)' }, variants: 2, mount: 'ground',
@@ -1337,6 +1510,10 @@ D.trashbin = {
   },
 };
 
+// ---- 植物组 ----
+// 【植被拼装法】植物不是一棵棵建模,而是用 puff(亮顶团块)/ blob(疙瘩团块)
+// 两种模板球按"一个核心 + 一圈 + 一顶"堆出来:bushCluster 堆灌木球,canopy 按
+// 黄金角螺旋堆树冠;颜色向 leaflight 偏移模拟受光,叶面渐变已在模板里烘好。
 function bushCluster(B, n, R, y, spread, det, seedBase, c = 'leaf') {
   // dome of smooth puffs: one core, a ring, and a crown puff
   const put = (px, py, pz, r, k, lift = 0) => B.add('foliage', G.puff(det, (seedBase + k) % 6), mixc(c, 'leaflight', lift * 0.45 + B.r(0, 0.08)), px, py, pz, { s: r, sy: r * 0.9, ry: B.r(0, TAU) });
@@ -1449,6 +1626,9 @@ D.tree = {
   },
 };
 
+// ---- 机器设备组(箱体电器:贩卖机 / 空调 / 屋顶通风口)----
+// 【箱体套路】圆角大盒做机身 + 图集贴画做"会发光的橱窗/招牌"(decal 加 glow),
+// 侧面贴画用 ry 转向;旋转风扇走 spin 实例件,不并进静态网格。
 D.vending = {
   desc: 'Vending machine with glowing product window (emissive, non-blooming), lit brand header, button column, dispense flap, side graphics. variant 0 = FIZZ CURRENT drinks, 1 = TIDE SNACKS. Front faces +Z.',
   params: { color: 'body (teal / coral)' }, variants: 2, mount: 'ground',
@@ -1560,6 +1740,9 @@ D.vent = {
   },
 };
 
+// ---- 墙面管线组 ----
+// 【墙挂约定】mount:'wall' 的道具以 z=0 为墙面、向 +Z 伸出;pos.y 语义各异
+// (见各 desc,如空调是"机身底");aoBase 一律置 null,不做落地 AO。
 D.pipes = {
   desc: 'Wall pipe run: 2–3 parallel painted pipes along +X at the wall (z=0), nested elbows dropping to the floor at the start and into the wall at the end, clamp brackets, flanges and a valve wheel.',
   params: { length: 'm (4)', count: '2–3 (3)', height: 'm, top pipe centre (2.2)', color: 'all pipes (default mixed teal/cream/mustard)' }, variants: 1, mount: 'wall',
@@ -1616,6 +1799,9 @@ D.ladder = {
   },
 };
 
+// ---- 招牌组(图集的最大用户)----
+// 【招牌 = 板 + 贴画】底板是 paint 盒,脸面是图集 sign0..3 区块的 decal;
+// 鹅颈射灯(glow)夜里泛光;o.wall 时平贴上墙、省去立柱。
 D.sign = {
   desc: 'Billboard with a bold original brand graphic on twin steel posts with goose-neck spot lamps. variant 0 KRAKEN LINES, 1 TIDE SNACKS, 2 SQUIDKID SKATE, 3 BARNACLE BREW. wall:true mounts it flat on a wall (z=0).',
   params: { width: 'm board (2.8)', height: 'm board (1.4)', color: 'frame (charcoal)', wall: 'bool' }, variants: 4, mount: 'ground|wall',
@@ -1647,6 +1833,9 @@ D.sign = {
   },
 };
 
+// 【霓虹灯管表】四种原创图案(0 鱿鱼 / 1 太阳海浪 / 2 鱼与泡泡 / 3 星形徽章)
+// 的 2D 路径,颜色键 n_* 映射到 NEON_COL;D.neon 把它们扫掠成发光细管
+// (glow ×6 亮度,夜间起辉)。
 const NEON = {
   0: { W: 0.9, H: 0.95, paths: () => {
     const mantle = smoothPts([[0, 0.33], [0.12, 0.2], [0.27, 0.1], [0.16, 0.06], [0.15, -0.1], [0.07, -0.13], [-0.07, -0.13], [-0.15, -0.1], [-0.16, 0.06], [-0.27, 0.1], [-0.12, 0.2]], true, 36);
@@ -1744,6 +1933,9 @@ D.awning = {
   },
 };
 
+// ---- 旗帜装饰组 ----
+// 【彩旗与横幅都走 cloth 实例】本体不进静态合并;build() 各建一个
+// InstancedMesh,顶点着色器按实例位置相位错峰飘动;team 参数把旗染成队色。
 D.bunting = {
   desc: 'String of triangular flags on a sagging rope between two poles (flags sway in the shader). team:0|1 tints flags with that team ink (alternating with white), otherwise mixed accents. posts:false omits the poles (rope from pos at `height`).',
   params: { length: 'm (6)', height: 'm rope anchor (3.4)', team: '0|1', posts: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -1791,6 +1983,7 @@ D.banner = {
   },
 };
 
+// ---- 舞台音响组 ----
 function woofer(B, x, y, z, R) {
   B.lathe('rubber', 'rubber', [[R * 1.04, 0.0], [R * 1.0, 0.012], [R * 0.92, 0.03], [R * 0.84, 0.008], [R * 0.55, -0.03], [R * 0.3, -0.05], [0, -0.05]], x, y, z, { rx: HP, seg: 16 });
   B.sph('metal', 'galv', R * 0.24, x, y, z - 0.03, { ws: 10, hs: 3, half: true, rx: HP });
@@ -1821,6 +2014,10 @@ D.speaker = {
   },
 };
 
+// ---- 箱 / 桶 / 托盘货物组 ----
+// 【货物三件套】woodCrate 木箱(斜撑 + 集装箱模板字贴画)、drum 油桶
+// (rolling hoops 车削剖面 + 桶塞)、pallet 托盘(三层板);三者都被多个道具
+// 与外挂包反复复用。
 function woodCrate(B, x, y, z, ry, S) {
   B.push(x, y, z, ry);
   B.box('wood', shade('woodlight', B.r(0.95, 1.05)), S - 0.04, S - 0.02, S - 0.04, 0, S / 2, 0, { r: 0.02 });
@@ -1916,6 +2113,8 @@ D.pallet = {
   },
 };
 
+// 【轮胎剖面】闭合车削轮廓(胎冠圆角 → 内圈),lathe closed 成整胎;
+// 黑色胎另配一道涂装配环(滑板场款)。
 const TIRE = (() => { const p = [], Ri = 0.17, Ro = 0.33, hw = 0.1, rc = 0.045; const c = [[Ro - rc, hw - rc, 0], [Ri + rc * 0.6, hw - rc * 0.6, HP], [Ri + rc * 0.6, -hw + rc * 0.6, PI], [Ro - rc, -hw + rc, PI * 1.5]]; const rads = [rc, rc * 0.6, rc * 0.6, rc]; for (let q = 0; q < 4; q++) for (let k = 0; k <= 2; k++) { const a = c[q][2] + (k / 2) * HP; p.push([c[q][0] + Math.cos(a) * rads[q], c[q][1] + Math.sin(a) * rads[q]]); } return p; })();
 D.tires = {
   desc: 'Tyre stack. variant 0 = three black tyres with painted rims, 1 = skatepark-painted stack of four, 2 = two stacked + one leaning.',
@@ -1946,6 +2145,9 @@ D.cone = {
   },
 };
 
+// ---- 路障组 ----
+// 【挤出截面复用】塑料水马 / 混凝土 jersey 的侧面轮廓是手写 (z, y) 剖面,
+// 沿 X 挤出(端盖带倒角);斜面贴 hazard 危险条纹贴画,夜里反光片用 glow。
 const BARRIER_PLASTIC = [[-0.26, 0], [0.26, 0], [0.27, 0.035], [0.262, 0.1], [0.2, 0.2], [0.13, 0.64], [0.11, 0.74], [0.07, 0.8], [0, 0.815], [-0.07, 0.8], [-0.11, 0.74], [-0.13, 0.64], [-0.2, 0.2], [-0.262, 0.1], [-0.27, 0.035]];
 const BARRIER_JERSEY = [[-0.3, 0], [0.3, 0], [0.305, 0.03], [0.3, 0.08], [0.2, 0.25], [0.11, 0.78], [0.08, 0.81], [-0.08, 0.81], [-0.11, 0.78], [-0.2, 0.25], [-0.3, 0.08], [-0.305, 0.03]];
 D.barrier = {
@@ -1980,6 +2182,8 @@ D.barrier = {
   },
 };
 
+// ---- 照明组 ----
+// 【高杆灯】灯头面板是 glow 发光面(亮度随 setNight 夜因子),投光感靠泛光。
 D.lightpole = {
   desc: 'Tall flood-light pole on a concrete plinth. variant 0 = four-head stadium bar, 1 = two-head area light. Heads emissive ×4 (blooms).',
   params: { height: 'm (8)', color: 'pole (galv)' }, variants: 2, mount: 'ground',
@@ -2007,6 +2211,9 @@ D.lightpole = {
   },
 };
 
+// ---- 集装箱与滑板场组 ----
+// 【集装箱门】贴在集装箱端面上的"门脸":门柱 / 门楣 / 双开波纹门叶 /
+// 四根锁杆(凸轮 + 把手);集装箱箱体本体由关卡几何提供,这里只补齐细节。
 D.container_door = {
   desc: 'Shipping-container door end panel to stick on the end face of a container box (face at z=0, pos = bottom centre): corner posts, header/sill, twin ribbed leaves, four lock bars with cams + handles, hinges, KRAKEN LINES stencil.',
   params: { width: 'm (2.44)', height: 'm (2.59)', color: 'container paint (coral)' }, variants: 1, mount: 'wall',
@@ -2033,6 +2240,8 @@ D.container_door = {
   },
 };
 
+// 【滑板场剖面】quarter-pipe(四分之一管)与 kicker(起跳台)的 (z, y) 轮廓,
+// 挤出成道具;offsetPoly 外扩一圈做彩绘侧板;顶部钢管(coping)就是磨台轨道。
 const QP = (() => { const H = 0.95, R = 0.95, zc = -0.5 + R, p = [[-0.95, 0], [zc + 0.03, 0], [zc + 0.03, 0.012]]; for (let i = 8; i >= 0; i--) { const t = (i / 8) * HP; p.push([zc - R * Math.cos(t) + (i === 8 ? 0 : 0), H - R * Math.sin(t) + (i === 8 ? 0.012 : 0)]); } p.push([-0.95, H]); return p; })();
 const KICK = (() => { const p = [[-0.6, 0], [0.62, 0], [0.62, 0.01]]; for (let i = 7; i >= 0; i--) { const t = i / 7; p.push([0.6 - 1.2 * (1 - t), 0.45 * Math.pow(1 - t, 1.6) + (i === 7 ? 0.01 : 0)]); } return p; })();
 D.skateramp = {
@@ -2065,6 +2274,7 @@ D.skateramp = {
   },
 };
 
+// ---- 浮标与救生组 ----
 D.buoy = {
   desc: 'variant 0 = glossy mooring ball with white band and lifting eye, 1 = channel-marker can buoy with cage and blinking lamp.',
   params: { color: 'body (coral)' }, variants: 2, mount: 'ground',
@@ -2119,9 +2329,14 @@ D.lifering = {
 };
 
 // ================================================================================================ street-level kit
+// 【街头小件大全】第二梯队道具:海报/自行车/滑板/市集摊/餐车/野餐/灯串/线缆/
+// 配电柜/消防/报刊/煤气笼/天线/绳缆渔具/沙袋/广告牌/花盆 —— 全部并入既有材质桶,
+// 不新增任何 draw call;每个"----"小节是一个品类,共用 rod/arcPts/pick 三件套。
 // Posters, signage, bikes & scooters, skate gear, market stalls, food carts, picnic furniture, string lights, cables,
 // utility cabinets, hydrants, news boxes, gas cages, dishes, rope / traps / nets, hose reels, pallet jacks, sandbags,
 // A-frame boards, ferry boards, potted plants. All merged into the existing material buckets (no new draw calls).
+// 【共用小工具】rod = 两点连线管(车架辐条级的细杆);arcPts = 平面圆弧采样
+// (挡泥板、拱形车架);pick = 从数组里按本次种子随机挑一个(配色不重样)。
 const rod = (B, mat, c, a, b, r, radial = 6) => B.tube(mat, c, [a, b], r, { radial });
 function arcPts(cx, cy, cz, R, a0, a1, n, plane = 'xy') {
   const out = [];
@@ -2133,7 +2348,9 @@ function arcPts(cx, cy, cz, R, a0, a1, n, plane = 'xy') {
 }
 const pick = (B, arr) => arr[Math.floor(B.r(0, arr.length - 0.0001))];
 
-// ---- striped fabric: parasol (cone + scalloped valance) and pitched stall canopy, vertex-coloured stripes, two-sided
+// ---- 条纹织物(阳伞 / 摊棚)----
+// 【条纹不画贴图】锥面/坡面手动铺三角形,奇偶条的旗标先打包进 uv.x,
+// 事后按旗标写回顶点色(每面两片,反向偏移一丝防 z-fight);花边是扇形 scallop。
 function parasolGeo(R, h, n, cA, cB) {
   const g = new GB(), rows = [[0, h], [R * 0.5, h * 0.64], [R, 0]], sub = 3;
   const ca = col(cA), cb = col(cB), pk = [];
@@ -2177,6 +2394,8 @@ function parasol(B, x, z, y0, H, R, cA = 'coral', cB = 'offwhite', n = 8) {
   B.cyl('metal', 'darksteel', 0.035, 0.08, x, y0 + H - 0.62, z, { seg: 8 });
 }
 // pitched canopy over a W×D footprint (ridge along X), stripes along X, scalloped valance front + back
+// 【摊棚雨棚】人字坡面 + 前后两条 scallop 花边的通用顶棚;与阳伞同款"顶点色
+// 条纹"手法,市集摊(stall)按宽度模板缓存。
 function canopyGeo(W, D, rise, cA, cB) {
   const g = new GB(), ns = Math.max(4, Math.round(W / 0.26)), sw = W / ns, ca = col(cA), cb = col(cB), pk = [];
   const put = (x, y, z, nx, ny, nz, c) => { const i = g.v(x, y, z, nx, ny, nz); pk.push(c); return i; };
@@ -2206,6 +2425,8 @@ function canopyGeo(W, D, rise, cA, cB) {
 }
 
 // ---- a flat print on a wall (z = 0): backing sheet, the print, tape or staples
+// 【墙上纸张】海报的通用件:垫纸 + 图集贴画 + 四角胶带(或订书钉),
+// 微微随机旋转,做出"手贴上去"的歪感。
 function paperSheet(B, name, w, h, x, y, z, rz = 0, tape = 'corners') {
   B.push(x, y, z, 0, 0, rz);
   B.box('paint', 'offwhite', w + 0.016, h + 0.016, 0.004, 0, 0, 0.002, { r: 0.0015 });
@@ -2218,6 +2439,9 @@ function paperSheet(B, name, w, h, x, y, z, rz = 0, tape = 'corners') {
   B.pop();
 }
 
+// ---- 海报 / 贴纸 / 路牌组 ----
+// 【贴画类道具】本体几乎零几何,全部戏份在图集区块(pst0..11 / pw0 / torn /
+// sg0..7 / bl0..7 / lb0..15);count>1 时贴成一簇并撒贴纸、撕角,seed 决定长相。
 D.poster = {
   desc: 'Paper posters on a wall (z = 0). variant 0–11 = event / notice posters, 12 = wide INK THE TOWN print, 13 = torn remnants. count > 1 pastes up an overlapping cluster with stickers and torn scraps.',
   params: { count: '1–6 (1)', seed: 'layout' }, variants: 14, mount: 'wall',
@@ -2278,6 +2502,8 @@ D.streetsign = {
 };
 
 // fingerpost blade: arrow-shaped board + print; back shows a partner print pointing the same way (or plain paint)
+// 【指刀片配色表】8 块箭头的底色/朝向/背面搭档(back = 另一区块序号,-1 素板),
+// fingerpost 按 variant 循环取用,正反两面都有内容。
 const BLADE = [
   { right: false, bg: '#f4ecd8', back: 1 }, { right: true, bg: '#f4ecd8', back: 0 }, { right: true, bg: '#3f9f97', back: 7 }, { right: false, bg: '#e2b64c', back: -1 },
   { right: true, bg: '#df7c66', back: -1 }, { right: false, bg: '#2f3a57', back: -1 }, { right: true, bg: '#f4ecd8', back: 0 }, { right: false, bg: '#3f9f97', back: 2 },
@@ -2309,7 +2535,9 @@ D.fingerpost = {
   },
 };
 
-// ---- bikes & scooters
+// ---- 自行车与滑板车组 ----
+// 【车轮套路】tor 双圈(外胎 + 轮圈) + 逐根 tube 辐条;bike() 是被 D.bike /
+// D.bikerack 复用的整车装配,车架按真实钻石架关键点连管,带链传动/脚撑/车灯。
 function wheel(B, x, y, z, R, c, spokes = 14) {
   B.tor('rubber', 'rubber', R - 0.018, 0.022, x, y, z, { rs: 6, ts: 22 });
   B.tor('metal', c ?? 'galv', R - 0.042, 0.009, x, y, z, { rs: 4, ts: 22 });
@@ -2435,7 +2663,7 @@ D.scooter = {
   },
 };
 
-// ---- skate
+// ---- 滑板组 ----
 function skateboard(B, deck, wheelC) {
   B.box('gloss', deck, 0.56, 0.016, 0.2, 0, 0.11, 0, { round: true, r: 0.007 });
   for (const s of [-1, 1]) B.box('gloss', deck, 0.14, 0.016, 0.2, s * 0.335, 0.125, 0, { round: true, r: 0.007, rz: s * 0.28 });
@@ -2470,7 +2698,9 @@ D.skaterail = {
   },
 };
 
-// ---- market stall + food carts + picnic + deck chairs
+// ---- 市集摊 / 餐车 / 野餐组 ----
+// 【摊位套路】四柱 + 人字顶棚(canopyGeo 条纹布)+ 图集店招 + 柜台货品
+// (鱼/果蔬/周边三套)+ 黑板价目 + 暖光灯笼 + 后场木箱;货品配色随机但确定。
 const STALL = [{ head: 'stall0', a: 'teal', b: 'offwhite', goods: 'fish' }, { head: 'stall1', a: 'mint', b: 'offwhite', goods: 'fruit' }, { head: 'stall2', a: 'lavender', b: 'offwhite', goods: 'merch' }];
 D.stall = {
   desc: 'Harbor market stall (front faces +Z): striped pitched canopy with scalloped valance on four posts, header sign, timber counter with goods (0 fish on ice, 1 fruit & veg crates, 2 tees + caps), chalk price boards, hanging lanterns, crates behind.',
@@ -2667,7 +2897,9 @@ D.surfrack = {
   },
 };
 
-// ---- string lights, cables, utilities
+// ---- 灯串 / 线缆 / 市政设施组 ----
+// 【下垂曲线】灯串/电缆共用"抛物线下垂"采样(sag 与跨距成正比),灯泡、
+// 绝缘子沿线布点;电力/消防类箱体贴 dia 危险菱形与 lb 小标签区块。
 D.stringlights = {
   desc: 'Festoon string lights: a sagging cable with warm glowing bulbs (blooming) between two points along +X, optional painted poles at the ends.',
   params: { length: 'm (6)', height: 'm anchor (3.4)', sag: 'm (L·0.07)', posts: 'bool (false)', solid: 'bool: posts collide (false)', count: 'bulbs (≈ L/0.45)' }, variants: 1, mount: 'ground',
@@ -2853,7 +3085,9 @@ D.dish = {
   },
 };
 
-// ---- harbor clutter
+// ---- 港口杂物组 ----
+// 【渔具与堆放】绳圈/蟹笼/晒网/水管卷/叉车/沙袋 —— 码头味道的主要来源;
+// 网格类(蟹笼/渔网)复用 fence 链条材质,uvs 平铺出编织感。
 D.ropecoil = {
   desc: 'Coiled mooring rope (stacked turns with a loose tail). variant 1 = two coils, one on a pallet-sized mat.',
   params: { color: 'rope (cream)' }, variants: 2, mount: 'ground',
@@ -3027,6 +3261,9 @@ D.pot = {
 };
 
 // ------------------------------------------------------------------------------------------------ spinner templates
+// 【旋转件模板】spin 实例件共享的两套几何:风扇(轮毂 + 5 叶倒角盒)与无动力
+// 风帽 turbine(双螺旋带条);先用 mergeParts 把多零件合并成单几何再实例化。
+// 外挂包还能用 PACK_HELPERS.spinTemplate 注册自己的 kind。
 function fanTemplate() {
   const parts = [];
   parts.push({ g: G.cyl(0.045, 0.045, 0.05, 12, false), m: compose(0, 0, 0, HP), c: col('charcoal'), ao: null });
@@ -3037,6 +3274,8 @@ function fanTemplate() {
   }
   return mergeParts(parts);
 }
+// 【风帽模板】球形螺旋带条逐片手铺(GB),再拼顶珠与底环;风一吹(其实是
+// update 恒速转)就转动的屋顶通风器。
 function turbineTemplate() {
   const g = new GB(), N = 14, S = 7, R = 0.2;
   for (let i = 0; i < N; i++) {
@@ -3061,17 +3300,25 @@ function turbineTemplate() {
 }
 
 // ------------------------------------------------------------------------------------------------ the kit
+// 【材质桶 → 阴影策略】CASTS 决定每种合并材质是否投影:glow(自发光)与
+// blob(假 AO 地贴)不投影;桶名后缀 ~ns(noShadow,由 PACK_HELPERS.noShadow
+// 生成)路由到同材质但不投影的桶(底层堆货、小件、玻璃字……)。
 const CASTS = { paint: true, gloss: true, metal: true, wood: true, rubber: true, foliage: true, fence: true, glow: false, blob: false };
 const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4(), _c1 = new THREE.Color(), _white = new THREE.Color(1, 1, 1);
 
 // Spinner templates registered by packs: kind → () => BufferGeometry (instanced with the metal material, spun about
 // local Y by B.spin(kind, …)). Built lazily once per kit, disposed with it.
+// 【模板注册表】kind → 几何工厂;内置 fan/turbine 两种,外挂包可扩充;
+// 每个 kit 懒建一次(_tpl 缓存),随 kit 一起 dispose。
 const SPIN_TEMPLATES = new Map();
 
 // ------------------------------------------------------------------------------------------------ stage prop packs
 // Stage-specific prop types live in their own files (one owner each). A pack only uses the builder API it is handed
 // (B.box / cyl / lathe / tube / sph / tor / blob / decal / col / push / pop / r …) plus these helpers — it never
 // imports this file, so there are no import cycles.
+// 【外挂包工具包】打包给船坞/关卡包的一切"外援":three 本体、调色板、全部几何
+// 原语、共用小件(木箱/油桶/托盘/车轮/轮胎/救生圈)、noShadow 材质路由、
+// spinTemplate 旋转件注册 —— 包【只拿 API、不 import 本文件】,从根上避免循环依赖。
 const PACK_HELPERS = {
   THREE, PALETTE, ACCENTS, PI, TAU, HP, P3, col, shade, mixc, mulberry32, chamferBox, roundBox, latheGeo, tubeGeo, extrudeGeo,
   polyNormals, offsetPoly, blobGeo, puffGeo, rcylProf, flangeProf, circlePts, smoothPts, roundPoly, arcPts, woodCrate, drum,
@@ -3084,17 +3331,23 @@ registerMarinaVessels(D, PACK_HELPERS);
 registerMarinaDock(D, PACK_HELPERS);
 // stage-owned packs (src/world/stages/<id>/props.js, types prefixed '<id>_'), each on its own: a broken pack only loses
 // its own types (and never overrides a type that already exists)
+// 【关卡包注册:带失败回滚】每个 stage 的 register(D, H) 前先快照 D 的键集合,
+// 抛错就删掉本次新增的全部类型 —— 坏包只丢自己的道具,绝不影响本体与其他包;
+// 同名类型先到先得,后注册的不覆盖已有。
 for (const [id, st] of Object.entries(STAGES)) {
   if (!st.register) continue;
   const before = new Set(Object.keys(D));
   try { st.register(D, PACK_HELPERS); } catch (e) { console.error(`[inkwave] stage prop pack ${id} failed`, e); for (const k of Object.keys(D)) if (!before.has(k)) delete D[k]; }
 }
 
+// 【道具系统主机】一个关卡一个实例;持有共享图集/材质/零件桶/实例件记录,
+// 生命周期见文件顶部导读;headless 模式跳过一切 DOM 与材质,仅供 triangles() 预算。
 export class PropKit {
   constructor(scene, opts = {}) {
     this.scene = scene;
     this.castShadow = opts.castShadow !== false;
     this.quality = opts.quality || 'high';
+    // 【画质系数 qf】low/medium/high → 0.6/0.8/1,Builder.seg() 用它全局折减圆分段。
     this.qf = { low: 0.6, medium: 0.8, high: 1 }[this.quality] ?? 1;
     this.group = new THREE.Group(); this.group.name = 'props';
     if (scene) scene.add(this.group);
@@ -3111,6 +3364,12 @@ export class PropKit {
     this.lastTris = 0;
   }
 
+  // 【材质与贴图总装】图集 + 链条网 + 假 AO 渐变三张 Canvas 贴图,与约 9+2 种
+  // 共享材质:paint 哑光漆(主力,图集 + 顶点色)/ gloss 清漆(反光壳体)/ metal
+  // 半金属/ wood / rubber / foliage 双面植被 / glow 无光照自发光(灯、橱窗,
+  // 夜因子调色)/ fence 链条网 alpha 裁剪(双面膜,alphaToCoverage 抗锯齿)/
+  // blob 假 AO(透明地贴,多边形偏移防 z-fight)/ blink 闪烁灯 / cloth +
+  // clothDepth 布料及投影两件套。材质按 kit 持有,dispose 统一释放。
   _makeMaterials() {
     const cv = document.createElement('canvas'); cv.width = AW; cv.height = AH;
     const atlas = new THREE.CanvasTexture(cv);
@@ -3142,13 +3401,18 @@ export class PropKit {
     this.mat.fence.alphaToCoverage = true;
   }
 
+  // 【材质桶路由】零件按材质名进 Map 桶;~ns 只是桶名的一部分,合并时拆出真键。
   _push(mat, part) { let a = this._buckets.get(mat); if (!a) { a = []; this._buckets.set(mat, a); } a.push(part); }
+  // 【旋转件模板懒建】优先取外挂包注册的 kind,内置回落 fan/turbine;同 kit 只建一次。
   _tplGeo(kind) {
     if (!this._tpl[kind]) this._tpl[kind] = SPIN_TEMPLATES.has(kind) ? SPIN_TEMPLATES.get(kind)() : kind === 'fan' ? fanTemplate() : turbineTemplate();
     return this._tpl[kind];
   }
   _tplTris(kind) { return triCountOf(this._tplGeo(kind)); }
 
+  // 【添加一个道具】三步:查 D 表(未知类型警告并返回空碰撞,优雅降级)→
+  // B.begin 设基矩阵/种子/地面 AO → 跑配方 def.build(B, o)。
+  // 返回世界空间碰撞盒 {colliders };种子默认由 pos 哈希,同位置同种子的道具长相一致。
   add(type, o = {}) {
     const def = D[type];
     if (!def) { console.warn('[props] unknown prop type', type); return { colliders: [] }; }
@@ -3166,6 +3430,10 @@ export class PropKit {
   // Local collider boxes → level boxes. A quarter-turned prop gives exact axis-aligned boxes; any other angle gives the
   // rotated box's world AABB — or, with `obox` (the placement asked for it: a stage laid out at an angle), the box
   // turned with the prop. Stage-pack flags (roof / rail / perch) ride along.
+  // 【碰撞盒变换】局部盒 → 关卡盒:rotY 是 90° 整数倍时精确旋转(轴向对齐最优);
+  // 任意角度分两种 —— 默认取旋转后的世界 AABB(略放大但稳),o.oboxCols 时保留
+  // 随件旋转的斜盒(斜铺的关卡用);roof/rail/perch 标志随盒带出,坐标保留 4 位
+  // 小数避免浮点抖动。
   _xfCols(cols, pos, rotY, s, obox = false) {
     const q = Math.round(rotY / HP), snapped = Math.abs(rotY - q * HP) < 1e-3;
     const qq = ((q % 4) + 4) % 4;
@@ -3196,9 +3464,13 @@ export class PropKit {
     return out;
   }
 
+  // 【出锅】把 add() 攒下的全部零件一次性建成 GPU 对象;重复调用会先清旧网格
+  // (换关卡/热调整不必先 clear)。静态件走材质桶合并,四类动态件走 InstancedMesh。
   build() {
     this._disposeMeshes();
     if (this._headless) return this;
+    // 【静态合并:每桶一 Mesh】mergeParts 把同桶零件烤成单几何;桶名 split('~')
+    // 拆出真材质键 + noShadow 标志;castShadow 还要过 CASTS 表;矩阵冻结省开销。
     for (const [bucket, parts] of this._buckets) {
       if (!parts.length) continue;
       const [key, flag] = bucket.split('~');   // 'gloss~ns' = gloss material, no shadow casting
@@ -3210,7 +3482,9 @@ export class PropKit {
       mesh.matrixAutoUpdate = false;
       this.group.add(mesh); this._meshes.push(mesh);
     }
-    // spinners
+    // 【旋转件实例化】按 kind 分组,每组一个 InstancedMesh;风扇用 paint 材质、
+    // 绕局部 z 转,风帽用 metal、绕 y 转 —— 转轴记在 userData.axis 给 update 用;
+    // frustumCulled 关掉(实例分散全场,整体包围球无意义)。
     const kinds = {};
     for (const r of this._spin) (kinds[r.kind] ||= []).push(r);
     for (const kind in kinds) {
@@ -3221,12 +3495,16 @@ export class PropKit {
       mesh.userData = { recs, axis: kind === 'fan' ? 'z' : 'y' };
       this.group.add(mesh); this._inst.push(mesh);
     }
+    // 【闪烁灯实例化】单位球 × 记录矩阵,初色取 hi 亮度;update 里按正弦呼吸调色。
     if (this._blink.length) {
       const mesh = new THREE.InstancedMesh(G.sph(1, 8, 6, false), this.mat.blink, this._blink.length);
       this._blink.forEach((r, i) => { mesh.setMatrixAt(i, r.m); mesh.setColorAt(i, _c1.copy(r.color).multiplyScalar(r.hi)); });
       mesh.frustumCulled = false; mesh.name = 'props:blink'; mesh.userData = { recs: this._blink, blink: true };
       this.group.add(mesh); this._inst.push(mesh);
     }
+    // 【布料实例化】旗帜/横幅各一个 InstancedMesh,共用 cloth 材质与 uTime  uniforms,
+    // 配 customDepthMaterial 让投影同步飘;实例色初值白色,队伍/自定义色由
+    // _applyColors / setTeamColors 重刷。
     for (const [recs, geo, name] of [[this._flags, () => flagGeo(), 'flags'], [this._banners, () => bannerGeo(0.8, 1.9), 'banners']]) {
       if (!recs.length) continue;
       const mesh = new THREE.InstancedMesh(geo(), this.mat.cloth, recs.length);
@@ -3240,6 +3518,8 @@ export class PropKit {
     return this;
   }
 
+  // 【布料染色】team 旗帜按队伍色(可向白偏移 tint),无 team 用记录色;
+  // setTeamColors 换队色后全量重刷。
   _applyColors() {
     for (const mesh of this._inst) {
       if (!mesh.userData.cloth) continue;
@@ -3253,14 +3533,20 @@ export class PropKit {
 
   // Time of day: lit windows, signs, festoon globes and screens glow at full strength at dusk and read as "on but
   // daylit" (half strength) by day. k = the environment's night factor (0 day/golden … 1 dusk).
+  // 【夜因子】0 白天 → 1 黄昏,glow 材质整体亮度 0.5..1 渐变 —— 白天"亮着但不刺",
+  // 黄昏全亮起辉。
   setNight(k = 0) { if (this.mat?.glow) this.mat.glow.color.setScalar(0.5 + 0.5 * Math.min(1, Math.max(0, k))); }
 
+  // 【换队色】更新两支队伍颜色并重染全部布料实例(旗帜/横幅),UI 里改配色即时生效。
   setTeamColors(a, b) {
     if (a != null) this.teamColors[0].set(a);
     if (b != null) this.teamColors[1].set(b);
     this._applyColors();
   }
 
+  // 【每帧驱动:零分配】只碰实例数据 —— 推进 uTime(布料波动)→ 旋转件以
+  // base × 旋转重算实例矩阵 → 闪烁灯正弦呼吸(smoothstep 后过阈值,0.6 以上
+  // 全亮、以下线性衰减);全程只改 instance buffer,不 new 任何东西。
   update(dt, time) {
     this.uTime.value = time;
     for (const mesh of this._inst) {
@@ -3286,6 +3572,8 @@ export class PropKit {
     }
   }
 
+  // 【统计】道具数 / 合并 Mesh 数 / 实例 Mesh 数 / 总三角形(实例按 count 放大),
+  // 性能面板与预算核对用。
   stats() {
     let tris = 0;
     for (const m of this._meshes) tris += triCountOf(m.geometry);
@@ -3293,12 +3581,16 @@ export class PropKit {
     return { props: this.count, meshes: this._meshes.length + this._inst.length, merged: this._meshes.length, instanced: this._inst.length, triangles: Math.round(tris) };
   }
 
+  // 【网格回收】合并几何逐 dispose;布料实例几何每 kit 独立要 dispose,旋转/闪烁
+  // 实例的几何共享模板(风扇/风帽/模板球)不随网格释放,只在 dispose() 里统一放。
   _disposeMeshes() {
     for (const m of this._meshes) { m.geometry.dispose(); this.group.remove(m); }
     for (const m of this._inst) { if (m.userData.cloth) m.geometry.dispose(); m.dispose?.(); this.group.remove(m); }
     this._meshes = []; this._inst = [];
   }
 
+  // 【清空全部道具】网格回收 + 零件桶/实例记录/计数归零;材质与图集保留,
+  // kit 可立刻重新 add 一批再 build。
   clear() {
     this._disposeMeshes();
     this._buckets.clear();
@@ -3306,6 +3598,7 @@ export class PropKit {
     this.count = 0;
   }
 
+  // 【整体释放】clear + 全部材质/旋转模板/图集与贴图,并从场景摘组;之后不可复用。
   dispose() {
     this.clear();
     this._disposed = true;
@@ -3316,6 +3609,8 @@ export class PropKit {
   }
 
   // Triangle count of one default instance of `type` (for budgets / docs).
+  // 【静态预算工具】headless 建临时 kit、加一个默认实例,读配方累计的 B.tris,
+  // 供预算表/文档引用 —— 全程不碰 GPU 与 DOM。
   static triangles(type, opts = {}) {
     const k = new PropKit(null, { quality: opts.quality || 'high', headless: true });
     k.add(type, opts);
@@ -3323,4 +3618,6 @@ export class PropKit {
   }
 }
 
+// 【类型清单导出】把 D 表摊平成数组(类型名/描述/参数/变体数/安装方式),
+// 供关卡工具与文档遍历;注册表到此封闭,之后只增不改。
 export const PROP_TYPES = Object.entries(D).map(([type, d]) => ({ type, description: d.desc, params: d.params, variants: d.variants, mount: d.mount }));

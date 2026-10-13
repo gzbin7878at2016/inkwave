@@ -1,3 +1,19 @@
+// ====================================================================================================
+// 【中文导读 · Kelpline 海带养殖场码头关卡道具包】
+// 本文件是 kelpline(海带养殖场主题集装箱码头)关卡的专属道具包 + 摆放清单,契约见 layout.js。
+// · register(D, H):向道具注册表 D 登记本关全部 kelpline_ 前缀道具;H 携带 THREE 与套件工具,
+//   零件合并进 paint/gloss/metal/wood/rubber/glow 等材质桶;微小零件走 H.noShadow(不投影)减少开销。
+// · 摆放清单(PLACEMENTS):半场手工编写,(x,z) → (−x,−z) 镜像出另一半(除非 mirror:false)。
+// · 实体道具把碰撞盒交给关卡(不可涂墨,用于导航与物理)。
+// · 约定:单位为米,Y 轴向上;pos = 基点;rotY 绕局部 +Z(“正面”)旋转;壁挂件以局部 z=0 为墙面、
+//   向 +Z 伸出;标牌用 3D 槽形字或平涂笔画字体。
+// · 内容结构:【几何助手】(GB 手工 BufferGeometry、截锥体、斜梁、危险条纹裁剪、笔画字体、
+//   立体字)→【小型套件】(泛光灯头、扶手)→【大型道具】(岸桥 K7、ISO 集装箱、钢梯、办公楼、
+//   冷箱插座架、舱口盖、卡闸、车辆、堆场小件、后墙外景、舷梯、岸电亭、起重机轨道、整艘箱船)→
+//   【摆放清单】(autoDressing 由 layout 自动生成 + 手工 LOCAL_PLACEMENTS,末尾随泊位整体旋转)。
+// · 工程要点:【perch】(栖息)碰撞标记 = 可站立行走但永不可涂墨的高空钢结构,用滑索/特殊技能上去;
+//   roof = 禁入屋顶;colliders 与可见几何逐面贴合,开口处即允许掉落。
+// ====================================================================================================
 // Kelpline Terminal — stage prop pack + placements (owner: the kelpline stage; see layout.js for the folder contract).
 //
 // register(D, H): this stage's prop builders (types prefixed 'kelpline_'), same contract as props-marina-dock.js: H carries
@@ -11,13 +27,17 @@ import { LOCAL, ROT_RAD, toWorld } from './layout.js';
 
 const P = Math.PI;
 
+// 【注册入口】每个 build(B, o) 中:B 是当前道具的构建器(push/pop 变换栈 + 材质桶 add + 碰撞 col);
+// o 为该实例的参数。H 内 THREE 与工具函数在下方解构。
 export function register(D, H) {
   const { THREE, col, shade, mixc, latheGeo, tubeGeo, extrudeGeo, flangeProf, TIRE, PI, TAU, HP, P3 } = H;
-  // no-shadow alias for small parts (glow never casts anyway, so it stays in the one glow bucket). Rubber / timber parts
+  // 【不投影别名】小零件走 no-shadow 材质(投影开关是材质级,故 glow/blob 例外地保留原桶——发光体反正不投影)。
+  // Rubber / timber parts
   // use the paint buckets with their own vertex colours: fewer merged meshes = fewer draw calls.
   const NS = (m) => (m === 'glow' || m === 'blob' ? m : H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ palette
+  // 【调色板】码头主题色:吊车黄、码头蓝、风化混凝土、低调集装箱涂装;shade 调明暗,mixc 混合。
   // terminal steel: crane yellow, terminal blue; weathered concrete; muted container liveries
   const K = {
     crane: '#d9a93c', craneDk: '#b98b2c', craneLt: '#e6be5e', blue: '#2f5b8c', blueDk: '#23456b', blueLt: '#4a78aa',
@@ -29,6 +49,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ geometry helpers
+  // 【几何助手】本包多数零件不用 three.js 现成几何体,而是手工攒 BufferGeometry 并按材质桶合并,
+  // 以控制面数、顶点色与法线方向。
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
@@ -64,15 +86,18 @@ export function register(D, H) {
       return g;
     }
   }
+  // 【模板缓存】按 key 缓存几何体(整包共享,避免重复构建);kf 把参数格式化为缓存键。
   const TPL = new Map();
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
   const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
 
   // plain (unbevelled) box for small / flush parts: 12 triangles
+  // 【无倒角小盒】小型/齐平零件用 12 三角形的素盒(带圆角的走 B.box);pbox 以缩放定位。
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
   // frustum box (bottom w0 × d0 at y = 0, top w1 × d1 at y = h), flat faces — tapered legs, hoppers, cabs
+  // 【截锥盒】底面 w0×d0(在 y=0)到顶面 w1×d1(在 y=h)的平顶锥台 —— 锥形支腿、料斗、驾驶室。
   const frustumGeo = (w0, d0, w1, d1, h, top = true) => tpl(['fr', w0, d0, w1, d1, h, top].map(kf).join('|'), () => {
     const g = new GB(), b = [[-w0 / 2, 0, -d0 / 2], [w0 / 2, 0, -d0 / 2], [w0 / 2, 0, d0 / 2], [-w0 / 2, 0, d0 / 2]];
     const t = [[-w1 / 2, h, -d1 / 2], [w1 / 2, h, -d1 / 2], [w1 / 2, h, d1 / 2], [-w1 / 2, h, d1 / 2]];
@@ -81,6 +106,7 @@ export function register(D, H) {
     return g.geo();
   });
   // straight beam between two points (square section w × h, 'up' hint for the section's vertical)
+  // 【斜梁】两点之间的直梁(方形截面 w×h):先推入中点 + 偏航/俯仰变换,再画一个沿局部 Z 的盒子。
   function beam(B, mat, c, a, b, w, h = w) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz);
     const yaw = Math.atan2(dx, dz), pitch = -Math.atan2(dy, Math.hypot(dx, dz));
@@ -88,11 +114,14 @@ export function register(D, H) {
     pbox(B, mat, c, w, h, L, 0, 0, 0);
     B.pop();
   }
+  // 【细圆杆】两点间的圆柱杆(默认 6 边)。
   const rodT = (B, mat, c, a, b, r, radial = 6) => B.tube(mat, c, [P3(...a), P3(...b)], r, { radial });
-  // compose a prop type as pure dressing (its colliders dropped)
+  // 【纯装饰组合】嵌套调用另一个道具但丢弃它产生的碰撞(先记 B.cols 长度,调用后截回)。
   function subNC(B, type, x, y, z, ry, opts = {}) { const n0 = B.cols.length; sub(B, type, x, y, z, ry, opts); B.cols.length = n0; }
+  // 【整盒碰撞】以中心 + 宽高深写碰撞盒的快捷方式(内部转 B.col 的 min/max)。
   const colBox = (B, x, y, z, w, h, d, o) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
-  // compose another prop type inside this one (colliders re-mapped into this prop's frame)
+  // 【嵌套组合】在本道具内调用另一道具类型(碰撞盒随变换重映射回本道具坐标系)。
+  // 【要点】旋转后的 AABB 取四角的轴对齐包围盒,略放大但保证覆盖。
   function sub(B, type, x, y, z, ry, opts = {}) {
     const def = D[type];
     if (!def) return;
@@ -113,6 +142,7 @@ export function register(D, H) {
     }
   }
   // diagonal hazard stripes on a flat panel facing +Z (w × h centred at x, y; z = panel face), stripes clipped to the panel
+  // 【多边形裁剪】Sutherland–Hodgman:依次用四条边(左/右/下/上)裁剪多边形,供危险条纹用。
   function clipPoly(poly, x0, y0, x1, y1) {
     const edges = [[(p) => p[0] >= x0, (a, b) => [x0, a[1] + (b[1] - a[1]) * (x0 - a[0]) / (b[0] - a[0])]], [(p) => p[0] <= x1, (a, b) => [x1, a[1] + (b[1] - a[1]) * (x1 - a[0]) / (b[0] - a[0])]],
       [(p) => p[1] >= y0, (a, b) => [a[0] + (b[0] - a[0]) * (y0 - a[1]) / (b[1] - a[1]), y0]], [(p) => p[1] <= y1, (a, b) => [a[0] + (b[0] - a[0]) * (y1 - a[1]) / (b[1] - a[1]), y1]]];
@@ -137,13 +167,15 @@ export function register(D, H) {
     }
     return g.geo();
   });
+  // 【危险条纹】朝向 +Z 平板上的斜纹带(w×h,中心在 x,y):黄底 + 斜条纹(条纹多边形先裁到板内)。
   function hazard(B, w, h, x, y, z, o = {}) {
     pbox(B, NS(o.mat ?? 'paint'), o.a ?? K.hazY, w, h, 0.01, x, y, z);
     B.add(NS(o.mat ?? 'paint'), hazardGeo(w, h, o.pitch ?? 0.36), o.b ?? K.hazK, x, y, z + 0.0055, { ao: false });
   }
 
   // ------------------------------------------------------------------------------------------ stroke font
-  // Rounded bold sans (cap height 1): centre-line strokes, round caps + joins, bevelled front, flat back.
+  // 【笔画字体】圆头粗体无衬线(大写高 1):中心线笔画 + 圆头/圆角接头、正面倒角、背面齐平。
+  // 字形表 GL 用折线/圆弧段描述,EA 采样椭圆弧,LOOP 生成闭合环。
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
   const GL = {
@@ -193,6 +225,8 @@ export function register(D, H) {
   };
   const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
+  // 【带状笔画体】把一条折线扫成带宽度(hw)的条带;可选正面倒角(b)与侧壁(厚度 d−z0),
+  // 法线用前后邻段角平分线(带内缩系数 k 限幅)保证圆角接头。
   function ribbon(g, pts, closed, hw, b, d, z0) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
     const N = pts.map((p, i) => {
@@ -220,6 +254,7 @@ export function register(D, H) {
       for (let j = 0; j < np; j += 2) g.quad(A[j], A[j + 1], Bq[j + 1], Bq[j]);
     }
   }
+  // 【圆盘】扇形/整圆端盖与点:正面 + 倒角环 + 侧壁,可只生成一段圆弧(笔画端头用)。
   function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
     const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
@@ -237,6 +272,8 @@ export function register(D, H) {
       if (walls) g.quad(wt[k], wb[k], wb[j], wt[j]);
     }
   }
+  // 【字形构建】单个字符 → 几何体 + 步进宽度。笔画折线在急转弯处拆段;端头与接头盖圆盘;
+  // 每个后续笔画略降深度(0.006)形成叠压层次;点字符(· . :)画圆点。
   function glyph(ch, wt, dep, bev, ds = 10) {
     return tpl(['kgl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -276,6 +313,8 @@ export function register(D, H) {
   }
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true); returns width
+  // 【一行立体字】在当前坐标系内排一行朝向 +Z 的字:槽形字(默认)或平涂字(flat:true);
+  // 支持居中/左/右对齐、发光描边(lit);返回总宽。尺寸按字高 h 缩放。
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
@@ -298,7 +337,7 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ small kit
-  // glowing flood head (faces local -Y by default: tilt with rx), housing + lens
+  // 【泛光灯头】发光投光灯(默认朝局部 −Y,用 rx 俯仰):灯壳 + 发光灯板 + 格栅条。
   function flood(B, x, y, z, o = {}) {
     B.push(x, y, z, o.ry ?? 0, o.rx ?? 0);
     B.box(NS('paint'), o.c ?? K.charcoal, 0.56, 0.2, 0.4, 0, 0, 0, { r: 0.04 });
@@ -307,6 +346,7 @@ export function register(D, H) {
     B.pop();
   }
   // handrail run between two points (posts every ~1.2 m, top + knee rail), for catwalks / stairs
+  // 【扶手】两点间的护栏(立柱约每 1.3 m 一根 + 扶手 + 膝杆),用于走道/楼梯;o.toe 加踢脚板。
   function handrail(B, a, b, h = 1.0, c = K.crane, o = {}) {
     const L = Math.hypot(b[0] - a[0], b[2] - a[2]), n = Math.max(1, Math.round(L / (o.every ?? 1.3)));
     for (let i = 0; i <= n; i++) {
@@ -319,16 +359,22 @@ export function register(D, H) {
   }
 
   // ================================================================================================ ship-to-shore crane
+  // 【岸桥 K7】全场核心的船对岸门式起重机:四组锥形支腿坐在轨距 ±21 的台车上,17 m 门楣 + 拉杆,
+  // 小车大梁从后伸距(机房,x −33)一直悬到船上方(吊臂端 x +56);A 字架 + 前拉索。
+  // 【要点】K7(场内的那台)的高空钢结构是 perch(可行走、永不涂墨)——滑索/特殊技能送上去后是高狙点;
+  // K6(场外)用 o.coarse 走禁入屋顶。
   // Central STS gantry crane "K7": rails at x = ±G (waterside +X), legs at z = ±LZ. Local frame = world (placed once at the
   // origin, mirror: false). Colliders: 4 legs (tall, off-limits tops) + 4 bogie runs (1.2 m: low cover in the apron lanes);
   // the overhead steel is a perch (walkable, never inkable — see the collider block at the end of build).
+  // 【K7 岸桥道具定义】desc 即文档;params 暴露 gauge(半轨距)/lz(腿距);mount: ground。
   D.kelpline_crane = {
     desc: 'Ship-to-shore gantry crane (crane-yellow box girders): four tapered portal legs on rail bogies (rails at x = ±21, legs at z = ±6), portal beams + tie beams at 17 m, twin trolley girders from the backreach (machinery house, x -33) to the boom tip over the ship (x +56), A-frame with forestays, trolley with hanging operator cab, spreader holding a 40\' box over the middle, floodlights, warning beacons, KELPLINE lettering. Colliders: legs + bogie runs; the overhead steel (portal beams + walkways, tie beams, girders + walkways, trolley, cab, machinery house, chords) is a perch: walkable, never inkable (o.coarse: off-limits roofs instead).',
     params: { gauge: 'half gauge (21)', lz: 'leg z (6)' }, variants: 1, mount: 'ground',
     build(B, o) {
       B.aoBase = null;
       const G = o.gauge ?? 21, LZ = o.lz ?? 6, Y0 = 1.5, YP = 17, YG = 18.6, GH = 1.8, GZ = 2.7, c = K.crane, cd = K.craneDk;
-      // ---- bogies + legs
+  // ---- bogies + legs
+  // 【台车 + 支腿】平衡梁 + 两台转向架(各 4 轮)+ 端部缓冲器;锥形支腿带环箍、危险带、检修门与编号字。
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
         const x = sx * G, z = sz * LZ;
         // equaliser beam + two bogie frames, 4 wheels each, buffers at the ends
@@ -505,6 +551,8 @@ export function register(D, H) {
       //      girders is open to the Landing, the walkways' ends and the girder ends are open drops). The legs keep their
       //      off-limits tops (buried under the portal beams). K6 (outside the arena, o.coarse) stays off-limits.
       //      The hanging box stays collision-free (it would otherwise roof over the Landing).
+      // 【高空钢构碰撞】(接上方英文)碰撞面与可见钢结构逐面贴合;悬空吊箱刻意不加碰撞,
+      // 否则会在“登陆区”上方形成一片屋顶。
       const P = o.coarse ? { roof: true } : { perch: true }, RL = { rail: true };
       const rng = (a, b) => (a < b ? [a, b] : [b, a]);
       for (const sx of [-1, 1]) {
@@ -538,11 +586,17 @@ export function register(D, H) {
   };
 
   // ================================================================================================ ISO containers
+  // 【集装箱】围绕一个箱体做的装饰件:箱体本身是关卡方块(瓦楞图案可涂墨),散箱(o.bottom)才建实体身体。
+  // 局部系:长度沿 Z(−L/2…+L/2),门端 +Z,底面 y=0;角柱 + 角件(带扭锁孔)、上下侧/端梁、
+  // 20' 叉槽、门端(双门板、四根锁杆带凸轮把手、铰链、CSC 铭牌、箱主代码)或冷箱机组端(−Z)。
+  // 【要点】所有装饰件贴着方块面(凸出 ≤ 4 cm),让涂墨在端面上显现出来。
   // Container dressing around a box whose body is a level block (corrugated container pattern) or, for loose boxes
   // (o.bottom), a modelled body. Local frame: length along local Z (−L/2 … +L/2), door end at +Z, bottom at y = 0.
   // Corner posts + castings (with the oval twistlock holes), top / bottom side + end rails, forklift pockets on 20',
   // the door end (two leaves, four locking bars with cams + handles, hinges, CSC plate, owner code), or for reefers the
   // machinery end at −Z (grille, fan, control box, power cable). Everything hugs the block faces (≤ 4 cm proud).
+  // 【箱身主体】集装箱共用躯干(堆场箱与散箱共用):角柱/角件、上下侧端梁、叉槽、门端或冷箱机组端、
+  // 侧面喷字;len 20/40 换算 ISO 长度,底部 y=0,门端 +Z。详见 ISO containers 区块注释。
   function containerBody(B, x, y, z, len, color, o = {}) {
     const L = len === 20 ? 6.06 : 12.19, W = 2.44, Hh = o.h ?? 2.6, c = color, dk = shade(c, 0.8), dk2 = shade(c, 0.6);
     B.push(x, y, z, o.ry ?? 0);
@@ -626,6 +680,7 @@ export function register(D, H) {
     }
     B.pop();
   }
+  // 【堆场箱】关卡方块(箱体)上的装饰,pos = 底面中心,局部 Z = 长度;只加五金件,端面可涂墨。
   D.kelpline_box = {
     desc: 'Container dressing for a stack box (the body is a level block): corner posts + castings, rails, forklift pockets, door end (locking bars, cams, hinges, CSC plate, owner code) at +Z or a reefer machinery end — hardware only over the block face, so ink on the end shows. pos = bottom centre, local Z = length.',
     params: { len: '20 | 40', color: 'box paint', door: '+1 door at local +Z, -1 at −Z', reefer: 'bool', code: 'owner code' }, variants: 1, mount: 'ground',
@@ -634,6 +689,7 @@ export function register(D, H) {
       containerBody(B, 0, 0, 0, o.len ?? 20, o.color ?? '#a8583f', { doorAt: o.door ?? 1, reefer: !!o.reefer, code: o.code });
     },
   };
+  // 【散箱】完整建模的独立集装箱(如拖车架上那只),含实体身体与侧面喷字。
   D.kelpline_loosebox = {
     desc: 'A complete loose container (modelled body + dressing), e.g. on a trailer chassis. pos = bottom centre, local Z = length, door at +Z.',
     params: { len: '20 | 40', color: 'paint', logo: 'side lettering', logoC: 'lettering colour' }, variants: 1, mount: 'ground',
@@ -644,10 +700,14 @@ export function register(D, H) {
   };
 
   // ================================================================================================ steel stairs
+  // 【钢梯装饰】给 layout 里的楼梯坡道(带踏板面)加装饰:槽钢梯梁压在坡道顶缘两侧、立柱 +
+  // 吊车黄扶手 + 膝杆、顶部平台板、脚部危险条纹踢脚板。局部 +Z 从脚底 (0,0,0) 指向坡顶 (0,rise,run)。
+  // 不加自身碰撞(全部落在坡道自身的行走宽度之外)。
   // Dressing for a layout stair (ramp with the treads surface): channel stringers over the ramp's top edges, stanchions
   // with a crane-yellow handrail + knee rail, landing plate at the top, hazard-striped kick plate at the foot.
   // Local +Z runs from the foot (0,0,0) up to (0, rise, run); width W centred. Non-colliding (outside the walking width
   // they sit on the ramp's own sides).
+  // 【钢梯道具定义】参数 run/rise/width/rails(左右是否装扶手)/c(扶手色)。
   D.kelpline_stair = {
     desc: 'Steel stair dressing (local +Z from the foot up to (0, rise, run), width W): channel stringers on the ramp edges, stanchions, yellow handrail + knee rail, foot kick plate with hazard stripes. Non-colliding.',
     params: { run: 'm', rise: 'm', width: 'm', rails: '[left, right] (true, true)', c: 'rail colour' }, variants: 1, mount: 'ground',
@@ -676,10 +736,14 @@ export function register(D, H) {
   };
 
   // ================================================================================================ ops building
+  // 【码头运营楼】出生点建筑:pos = 后墙内表面中心(z=0,场内向 +Z);前方是出生方块(x ±9,深 8,
+  // 高 2.4 m + 天台)。本道具给方块做立面(玻璃带 + 百叶、雨棚门、标牌、灯、空调、落水管)、
+  // 天台套件(边线、旗杆/CCTV 杆、楼梯间门),并在墙后建起两层办公楼与 20 m 控制塔(有碰撞,场外)。
   // Terminal Operations building. pos = centre of the back wall's inner face (z = 0 there, arena toward +Z); the spawn
   // block (x ±9, depth 8, 2.4 m + deck) sits in front of it. Dresses the block (front + side facades: glazing with
   // blinds, doors under canopies, signage, lights, AC, downpipes), the roof deck (edge trims, flag + CCTV poles, stair
   // head gates) and builds the two-storey office + the control tower behind the wall (outside the arena, collides).
+  // 【运营楼道具定义】参数 tx = 控制塔局部 x(默认 −6.5)。
   D.kelpline_ops = {
     desc: 'Terminal Operations building (pos = centre of the back wall inner face, arena toward +Z): ground-floor facades on the spawn block (x ±9, 8 deep, 2.4 m), roof-deck kit, two-storey office behind the wall and the control tower (glazed cab at 20 m) at local x = tx; KELPLINE TERMINAL channel letters.',
     params: { tx: 'tower x (-6.5)' }, variants: 1, mount: 'ground',
@@ -783,10 +847,13 @@ export function register(D, H) {
   };
 
   // ================================================================================================ reefer rack
+  // 【冷箱插座架】横跨冷箱巷道上方:巷道两侧每约 6 m 一对立柱(碰撞),槽钢纵梁 + 格栅走道
+  // (道面 2.6 m),5.7 m 顶层框架 + 电缆桥架,CEE 插座箱 + 下垂插到冷箱的电缆,巷道灯与顶部泛光,两端标牌。
   // Plug-in rack over the reefer alley (pos = centre of the alley at ground, local Z along the alley, length L, width W
   // between the reefer rows): column pairs every ~6 m at the alley edges (colliders), channel stringers + cross members
   // under the grate catwalk (catwalk top 2.6), top frame at 5.7 with cable trays, CEE socket boxes + plugged cables
   // to the reefers, alley lights under the catwalk, floods on the top frame, R2 end plates.
+  // 【冷箱架道具定义】参数 length(18.35)/width(2.0)/name(端牌 R2)。
   D.kelpline_reeferrack = {
     desc: 'Reefer plug-in rack over an alley (pos = alley centre at ground, local Z along it): columns (colliders), catwalk stringers + cross members, top frame + cable trays, socket boxes + cables, lights, end plates.',
     params: { length: 'm (18.35)', width: 'alley m (2.0)', name: 'end plate (R2)' }, variants: 1, mount: 'ground',
@@ -844,9 +911,13 @@ export function register(D, H) {
   };
 
   // ================================================================================================ hatch covers
+  // 【舱口盖装饰】盖在一个方块上(pos = 底面中心;w/d/h 为块尺寸):侧面竖筋板、底缘法兰、
+  // 顶部密封槽、齐平的集装箱插座板、角部吊耳、舱盖编号 + NO STANDING 字样、角部危险条、下缘系缆桩。
+  // 全部齐平(≤ 4 cm),侧面保持可涂墨。
   // Dressing on a hatch-cover block (pos = bottom centre; w along X, d along Z, h tall): vertical web stiffeners on the
   // sides, bottom flange, top gasket channel, container-socket plates (flush), pad-eyes at the corners, hatch number
   // + NO STANDING stencils, hazard stripes on the corners, cleats along the lower edge. All flush (≤ 4 cm).
+  // 【舱口盖道具定义】参数 w/d/h(块尺寸)/num(编号)/c(漆色)/y0(底高,叠放时用)。
   D.kelpline_hatch = {
     desc: 'Hatch-cover dressing (pos = bottom centre, w × d × h block): side stiffeners, flanges, gasket channel, corner pad-eyes, socket plates, hatch number stencils, hazard corners, cleats.',
     params: { w: 'x size', d: 'z size', h: 'height', num: 'hatch number', c: 'paint' }, variants: 1, mount: 'ground',
@@ -877,9 +948,13 @@ export function register(D, H) {
   };
 
   // ================================================================================================ truck gate
+  // 【卡闸 4 号门】pos = 闸口区地面中心,场内向 +Z,车道沿 Z:双安全岛上的亭房(碰撞)、
+  // 四立柱大雨棚(5.4 m 够不到)、GATE 4 门楣字、车道红绿信号灯、OCR 摄像头、升起的道闸杆、限高杆、
+  // 后墙上的滑动大门门叶。
   // Gate 4 (pos = centre of the gate area at ground, arena toward +Z; lanes run along Z): booth cabins on the two
   // islands (x ±3.1 from pos, colliders), canopy on four columns over all lanes (5.4 m, not reachable), GATE 4 fascia,
   // lane signals, OCR camera heads, raised boom barriers, height gauge, sliding gate leaves on the back wall.
+  // 【卡闸道具定义】参数 islands(安全岛 x 偏移,默认 ±3.1)/back(后墙面 z,默认 −5)。
   D.kelpline_gate = {
     desc: 'Truck gate (pos = centre of the gate area, arena toward +Z): two booth cabins on islands, canopy on columns with GATE 4 fascia, lane signals + OCR cameras, raised boom barriers, sliding gate on the back wall.',
     params: { islands: '[x offsets] (-3.1, 3.1)', back: 'z of the back wall face (-5)' }, variants: 1, mount: 'ground',
@@ -938,6 +1013,7 @@ export function register(D, H) {
   };
 
   // ================================================================================================ vehicles
+  // 【轮胎】车削轮廓(TIRE 模板)按半径/宽度缩放 + 轮毂 + 轴头;车辆类道具共用。
   const tyre = (B, x, y, z, R, w) => {
     B.lathe('paint', '#25272c', TIRE.map(([r, yy]) => [r * (R / 0.33), yy * (w / 0.2)]), x, y, z, { seg: 12, closed: true, rz: HP });
     B.cyl('metal', K.greyDk, R * 0.55, w * 0.92, x, y, z, { rz: HP, seg: 10 });
@@ -945,6 +1021,9 @@ export function register(D, H) {
   };
   // skeletal trailer chassis under a level box (the box sits at deck height) — pos = centre under the box, local Z =
   // length, kingpin end at +Z. Colliders: rear bogie + landing legs (squids can slip under the middle).
+  // 【骨架挂车】关卡方块(箱体)下面的 skeletal chassis:主纵梁、横梁、扭锁托架、支腿、双轴后转向架。
+  // pos = 箱体正下方地面中心,局部 Z = 长度,牵引销端 +Z,台面 1.35 m;碰撞:后桥 + 支腿
+  // (乌贼可从车架中段下方钻过)。
   D.kelpline_chassis = {
     desc: 'Skeletal container chassis (pos = centre on the ground, local Z = length, kingpin end +Z, deck at 1.35): main beams, cross members, twistlock bolsters, landing legs, tandem rear bogie with dual wheels, lights, mudflaps. Colliders: bogie + legs.',
     params: { len: '20 | 40', deck: 'm (1.35)', c: 'frame paint' }, variants: 1, mount: 'ground',
@@ -974,6 +1053,8 @@ export function register(D, H) {
   };
   // terminal tractor (yard tug): offset one-man cab, short hood, fifth-wheel ramp, big wheels, beacon. pos = centre,
   // local +Z = front. Collider: the whole body.
+  // 【码头牵引车】场内拖车“yard tug”:偏置单人驾驶室、短引擎罩、尾部第五轮斜坡、大轮胎、警示灯。
+  // pos = 地面中心,前 +Z;碰撞:整个车身。
   D.kelpline_tractor = {
     desc: 'Terminal tractor (yard tug): offset cab, short hood, fifth-wheel ramp at the rear, 4 big wheels, amber beacon, exhaust stack. pos = ground centre, front +Z. Collider: body.',
     params: { c: 'body paint' }, variants: 1, mount: 'ground',
@@ -1006,6 +1087,8 @@ export function register(D, H) {
   // reach stacker: big front drive wheels, counterweight at the rear, cab, telescopic boom rising from the rear over the
   // cab with the spreader at the tip (boom raised, spreader empty). pos = centre, front +Z. Collider: body + cab (roofs);
   // the boom arm + spreader are a perch.
+  // 【正面吊】大前轮驱动 + 尾部配重 + 侧置驾驶室,伸缩吊臂从尾部越过驾驶室举起,端部空吊具。
+  // 【要点】车身/驾驶室是禁入屋顶,吊臂 + 吊具是 perch(可行走、永不涂墨)——可以一路走上吊尖跳下。
   D.kelpline_reachstacker = {
     desc: 'Reach stacker (front +Z): chassis with big front drive wheels + rear steer wheels, counterweight, side cab, telescopic boom raised over the cab with a rotating spreader at the tip, beacons, KELPLINE branding. Colliders: body + cab (off-limits roofs); the boom arm, tip head and spreader are a perch (walkable, never inkable).',
     params: { c: 'paint (crane yellow)', boom: 'boom angle rad (0.5)' }, variants: 1, mount: 'ground',
@@ -1058,6 +1141,9 @@ export function register(D, H) {
   // straddle carrier (1-over-2): two sills with four wheels each (colliders), two legs per side, top frame + engine
   // housing, cab on the front-left top, hoist ropes + spreader resting on the box it straddles. pos = centre on the
   // ground, local Z = length, front +Z; inner clearance 3.1 m.
+  // 【跨运车】(1 过 2 型)两侧底梁各 4 轮(碰撞,1.3 m 低掩体),每侧两条腿,9 m 顶框 + 发动机舱,
+  // 前左上方驾驶室,吊索 + 压在被跨箱体上的吊具;内净宽 3.1 m。
+  // 【要点】顶框/发动机舱/驾驶室顶/吊具都是 perch(可行走、永不涂墨)。
   D.kelpline_straddle = {
     desc: 'Straddle carrier (front +Z): sills with 4 wheels each side (colliders, 1.3 m cover), two legs per side, top frame at 9 m with engine housing, front cab, hoist ropes and spreader resting on the box beneath (the box is a level block). Top frame, engine housing, cab roof and the spreader are a perch (walkable, never inkable).',
     params: { c: 'paint', spread: 'spreader y (2.6)' }, variants: 1, mount: 'ground',
@@ -1107,7 +1193,8 @@ export function register(D, H) {
   };
 
   // ================================================================================================ yard kit
-  // lashing cage: galvanised mesh stillage on skids full of lashing bars + turnbuckles (collider = cover, 1.2 m)
+  // 【绑扎笼】镀锌网格料架(叉车库板底座),装满绑扎杆 + 花篮螺丝(变体 1 = 扭锁锥料箱);
+  // 碰撞为 rail(1.2 m 低掩体,网格可看穿)。
   D.kelpline_cage = {
     desc: 'Lashing-gear cage (2.4 × 1.2 × 1.2, collider): galvanised frame on forklift skids, mesh sides, lashing bars + turnbuckles inside, stencilled bay number. variant 1 = twistlock bin (1.2 × 1.0 × 0.9) full of cones.',
     params: {}, variants: 2, mount: 'ground',
@@ -1132,6 +1219,8 @@ export function register(D, H) {
   };
   // quay edge run along local +X (deck edge at z = 0, water +Z): capping beam steel edge angle, tee-head bollards
   // (colliders, 0.75 m), cone fenders with front panels on the face, recessed ladders, yellow edge paint
+  // 【岸壁边沿】沿局部 +X 布置(甲板边在 z=0,水在 +Z):钢包边角、黄色边线漆、T 型系缆桩
+  // (碰撞,0.75 m 低掩体)、锥形护舷 + 正面钢板、嵌入式爬梯。
   D.kelpline_quayedge = {
     desc: 'Quay edge along +X (edge at z = 0, water +Z): steel edge angle, painted yellow edge band, tee-head bollards at `bollards` (colliders), cone fenders + steel panels on the face at `fenders`, recessed ladders at `ladders`.',
     params: { length: 'm', bollards: '[s]', fenders: '[s]', ladders: '[s]' }, variants: 1, mount: 'ground',
@@ -1168,6 +1257,8 @@ export function register(D, H) {
     },
   };
   // high-mast lighting tower (outside the arena): 26 m tapered pole, service ring with a crown of floodlights
+  // 【高杆灯】(场外)26 m 锥形镀锌灯杆:底座 + 顶部环形灯架 + 一圈 8 头泛光灯 + 航空障碍灯;
+  // 碰撞:底座 + 灯杆。
   D.kelpline_mast = {
     desc: 'High-mast lighting tower: tapered galvanised pole on a plinth, headframe ring with a crown of floodlights (glow), obstruction lamp. Collider: plinth + pole.',
     params: { h: 'm (26)' }, variants: 1, mount: 'ground',
@@ -1193,6 +1284,8 @@ export function register(D, H) {
 
   // flat rack (40'): low steel platform with folding end walls up (floor top 0.65 walkable, end walls 2.6), lashed
   // timber cargo on it. pos = centre, length along local Z. Colliders: floor + both end walls + the cargo stack.
+  // 【平板框架箱】(40')矮钢平台 + 立起的端墙(地板面 0.65 可行走,端墙 2.6),上面绑着木箱货。
+  // pos = 中心,长度沿局部 Z;碰撞:地板 + 两端墙 + 货堆。
   D.kelpline_flatrack = {
     desc: 'Flat-rack container (length along local Z): steel floor with timber decking (0.65, walkable), end walls up with corner posts + castings, lashed crated cargo in the middle (collider), chains + straps. Colliders: floor, end walls, cargo.',
     params: { len: '20 | 40', c: 'paint', cargo: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -1228,6 +1321,8 @@ export function register(D, H) {
     },
   };
   // mobile lighting tower: towable trailer, stabiliser legs, telescopic mast with a four-lamp head (glow at dusk)
+  // 【移动照明车】可拖挂单轴拖车:牵引杆、四条支腿、三级伸缩桅杆(6.5 m)+ 四灯头(黄昏发光);
+  // 碰撞:车身。
   D.kelpline_lighttower = {
     desc: 'Towable lighting tower: box body on a single-axle trailer with drawbar, four stabiliser legs, telescopic mast (6.5 m) with a four-lamp head. Collider: body.',
     params: { c: 'body paint (crane yellow)' }, variants: 1, mount: 'ground',
@@ -1247,6 +1342,8 @@ export function register(D, H) {
     },
   };
   // terminal safety board on two posts: KELPLINE TERMINAL · PPE pictograms + text (both faces)
+  // 【安全告示牌】双立柱告示板(两面):蓝头 + PPE 图示 + 文字;变体 0 = 安全帽区、1 = 4 号泊位/限速、
+  // 2 = 集合点(绿);碰撞:立柱。
   D.kelpline_signboard = {
     desc: 'Terminal notice board on two galvanised posts (faces ±Z): blue header, PPE pictograms (hard hat, hi-vis, boots), text lines. variant 0 = HARD HAT AREA, 1 = BERTH 4 / 20 KM/H, 2 = MUSTER POINT (green). Collider: posts.',
     params: {}, variants: 3, mount: 'ground',
@@ -1283,6 +1380,8 @@ export function register(D, H) {
   };
   // welfare / lashers' cabin on a level box (the box's side face at local z = 0, pos = bottom centre of that face):
   // door with a step, windows with blinds, AC unit, KELPLINE LASHING sign, a bench and a bin outside
+  // 【绑扎工棚屋】挂在集装箱侧面(该面在局部 z=0,pos = 面底中心):门 + 钢踏步、带栏杆亮灯窗、
+  // 空调、LASHING 标牌、外侧长凳与垃圾桶。除踏步外不加碰撞。
   D.kelpline_cabin = {
     desc: 'Site-cabin fittings on a container side face (face at z = 0, pos = bottom centre): door + steel step, two windows with bars + lit blinds, AC unit, LASHING GANG sign, cable entry. Non-colliding except the step.',
     params: { w: 'face width (6.06)', sign: 'text' }, variants: 1, mount: 'wall',
@@ -1310,6 +1409,8 @@ export function register(D, H) {
 
   // terminal service pickup (front +Z): cab + open bed with a toolbox and cones, amber light bar, KELPLINE door mark.
   // Collider: body (1.5) + cab (1.95 roof, off limits).
+  // 【工程皮卡】码头勤务皮卡(前 +Z):驾驶室 + 敞开货斗(工具箱 + 路锥)+ 琥珀色灯条 + 车门标识。
+  // 碰撞:车身(1.5)+ 驾驶室(1.95 禁入顶)。
   D.kelpline_pickup = {
     desc: 'Terminal service pickup (front +Z): white body, cab with glazing + amber light bar, open bed with a toolbox and cones, KELPLINE TERMINAL door mark, hi-vis side stripe. Colliders: body + cab (roof).',
     params: { c: 'body paint' }, variants: 1, mount: 'ground',
@@ -1341,6 +1442,8 @@ export function register(D, H) {
   };
   // container forklift (front +Z): mast + forks raised with a lashing-cage pallet, counterweight, cab cage, amber beacon.
   // Collider: body (1.6) + mast (roof).
+  // 【集装箱叉车】重型叉车(前 +Z):配重车尾 + 护顶架驾驶室 + 双门架,升起的叉齿托着扭锁锥料箱。
+  // 碰撞:车身(1.6)+ 门架(禁入顶)。
   D.kelpline_forklift = {
     desc: 'Heavy forklift (front +Z): body with counterweight, protective cab cage, twin-mast with raised forks carrying a twistlock bin, big front tyres, beacon. Colliders: body + mast (roof).',
     params: { c: 'paint', lift: 'fork height (1.3)' }, variants: 1, mount: 'ground',
@@ -1369,6 +1472,9 @@ export function register(D, H) {
   };
 
   // ================================================================================================ beyond the back wall
+  // 【后墙外背景】每个基地后方的码头继续延伸(场外,纯视觉):码头板、办公楼两侧的集装箱堆场
+  // (1–4 层高,由天际线剖面决定)、一台 RTG 龙门吊、门口排队卡车、周界围栏。
+  // pos = 后墙外表面中心(局部 +Z 指向场内,堆场伸向 −Z)。
   // The terminal carries on behind each base (outside the arena, visual only): the pier slab, container blocks either
   // side of the ops building (1–4 high), an RTG crane over one block, a truck queuing at the gate, perimeter fence.
   // pos = centre of the back wall's outer face (local +Z = toward the arena, the yard runs toward −Z).
@@ -1436,6 +1542,9 @@ export function register(D, H) {
   // ship's accommodation ladder: from the ship's deck edge (local x = +run, y = rise) down to a landing platform on the
   // quay (pos = foot on the quay, local +X toward the ship), aluminium stringers, treads, stanchions + rope rails, a
   // safety net slung underneath. Collider: the landing platform only.
+  // 【船舷梯】从船甲板边(局部 x=+run, y=rise)下到码头落客平台(pos = 码头落脚点,局部 +X 朝船):
+  // 铝梯梁 + 踏板 + 立柱绳索扶手 + 下方安全网 + 顶部救生圈 + 脚下 CREW ONLY 链条(对玩家封闭)。
+  // 碰撞:仅落客平台 + 两侧扶手。
   D.kelpline_gangway = {
     desc: "Ship's accommodation ladder from the quay (pos = foot, local +X toward the ship) up to the ship's deck (run, rise): landing platform (collider), aluminium ladder with treads, stanchions + rope handrails, safety net underneath, a lifebuoy at the top.",
     params: { run: 'm (4.4)', rise: 'm (5.2)' }, variants: 1, mount: 'ground',
@@ -1467,6 +1576,8 @@ export function register(D, H) {
 
   // shore-power substation kiosk (front +Z): green steel housing on a plinth, louvres, hazard plates, a cable duct
   // into the quay, SHORE POWER lettering. Collider: body (roof).
+  // 【岸电亭】岸电变电站小屋(前 +Z):混凝土底座 + 绿色钢壳双开门、百叶、警示牌、电缆沟 + SHORE POWER 字。
+  // 碰撞:机身(禁入顶)。
   D.kelpline_kiosk = {
     desc: 'Shore-power substation kiosk (2.6 × 1.6 × 2.3, front +Z): plinth, green steel housing with double doors, louvres, danger plates, cable duct, roof kit. Collider: body (roof).',
     params: {}, variants: 1, mount: 'ground',
@@ -1492,6 +1603,8 @@ export function register(D, H) {
   };
 
   // ================================================================================================ crane rail
+  // 【起重机轨道】嵌在码头面内、沿 +X 铺设:钢轨头凸出铺装 3 cm(底板 + 压板,每 0.9 m 一道卡扣),
+  // 起点带止挡(stop)与橡胶缓冲器。
   D.kelpline_rail = {
     desc: 'Crane rail set into the quay along +X (pos = start, on the deck): steel rail head proud of the paving by 3 cm on a sole plate, clips every 0.9 m, end stop with a rubber buffer at the start when `stop`.',
     params: { length: 'm (40)', stop: 'bool' }, variants: 1, mount: 'ground',
@@ -1509,12 +1622,15 @@ export function register(D, H) {
   };
 
   // ================================================================================================ container ship
-  // Laden box ship alongside the quay. Local frame: the hull side facing the quay is the plane x = 0 (ship extends to
-  // +X, beam B), bow stem at z = 0, hull running aft toward -Z (length L), y = quay level (sea at -1.6). Pneumatic
-  // fenders float in the gap on local -X; mooring lines run down to quay bollards at x = -o.gap + 0.6.
+  // 【集装箱船】满载箱船靠在岸边。局部系:靠岸一侧船壳为 x=0 平面(船体向 +X,宽 B),船艏柱在 z=0,
+  // 船体向 −Z 延伸(长 L),y = 码头面(海面 −1.6);−X 侧缝隙里漂浮着充气护舷,系泊缆下到码头系缆桩。
+  // 纯视觉(场外),不参与场内碰撞之外的玩法。
   const SEA = -1.6;
+  // 【确定性随机】整型种子伪随机(位运算),船货堆场/后墙堆场共用,保证同一种子布局一致。
   const shipRng = (seed) => { let a = seed | 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
   // hull half-width at distance t aft of the stem and height y (fine entry at the waterline, flared bow above it)
+  // 【船壳半宽】距船艏柱 t、高度 y 处的半宽:水线以下尖瘦、上部外飘(flare 随高度渐变);
+  // 平行中体(Lb 之后)直接取满宽。
   function hullHW(t, y, Bm, Lb) {
     if (t >= Lb) return Bm / 2;
     const u = Math.max(0, t) / Lb, flare = Math.max(0, Math.min(1, (y - SEA) / 7.5));
@@ -1522,6 +1638,8 @@ export function register(D, H) {
     return Math.max(0.12, (Bm / 2) * Math.min(1, k * (0.93 + 0.12 * flare)));
   }
   // lofted hull shell between heights y0..y1 (sections every dz, finer at the bow); flat-shaded faces, both sides + stem
+  // 【放样船壳】y0..y1 之间的船壳曲面(站距 dz,船艏段加密):按半宽函数取三圈环带,
+  // 平涂面片铺两侧 + 艏柱帽;艏柱随高度前倾(rake,从龙骨线 yr 起算,各段壳共用)。
   const hullGeo = (Bm, L, Lb, y0, y1, stemRake, yr = -3.4) => tpl(['khull', Bm, L, Lb, y0, y1, stemRake, yr].map(kf).join('|'), () => {
     const g = new GB(), ts = [];
     for (let t = 0; t < Lb; t += Lb / 14) ts.push(t);
@@ -1544,6 +1662,7 @@ export function register(D, H) {
     return g.geo();
   });
   // deck plate (top of the hull outline at y), sampled exactly like the hull shell so the edges meet
+  // 【甲板面】与船壳同一套半宽采样,保证甲板边缘与壳面相交无缝。
   const deckGeo = (Bm, L, Lb, y, stemRake = 0.5, yr = -3.4) => tpl(['kdeck', Bm, L, Lb, y, stemRake, yr].map(kf).join('|'), () => {
     const g = new GB(), c = Bm / 2, ts = [], rk = stemRake * (y - yr);
     for (let t = 0; t < Lb; t += Lb / 14) ts.push(t);
@@ -1555,6 +1674,7 @@ export function register(D, H) {
     }
     return g.geo();
   });
+  // 【双柱系缆桩】甲板上的一对带缆桩(基座 + 双柱 + 柱帽)。
   function bollardPair(B, x, y, z, ry, c = K.charcoal) {
     B.push(x, y, z, ry);
     pbox(B, NS('paint'), c, 1.2, 0.08, 0.5, 0, 0.04, 0);
@@ -1562,11 +1682,15 @@ export function register(D, H) {
     B.pop();
   }
   // sagging rope between two points
+  // 【下垂绳索】两点间按抛物线下垂(sag 为中点垂度,4t(1−t) 形)的九段折线。
   function rope(B, a, b, sag, r = 0.045, c = K.rope) {
     const pts = [];
     for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(P3(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - sag * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t)); }
     B.tube(NS('paint'), c, pts, r, { radial: 5 });
   }
+  // 【箱船本体】见上方区块注释;build 依次:三段船壳(水线漆/舷侧/上层)+ 甲板、艏楼挡浪板与锚机、
+  // 锚 + 船名 + 吃水标尺、舷侧大船名、舱面箱堆(3–5 层 + 绑扎桥)、尾部住舱/驾驶台/烟囱、
+  // 舷侧充气护舷 + 系泊缆。碰撞全部为禁入屋顶(场外,特殊技能到此会滑进海里)。
   D.kelpline_ship = {
     desc: 'Laden container ship alongside (quay-side hull plane at local x = 0, bow stem at z = 0, hull aft toward -Z): lofted flared bow + parallel midbody, boot-topping, anchors + hawse, forecastle with breakwater, winches, foremast; deck cargo in bays (3–5 tiers, lashing bridges), hull-side line name in big letters, bow name + draft marks, accommodation block + bridge wings + funnel near the stern, pneumatic fenders in the gap, mooring lines to quay bollards. Visual only (outside the arena).',
     params: { length: 'm (110)', beam: 'm (26)', hull: 'topsides colour', boot: 'boot-top colour', name: 'ship name', line: 'hull-side lettering', gap: 'quay gap m (3.5)', seed: 'cargo seed' },
@@ -1708,12 +1832,15 @@ export function register(D, H) {
 
 
 // ==================================================================================================== placements
-// Authored in the berth's local frame (like layout.js) and turned with it at the end: pos → toWorld, rotY + ROT
-// (`worldRot`: rotY is already a world angle — loose kit parked square to the harbour; `world`: pos + rotY untouched).
-// Alpha half (−Z); every entry is mirrored (x,z) → (−x,−z), rotY + π, unless `mirror: false`.
-// Container + stair dressing is generated from the layout's local pieces (every stack box / stair), so the geometry
-// and its dressing never drift apart.
+// 【摆放清单】在泊位的局部坐标系内手工编写,最后随泊位整体转动:pos → toWorld,rotY + ROT。
+// (`worldRot`: rotY 已是世界角度——散件正对着港池停放;`world`: pos + rotY 原样不转)。
+// 只写半场(−Z);每条按 (x,z) → (−x,−z)、rotY + π 镜像出另一半,除非 `mirror: false`。
+// 集装箱与楼梯的装饰由 layout 的局部件自动生成(autoDressing),保证几何与装饰永不脱节。
+// 【要点】清单里大量使用其他包的共享道具(lightpole/barrier/cone/ropecoil/lifering/barrel/trashbin/
+// hydrate/dish 等),本包只提供 kelpline_ 前缀的部分。
 const CODES = ['KRKU', 'TDBU', 'CRLU', 'KLPU', 'SLTU', 'HLBU', 'INKU', 'TIDU'];
+// 【自动装饰】遍历 layout 的半场局部件:trailer 箱、box:/boxx: 堆场箱(按标签生成门向/冷箱/箱主代码)、
+// stair/ops-stair 坡道,各生成对应的 kelpline_box / kelpline_stair 装饰条目。
 function autoDressing() {
   const out = [];
   let k = 0;
@@ -1738,6 +1865,9 @@ function autoDressing() {
 }
 
 const Q = P / 4;
+// 【半场摆放表】按场景分区书写:中央 K7 岸桥(吊臂抬起 80°)与两条靠泊船、吊车轨道、后墙外背景
+// 与 K6、运营楼与高杆灯、卡闸、沿新轮廓的岸壁边沿、冷箱架与舱口盖、卡车车道车辆、堆场小件、
+// 安全告示牌、冷箱工棚,末尾展开 autoDressing() 的自动生成件。
 const LOCAL_PLACEMENTS = [
   // K7 at mid, idle between the two berths with its boom raised; the two ships alongside, bows pointing at mid
   { type: 'kelpline_crane', pos: [0, 0, 0], rotY: 0, mirror: false, boom: 80 },
@@ -1835,7 +1965,8 @@ const LOCAL_PLACEMENTS = [
   ...autoDressing(),
 ];
 
-// turn the berth: pos about the origin, rotY + ROT (see the note above)
+// 【整体旋转】把每条摆放转到世界系:`world` 原样返回(世界坐标,不再镜像旋转);
+// `worldRot` 保留原 rotY(与港池正交摆放);其余 pos 绕原点转 + rotY 加 ROT_RAD。
 export const PLACEMENTS = LOCAL_PLACEMENTS.map((it) => {
   if (it.world) { const { world, ...q } = it; return q; }
   const { worldRot, ...q } = it;

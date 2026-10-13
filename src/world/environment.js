@@ -17,6 +17,24 @@
 // contours of the stage props for piles / fenders / boats), waterline strips on the faces (reflected-sun caustics +
 // hull wet band), a planar reflection of the stage (Environment._renderReflection, quality-scaled) and a baked
 // far-reflection cube for the distant land. The other stages keep the original open-sea shader untouched.
+// ===============================================================================================================
+// 【中文导读】
+// 本文件是 INKWAVE 的"环境系统"(boot 中创建为 G.env),负责甲板(可玩区域)之外的一切:
+//   · 照明方案:【前向渲染下"一个真灯 + 环境"】——全场只有一盏太阳 DirectionalLight(带阴影)
+//     + 一盏 HemisphereLight 天空补光 + 一张由程序化天空烘焙的 PMREM 环境反射贴图
+//     (scene.environment)。街灯等点光源由 levelMaterial 的伪点光源提供,烘焙 AO 也来自
+//     关卡材质,三者互补(光照预算见 docs/RENDERING-UE4.zh-CN.md §3.4)。
+//   · 天空:程序化渐变穹顶 + 烘焙体积积云(2048×640 纹理,换主题时重烘一次,每帧仅一次采样)
+//     + 日盘 / 云隙光;所有远景物统一套用与天空一致的空气雾(aerial haze),融入地平线。
+//   · 海面:程序化波浪法线 + 解析天空反射 + 太阳高光 + 泡沫;marina(码头港池)模式追加
+//     平面反射、烘焙远景反射立方体贴图、以及水线焦散 / 湿痕条带。
+//   · 主题机制:THEMES(day / sunset / golden)是一份纯数据表;setTheme(name) 原地换装——
+//     改 uniform、重烘云、重建 envMap、重配阴影相机,不重建网格;换关卡走
+//     rebuildForArena(bounds, footprint)。
+//   · 性能要点:远景物全部合并成极少量网格;水面用极坐标网格(近密远疏);木桩 / 树 / 帆船 /
+//     浮标 / 海鸥用 instancing;平面反射按画质分级开关。
+// 配套阅读:docs/RENDERING-UE4.zh-CN.md(渲染管线与光照预算)、docs/BOOT.zh-CN.md(boot 路径)。
+// ===============================================================================================================
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PLAYER } from '../config.js';
@@ -24,6 +42,7 @@ import { G } from '../core/ctx.js';
 
 const WATER_Y = PLAYER.waterY; // -1.6
 const DEG = Math.PI / 180;
+// 【甲板矩形上限】着色器 uniform 数组的槽位数;超过即切换为烘焙距离场(DECK_FIELD,见下)
 const MAX_RECTS = 48;   // deck slabs (Halyard has 16: every pier/quay slab of both halves; curved outlines use many)
 const MAX_WET = 24;     // marina: solids piercing the surface (hulls) or sunk below it
 // More rects than that (curved outlines from many thin segments) switch the sea to a baked distance field (DECK_FIELD):
@@ -33,6 +52,9 @@ const HEMI_FLOOR = 0.38; // = the sky-fill floor main.js applies after construct
 
 // ---------------------------------------------------------------------------------------------------------------
 // Themes (colours are sRGB hex; converted to linear once)
+// 【主题表】每个主题是一份纯数据:太阳方位/高度/颜色/强度、天空三段渐变、地平线辉光、积云配色、
+// 海面配色、雾、夜景标志(night:街灯/窗光开启)、调色参数(grade)与 marina(港池)配色。
+// 换主题 = setTheme() 把这些数灌进 uniform,不触碰几何。
 // ---------------------------------------------------------------------------------------------------------------
 const THEMES = {
   day: {
@@ -107,11 +129,16 @@ const THEMES = {
   },
 };
 
+// 【sRGB hex → 线性 Color,可再乘系数 k】(着色器 uniform 用线性值)
 const lin = (hex, k = 1) => new THREE.Color(hex).multiplyScalar(k);
 
 // ---------------------------------------------------------------------------------------------------------------
 // GLSL
+// 【着色器代码区】大量内嵌 GLSL 模板字符串:公共噪声库、天空渐变+空气雾、积云烘焙、
+// 海面(开放海 / marina 两套 main)、远景物补丁(窗户/地形/水线/海鸥)、水线条带。
 // ---------------------------------------------------------------------------------------------------------------
+// 【公共噪声库】hash / value noise / fbm(2D、3D),以及云团圆瓣函数 lobes()。
+// 被天空、海面、远景物补丁共用,保证全场噪声风格统一。
 const GLSL_NOISE = /* glsl */`
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float hash13(vec3 p3){ p3 = fract(p3 * 0.1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
@@ -146,6 +173,10 @@ float fbm3(vec3 p){ float s = 0.0, a = 0.5;
 `;
 
 // Shared sky gradient + aerial haze (used by sky, sea and all far scenery so everything melts into the same horizon).
+// 【天空渐变 + 空气雾(全场共用核心)】skyGradient():三段式垂直渐变(地平线→天顶)叠加
+// 太阳方位辉光;黄昏时背日一侧压冷压暗(uNight·anti 项),避免对岸泛成品红色。
+// applyHaze():按距离指数混合到 hazeColor()(与天空同源),高度越高雾越薄——
+// 天空、海面、远景物共用,所以万物都融进同一条地平线。
 const GLSL_SKY_COMMON = /* glsl */`
 uniform float uTime;
 uniform vec3 uSunDir;
@@ -200,6 +231,10 @@ vec3 applyHaze(vec3 col, vec3 wp) {
 // ray-marches a field of cumulus heaps (1.1–3 km altitude, out to 55 km) with a short light march toward the sun
 // (self-shadowed bellies, lit cauliflower tops, forward-scattered silver lining) and aerial perspective, and stores
 // premultiplied radiance + opacity. Re-baked on theme change (sun/sky colours); per frame the sky is one texture fetch.
+// 【积云烘焙算法】一张"方向纹理"(u=方位角,v=sin(仰角)^(1/1.6),地平线附近加密),每个纹素
+// 对 1.1–3 km 高、55 km 内的积云堆场做一次短步进:椭球堆 SDF + 泡状噪声侵蚀出花椰菜轮廓,
+// 向太阳的二次短步进算自阴影(云肚暗、云顶亮、银边),再叠加空气透视;存预乘辐射率 + 不透明度。
+// 换主题时重烘一次(0.1–0.3 s),运行时天空每帧只做一次纹理采样。
 const CLOUD_W = 2048, CLOUD_H = 640;
 const CLOUD_BAKE_FRAG = /* glsl */`
 ${GLSL_SKY_COMMON}
@@ -330,6 +365,8 @@ void main() {
 
 const SKY_VERT = /* glsl */`
 varying vec3 vDir;
+// 【天空顶点位移】把模型坐标(方向向量)直接当视线方向,输出深度压到远平面(z = w·0.99999),
+// 且 mat3(viewMatrix) 只取旋转、去掉平移——穹顶永远以相机为中心(每帧 update 里跟随相机)。
 void main() {
   vDir = position;
   vec4 p = projectionMatrix * vec4(mat3(viewMatrix) * position, 1.0);
@@ -337,6 +374,10 @@ void main() {
 }
 `;
 
+// 【天空片元】三层叠加:①烘焙积云(采样方向纹理,随时间整体旋转模拟漂移)
+// ②高云面纱(fbm 条纹,被积云遮罩)③日盘 + 窄晕圈(HDR,交给 bloom)。
+// SKY_SHAFTS 云隙光:沿视线向太阳方向在烘焙云图上采样 6 次,通透处发光;
+// ENV_PASS 是同一份代码烘 envMap 用的分支(软太阳瓣,避免粗糙 mip 闪烁)。
 const SKY_FRAG = /* glsl */`
 ${GLSL_SKY_COMMON}
 ${GLSL_NOISE}
@@ -418,6 +459,9 @@ void main() {
 // Deck / hull rects are oriented: uRects[i] = (centre x, centre z, half extent along local x, along local z),
 // uRectAx[i] = the local x axis (unit, world xz); local z = (−ax.y, ax.x). Axis-aligned slabs pass (1, 0), for which
 // the rotation below is exact (x·1 + z·0), so they shade exactly as the old min/max rects did.
+// 【甲板矩形 SDF(水面着色器用)】甲板/船体轮廓用"有向矩形"表示:中心 + 沿局部轴的半长 +
+// 局部 x 轴方向;对齐矩形走 min/max 精确路径。矩形多于 uniform 槽位时改采 DECK_FIELD:
+// 甲板并集(R 通道)与船体并集(G 通道)的烘焙有向距离场,远处退化为矩形 AABB 距离(下界)。
 const GLSL_DECK = /* glsl */`
 uniform vec4 uRects[${MAX_RECTS}];
 uniform vec2 uRectAx[${MAX_RECTS}];
@@ -469,6 +513,8 @@ float sdWet(vec2 p) {
 #endif
 `;
 
+// 【长涌浪】三个固定波数正弦叠加(顶点着色器位移海面、片元着色器拿梯度修法线);
+// swellAmp() 让浪高随距甲板距离从 0.035 渐强到 0.16——贴着甲板的水面更平。
 const GLSL_SWELL = /* glsl */`
 // long gentle swell; returns height (unit amplitude) and writes gradient
 float swell(vec2 p, float t, out vec2 g) {
@@ -489,6 +535,10 @@ float swellAmp(float dDeck) { return mix(0.035, 0.16, smoothstep(3.0, 70.0, dDec
 //   • planar reflection of the real scene (uReflTex, Environment._renderReflection) over the analytic sky + baked
 //     clouds; reflected geometry occludes the sun glints
 //   • colour: open harbour teal → darker bottle green hugging the faces
+// 【marina(港池)水面 main()】与开放海共用顶点着色器,片元换成本套:①船体内无海水(discard)
+// ②浮板下水体保留但压暗压平 ③波法线近岸衰减 + 岸壁回弹涟漪 ④先解析天空+烘焙云反射,
+// 再叠加平面反射纹理(uReflTex)与远景立方体贴图(uFarCube),菲涅尔混合 ⑤船体/水中立柱
+// 周围一圈破碎的接触泡沫。颜色由主题 marina 块(航道青绿、板下近黑)供给。
 const GLSL_SEA_MARINA = /* glsl */`
 ${GLSL_NOISE}
 uniform sampler2D uReflTex;
@@ -663,6 +713,8 @@ void main() {
 }
 `;
 
+// 【海面顶点位移】CPU 算好的矩形 SDF 决定涌浪振幅(贴甲板更平),按波数求和抬升 y,
+// 并把涌浪梯度经 varying 交给片元着色器;同时挂接 three 的阴影坐标(海面接收阴影)。
 const SEA_VERT = /* glsl */`
 #include <common>
 #include <shadowmap_pars_vertex>
@@ -695,6 +747,10 @@ void main() {
 }
 `;
 
+// 【海面片元】非 marina(开放海)的 main():四通道波形纹理合成法线 → 甲板内 discard →
+// 阴影图 + 解析甲板投影双重遮蔽 → 深浅水配色 + 浪尖提亮 → 天空反射按菲涅尔混合 →
+// 太阳高光(1600 次幂的碎闪 + 宽sheen)→ 甲板边缘拍岸泡沫圈与立柱泡沫环 → 空气雾。
+// #ifdef MARINA 时本 main 被 GLSL_SEA_MARINA 的整体替换。
 const SEA_FRAG = /* glsl */`
 #include <common>
 #include <packing>
@@ -796,6 +852,10 @@ void main() {
 `;
 
 // ---- scenery material patch (MeshStandardMaterial + sky haze + optional windows / waterline / gull flap) ----
+// 【远景物材质补丁】对标准 PBR 材质做 onBeforeCompile 注入:把统一的天空/雾 uniform 接进来,
+// 在片元末尾套用 applyHaze(与天空同源的空气雾),并按 defines 选择性开启:
+// HZ_CITY 程序化立面窗户、HZ_TERRAIN 山坡草地/岩石/沙滩、HZ_WATERLINE 吃水线污带、
+// HZ_SHORE 岸线浪花、HZ_GULL 海鸥振翅顶点动画。
 const HZ_VERT_DECL = /* glsl */`
 uniform float uTime;
 attribute float glow;
@@ -1007,6 +1067,9 @@ gl_FragColor.rgb = applyHaze(gl_FragColor.rgb, vHzWorld) + hzEmit * exp(-length(
 //         this point (looked up in the shadow map there — no light from shaded water), weighted by how squarely the
 //         face meets that reflected light, softened with height; tinted by the face albedo
 //   a   = wet band on hulls: darker just above the bobbing waterline, freshest right at the line
+// 【水线条带着色器】贴在每个临水立面外侧 1.2 cm 的薄片,一次混合出两件事:
+// rgb(加性)= 反太阳焦散——水面上镜面反射的阳光聚焦成的丝状光网,按立面朝向与阴影衰减;
+// a(乘性)= 船体湿痕带——吃水线以上渐暗的湿痕,线 newest 处最深。
 const STRIP_VERT = /* glsl */`
 #include <common>
 #include <shadowmap_pars_vertex>
@@ -1098,6 +1161,9 @@ void main() {
 }
 `;
 
+// 【注入装配】把上面几段 GLSL 通过字符串替换插进标准材质的固定锚点(include 块),
+// 并把 Environment 的全局 uniform 表挂到着色器上;customProgramCacheKey 保证不同
+// defines 组合不会被 three 的程序缓存错误合并。
 function patchScenery(mat, U, flags = {}) {
   const defs = [];
   if (flags.city) defs.push('HZ_CITY');
@@ -1127,6 +1193,9 @@ function patchScenery(mat, U, flags = {}) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // JS helpers: seeded rng, value noise, geometry builders
+// 【JS 工具区】确定性随机(mulberry)、CPU 侧 value noise / fbm、几何体批量构造:
+// prep() 把任意几何统一成 {position, normal, color, glow} 非索引格式以便 mergeGeometries 合并;
+// xf() 一次性施加位移/旋转/缩放;box/cyl/sph/beam/tube/sag/triGeo 是程序化建模积木。
 // ---------------------------------------------------------------------------------------------------------------
 function mulberry(seed) {
   let a = seed >>> 0;
@@ -1148,6 +1217,10 @@ const polar = (deg, d) => [Math.cos(deg * DEG) * d, Math.sin(deg * DEG) * d];
 // (ax, az) (unit), local z = (−az, ax), plus the XZ AABB. `aligned` rects keep their exact min/max and take the exact
 // axis-aligned code paths below (so axis-aligned stages build exactly what they always did). Accepts a legacy
 // {minX..maxZ} rect, an oriented {cx,cz,hx,hz,ax,az} one, or both; extra fields (y0, y1 …) are kept.
+// 【有向矩形(orect)几何工具】把关卡 footprint / 船体轮廓统一成 {中心, 半长, 局部轴, AABB}:
+// orect() 归一化(对齐矩形走精确 min/max 路径);blockRect() 从关卡 block 提取(Y 轴未倾斜的盒体);
+// inRect/sdRectJS 做点包含与有向距离判定;rectEdges 给出四条边及外法线——
+// JS 侧消费者(木桩排布、水线条带、waterHeightAt)与着色器侧 SDF 共用同一套数学。
 function orect(r) {
   if (r.hx === undefined) return { ...r, cx: (r.minX + r.maxX) / 2, cz: (r.minZ + r.maxZ) / 2, hx: (r.maxX - r.minX) / 2, hz: (r.maxZ - r.minZ) / 2, ax: 1, az: 0, aligned: true };
   let ax = r.ax ?? 1, az = r.az ?? 0, hx = r.hx, hz = r.hz;
@@ -1259,6 +1332,9 @@ function vcolorBy(g, fn) { // recolour vertices: fn(x,y,z,nx,ny,nz) -> THREE.Col
 }
 
 // Tileable wave normal/height texture from integer-frequency sine sums (perfectly periodic).
+// 【波形纹理】CPU 预烘焙的可平铺波浪法线/高度图:【整数频率正弦叠加天然严格周期】,44 个
+// 波按风向集中、振幅随频率衰减;R/G 存归一化梯度,B 存高度(伽马压低暗部)。海面每帧采样它
+// 合成法线,省去实时 FFT。
 function makeWaveTexture(size = 256, seed = 11) {
   const rnd = mulberry(seed);
   const waves = [];
@@ -1311,6 +1387,9 @@ function makeWaveTexture(size = 256, seed = 11) {
 }
 
 // Lofted boat hull (bow at +z). Returns prepared geometry with vertex colours.
+// 【放样船体】沿船长取 15 个横剖面,每剖面 11 点轮廓线(舷侧外鼓、龙骨下沉、舷弧上翘),
+// 剖面间三角化(三角形朝向按"背离中轴线"判定),再按高度分色(船底/水线带/舷侧/条纹),
+// 最后补上甲板与船尾封板,merge 成单几何。三种泊船(渔船/汽艇/划艇)共用。
 function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f', bottom = '#c75c52', deck = '#d9c7a6' }) {
   const NS = 14, NP = 5;
   const secs = [];
@@ -1380,6 +1459,10 @@ function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f'
 
 // Smooth stylised island/hill (indexed radial grid → soft normals). Vertex colour = grass tint, 'glow' = baked fold AO
 // (the HZ_TERRAIN shader does grass/rock/sand by slope + height). Returns { geo, heightAt, localF, sample }.
+// 【程序化岛屿/山丘】解析高度场(fbm 噪声 + 软脊线)在 CPU 栅格化成径向网格:
+// 法线从高度场中心差分解析求出(永远光滑,无面片感);顶点色给草地底色,'glow' 通道
+// 烘焙褶皱 AO(凹处暗)供 HZ_TERRAIN 着色器再加工;同时返回 heightAt/localF/sample
+// 供种树、放建筑、泊摩天轮等查询用。
 function makeIsland(o) {
   const { x: cx, z: cz, rx, rz, h, seed = 1, rot = 0, plateau = false, R = 12, S = 44, grass = '#9ccf7f', ridge = 0.3 } = o;
   const cr = Math.cos(rot), sr = Math.sin(rot);
@@ -1455,8 +1538,14 @@ function makeIsland(o) {
 // ---------------------------------------------------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------------------------------------------------
+// 【环境系统主类】构造顺序:uniform 表 → 太阳/补光 → 天空+云烘焙+PMREM → 海面 →
+// 码头细节(木桩/护舷/系泊船)→ 远景(岛/城/桥/摩天轮)→ 动态物(帆船/浮标/海鸥)。
+// 之后 setTheme() 完成首次"换装"。整个系统挂在一个 root Group 下,dispose() 一次性释放。
 export class Environment {
+  // 【lab 钩子】暴露主题表供审计工具热改,改完调 setTheme(name) 生效
   static get THEMES() { return THEMES; }   // audit / lab hook: tweak a theme live, then setTheme(name)
+  // 【构造】记录 renderer/scene/bounds/footprint,建 root Group,按序搭建各子系统,
+  // 最后 setTheme 完成首次主题应用(其中会烘焙云、envMap、拟合阴影)。
   constructor(renderer, scene, opts = {}) {
     this.renderer = renderer;
     this.scene = scene;
@@ -1488,11 +1577,14 @@ export class Environment {
     this._buildDock();
     this._buildScenery();
     this._buildLife();
+    // 【海雾】场景线性雾,颜色取地平线色微混天色——与着色器内空气雾同源,近处淡、远处融进天际。
     scene.fog = new THREE.Fog(this.fogColor, 70, 1500);
     this.setTheme(opts.theme || 'day');
   }
 
   // ------------------------------------------------------------------ uniforms
+  // 【全局 uniform 表】天空/云/海/远景物所有着色器共享这一份(补丁材质直接引用同对象),
+  // setTheme 只改这里的 value,全场景联动。甲板矩形与 marina 集合的数组槽位也在这里。
   _initUniforms() {
     const V3 = () => ({ value: new THREE.Vector3() });
     const C = () => ({ value: new THREE.Color() });
@@ -1524,6 +1616,8 @@ export class Environment {
   // Push the deck rects (open sea: the footprint; marina: floating slabs + hulls) to the sea shaders: oriented-rect
   // uniforms while they fit the slots (exact SDFs), else the baked distance field (DECK_FIELD, any number of rects).
   // JS-side consumers (pilings, runs, waterline, waterHeightAt) always use the full rect lists.
+  // 【矩形集合 → 水面着色器】二选一:槽位装得下 → 逐矩形 uniform(精确 SDF);装不下(或调试
+  // 开关 forceDeckField)→ 一次性 GPU 烘焙距离场纹理,海面材质切 DECK_FIELD define 并触发重编译。
   _syncDeckShading() {
     const U = this.U, M = this._marina ? this._marinaData : null;
     const decks = M ? M.decks : this.footprint, wet = M ? M.wet : [];
@@ -1543,6 +1637,8 @@ export class Environment {
 
   // Signed distance to the union of the deck rects (R) and of the hull rects (G): 10 cm texels over the arena + reach,
   // half-float, bilinear, rendered on the GPU (one pass; every texel takes the min over all rects, clamped at FIELD_R).
+  // 【距离场烘焙】矩形先 packing 成浮点纹理(2 纹素/矩形),再用正交全屏 quad 一个 pass 渲染:
+  // 每个纹素对所有矩形取 min 距离。按矩形布局内容做缓存键,布局没变就直接复用,不重烘。
   _bakeDeckField(decks, wet) {
     const U = this.U, b = this.bounds, R = FIELD_R;
     const aabb = (rs) => {
@@ -1617,11 +1713,13 @@ export class Environment {
   }
 
   // deck rects → uRects (centre, half extents) + uRectAx (local x axis); marina hulls → uWet + uWetAx
+  // 【写 uniform 矩形槽】槽位模式下的两条小写入路径(中心+半长 / 局部 x 轴)。
   _writeRects(rects = this.footprint) {
     const U = this.U;
     rects.forEach((r, i) => { U.uRects.value[i].set(r.cx, r.cz, r.hx, r.hz); U.uRectAx.value[i].set(r.ax, r.az); });
     U.uRectCount.value = rects.length;
   }
+  // marina hull/wet rects → uWet + uWetAx(与 _writeRects 同构,只是写穿水集合)
   _writeWet(rects) {
     const U = this.U;
     rects.forEach((r, i) => { U.uWet.value[i].set(r.cx, r.cz, r.hx, r.hz); U.uWetAx.value[i].set(r.ax, r.az); });
@@ -1629,6 +1727,9 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ lights
+  // 【"一个真灯"】太阳 DirectionalLight(全场唯一投射阴影的光,阴影图尺寸按画质)+
+  // 半球补光 HemisphereLight(天/地两色,地是阳光甲板的反弹假 GI)。
+  // 其余"灯"(街灯)全由 levelMaterial 的伪点光源伪装,不占用光照预算。
   _buildLights() {
     const sun = new THREE.DirectionalLight(0xffffff, 3);
     sun.name = 'Sun';
@@ -1645,6 +1746,9 @@ export class Environment {
   }
 
   // Fit the orthographic shadow camera tightly around the arena box as seen from the sun.
+  // 【阴影相机拟合】把场地包围盒的 8 个角变换到"从太阳看过去"的视图空间,取 AABB 设置
+  // 正交阴影相机(紧贴场地、不多浪费阴影分辨率);bias/normalBias 随深度范围与纹素尺寸换算,
+  // 兼顾不 acne 与不漏光。换主题(太阳角度变)与换关卡都要重调。
   _fitShadow() {
     const b = this.bounds, m = 6;
     const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
@@ -1675,6 +1779,9 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ sky + env map
+  // 【天空穹顶】同一份 SKY_FRAG 编译两个材质:游戏里用的(深度测试、画在所有不透明之后,
+  // renderOrder 9000,只有露出天空的像素才着色)和烘 envMap 用的(ENV_PASS 分支,关闭深度)。
+  // _envScene 里只放这一个穹顶,供 PMREMGenerator 采样。
   _buildSky() {
     const geo = new THREE.SphereGeometry(1, 48, 24);
     // the in-game dome is depth-tested at the far plane and drawn after every opaque object, so only pixels where sky
@@ -1697,6 +1804,8 @@ export class Environment {
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
   }
 
+  // 【云烘焙管线搭建】离屏 RT(2048×640,半浮点,u 方向循环)→ 全屏三角 + 云烘焙着色器 +
+  // 正交相机;烘出的方向纹理同时被天空片元与海面的天空反射采样。
   _initCloudBake() {
     this._cloudRT = new THREE.WebGLRenderTarget(CLOUD_W, CLOUD_H, {
       type: THREE.HalfFloatType, format: THREE.RGBAFormat, colorSpace: THREE.NoColorSpace,
@@ -1718,6 +1827,7 @@ export class Environment {
 
   // Bake the cumulus dome for the current theme (sun direction/colour + sky). Rendered in horizontal strips so no
   // single GPU job runs long; ~0.1–0.3 s once per theme change.
+  // 【按条带分 10 次渲染】避免单次 GPU 任务过长卡帧;每换主题只烘一次。
   _bakeClouds(T) {
     const r = this.renderer, u = this._cloudMat.uniforms;
     u.uSunCol.value.copy(lin(T.sunColor, (T.skySun ?? T.sunIntensity) / 2.75));
@@ -1740,6 +1850,9 @@ export class Environment {
     r.autoClear = ac; r.xr.enabled = xr;
   }
 
+  // 【重建环境反射贴图】把"只有天空穹顶"的场景喂给 PMREMGenerator(256 尺寸),产物挂到
+  // scene.environment——这就是全场 IBL 的来源:材质的环境反射/环境光都取自当前天空,
+  // 所以换主题必须重烘。旧 RT 延迟一帧释放,避免正在采样的帧踩到已销毁纹理。
   _rebuildEnvMap() {
     const old = this._envRT;
     this._envRT = this._pmrem.fromScene(this._envScene, 0, 0.1, 100, { size: 256 });
@@ -1750,6 +1863,8 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ sea
+  // 【海面网格】极坐标同心圆环:中心 1.5 m 起步、几何级数外扩到 6 km——近处密(接得住泡沫
+  // 细节)、远处疏(只有渐变)。顶点着色器再按矩形 SDF 叠加涌浪位移;renderOrder -1 先画。
   _buildSea() {
     this.U.uWaveTex.value = makeWaveTexture(256, 11);
     // polar grid: dense near the arena, stretching to the horizon
@@ -1788,6 +1903,10 @@ export class Environment {
   // reflects), rendered without sea or sky dome into a mip-mapped HDR target; alpha = coverage, so the sea shader keeps
   // its analytic sky + clouds wherever nothing stands above the water. Once per frame, only in marina mode, skipped for
   // override passes (GTAO normals) and when the camera dips under the surface. Resolution follows the quality preset.
+  // 【平面反射(每帧,仅 marina)】①镜像相机到水面下(位置/朝向翻 y)②斜切近裁剪面
+  // (Lengyel 方法)让水下物体不进反射 ③隐藏海/天/远景物后整场景重渲染进半尺寸 HDR RT,
+  // alpha 记覆盖率;④非 ultra 画质再藏掉角色/特效/灯柱等"省 draw call"。成本大头是 CPU 提交
+  // (~50 µs/draw),所以按画质缩放分辨率并可整体关闭(reflections 开关)。
   _renderReflection(renderer, scene, camera) {
     const U = this.U;
     if (!this._marina || this._reflBusy || scene.overrideMaterial || this._reflFrame === this._frameId) return;
@@ -1866,6 +1985,9 @@ export class Environment {
   // Far reflections: the distant land (hills, city, port, bridge, lighthouse) only ever reflects near the horizon and
   // never moves, so it is baked once per theme / stage into a cube from the arena centre (transparent elsewhere) and
   // looked up by reflection direction under the planar reflection — calm harbour water mirrors the skyline for free.
+  // 【远景反射立方体】远山/城市/桥只在地平线附近出现且不移动 → 从场地中心 CubeCamera 一次性
+  // 烘成 512 立方体贴图(其余像素透明),海面按反射方向查它,就免费得到"平静港湾映着天际线"。
+  // 只烘远景子集:先隐藏无关对象再渲染。
   _bakeFarReflection() {
     const U = this.U;
     if (!this._marina) { U.uFarOn.value = 0; return; }
@@ -1904,6 +2026,8 @@ export class Environment {
   }
 
   // Scene parts left out of the planar reflection below ultra (cached per prop build): FX, decor, small prop batches.
+  // 【反射排除清单】低画质下不进反射的场景子集(FX/装饰/小道具),按 props 组结构做缓存键,
+  // 只有关卡道具重建后才重新扫描。
   _reflSkips(scene) {
     const props = scene.children.find((o) => o.name === 'props');
     const key = scene.children.length + ':' + (props ? props.uuid + props.children.length : '-');
@@ -1916,6 +2040,8 @@ export class Environment {
   }
 
   // Is the current stage a marina (sheltered basin, hulls in the water)? A layout can say so with `water: 'marina'`.
+  // 【marina 模式判定】由关卡布局决定(布局写 water: 'marina' 或就是 Halyard),与主题无关:
+  // 主题是"光照/配色",marina 是"水体形态"。
   _stageMarina() {
     const lay = G.level && G.level.layout;
     return !!(lay && (lay.water === 'marina' || lay.id === 'halyard'));
@@ -1925,6 +2051,8 @@ export class Environment {
   // below it (hulls, dry-dock floors: no sea inside, contact foam). Read from the live level (y extents matter here —
   // the main.js footprint only carries XZ). Axis-aligned boxes and boxes turned about Y (oriented rects); ramps and
   // other tilted blocks are left out.
+  // 【marina 矩形集合】从实时关卡块分出两类:浮板(decks,水面以上、底面贴水 → 板下阴影)与
+  // 穿水/沉水 solids(wet,船体/干船坞底 → 体内无海水)。只看 Y 轴未倾斜的盒体(orect 化)。
   _marinaSets() {
     const L = G.level, decks = [], wet = [];
     if (L) for (const b of L.blocks) {
@@ -1941,6 +2069,8 @@ export class Environment {
   }
 
   // (Re)apply marina mode for the current theme + level: rect sets, waterline strips, slab undersides, uniforms.
+  // 【marina 换装总控】开关切 define 触发海面着色器重编译;先清旧 FX 组,再重建矩形集合、
+  // 泡沫场(含道具水线轮廓)与水线/板下 FX。关闭时归零 wet/反射 uniform 并恢复甲板着色。
   _applyMarina() {
     const U = this.U;
     if (this.marinaFx) {
@@ -1961,6 +2091,9 @@ export class Environment {
     this._buildMarinaFx(M);
   }
 
+  // 【水线 FX 构建】扫关卡每个临水面,沿"外侧是开阔水面"的区段贴水线条带(船体上凸 3.5 cm,
+  // 板缘上凸 1.2 cm),再为每块浮板补一块朝下的深色底板(反射与水面视角里看到的板底)。
+  // 条带材质:加性焦散 rgb × 乘性湿痕 alpha 的自定义混合。
   _buildMarinaFx(M) {
     const L = G.level;
     if (!L) return;
@@ -2052,6 +2185,8 @@ export class Environment {
 
   // Distance field (metres, 0..range) to pilings, boats, buoys around the deck → foam rings on the water.
   // Marina mode: finer (0.1 m) and short-range (2.5 m, 1 cm steps), fed by the real waterline contours.
+  // 【泡沫距离场(CPU 烘焙)】对每个"立在水里的东西"(木桩/船/浮标/水线轮廓线段)在周围栅格上
+  // 写"到胶囊段的距离",取所有形状的最小值,烘成单通道纹理;海面片元按距离画泡沫环。
   _buildFoamField(shapes) {
     const marina = this._marina;
     const b = this.bounds, pad = 22, res = marina ? 0.1 : 0.2, range = marina ? 2.5 : 8;
@@ -2090,6 +2225,9 @@ export class Environment {
   // Triangle ∩ plane y = WATER_Y segments from the prop meshes → zero-radius capsules for the foam field, so froth
   // rings whatever actually stands in the water, whoever placed it. Hull dressing hugging a wet rect is left to the
   // analytic hull contact line.
+  // 【道具水线轮廓提取】遍历场景 props 组(含实例)的每个三角形,求与水面 y = WATER_Y 的
+  // 交线段 → 零半径胶囊进泡沫场。这样不论谁摆的桩/碰垫/小船,泡沫环自动跟上;
+  // 已贴着 wet 矩形的部分跳过(交给解析船体接触线,避免双重泡沫)。
   _waterContours(wet) {
     const out = [];
     const b = this.bounds, pad = 21;
@@ -2141,11 +2279,14 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ dock: pilings, fenders, ladders, moored boats
+  // 【点判定小工具】是否在任一甲板矩形内 / 是否在场地包围盒内。
   _insideFootprint(x, z) { return this.footprint.some((r) => inRect(r, x, z)); }
   _insideBounds(x, z) { const b = this.bounds; return x > b.minX + 0.01 && x < b.maxX - 0.01 && z > b.minZ + 0.01 && z < b.maxZ - 0.01; }
 
   // exposed stretches of the footprint outline (edge samples whose outside is open water), along each rect's real
   // (possibly turned) edges: { ax, az → bx, bz, outward nx, nz, len, s0..s1 }
+  // 【外轮廓提取】沿每个矩形的真实(可能旋转)四边按 0.25 m 采样,"外侧 5 cm 不是甲板"的
+  // 连续段即为临水边——木桩/护舷/梯子/泡沫都挂在这上面,缺口(notch)天然被排除。
   _boundaryRuns() {
     const runs = [];
     for (const r of this.footprint) {
@@ -2170,6 +2311,9 @@ export class Environment {
     return runs;
   }
 
+  // 【码头细节套件】全部程序化拼装后合并成两个网格(桩=实例化,小件=单网格):
+  // 外缘木桩、板下 7 m 网格桩、护木桩群(dolphin)+系泊船(渔船/汽艇/划艇)+缆绳、
+  // 轮胎护舷、梯子。每个立水物都登记泡沫形状。marina 关卡自己装饰岸线,这里只留板下桩网。
   _buildDock() {
     const b = this.bounds;
     // marina stages dress their own pier edges (piles, fenders, ladders) and moored boats: keep only the hidden
@@ -2338,6 +2482,7 @@ export class Environment {
     this._foamShapes = foamShapes;
   }
 
+  // 【渔船几何】hullGeo 船体 + 驾驶舱/桅杆/吊杆/雷达/网鼓/鱼箱/救生圈,积木式拼装。
   _fishingBoatGeo() {
     const parts = [hullGeo({ L: 8.6, B: 2.9, D: 0.75, F: 1.15, sheer: 0.55, hull: '#f4f1ea', stripe: '#5f93b8', bottom: '#d0675c', deck: '#d7c29c' })];
     // wheelhouse
@@ -2357,6 +2502,7 @@ export class Environment {
     parts.push(xf(prep(new THREE.TorusGeometry(0.28, 0.07, 6, 14), '#ff7f5c'), 1.03, 1.9, -1.2, Math.PI / 2));
     return mergeGeometries(parts);
   }
+  // 【小汽艇几何】hullGeo 船体 + 座舱/风挡/顶棚/舷外机。
   _launchGeo() {
     const parts = [hullGeo({ L: 6.4, B: 2.3, D: 0.55, F: 0.85, sheer: 0.4, hull: '#dff0ec', stripe: '#e98b6d', bottom: '#3d5c7a', deck: '#e7dcc6' })];
     parts.push(xf(box(1.6, 0.9, 1.4, '#fbfaf7'), 0, 1.25, 0.4));
@@ -2368,6 +2514,7 @@ export class Environment {
     parts.push(xf(box(1.9, 0.08, 1.6, '#e7dcc6'), 0, 0.85, -1.9));
     return mergeGeometries(parts);
   }
+  // 【划艇几何】hullGeo 船体 + 坐板 + 双桨。
   _rowboatGeo() {
     const parts = [hullGeo({ L: 3.4, B: 1.35, D: 0.3, F: 0.45, sheer: 0.18, hull: '#f2d38b', stripe: '#c8745b', bottom: '#8e5b4a', deck: '#b58b62' })];
     for (const z of [-0.6, 0.45]) parts.push(xf(box(1.2, 0.06, 0.28, '#b58b62'), 0, 0.42, z));
@@ -2377,6 +2524,10 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ far scenery
+  // 【远景布景】所有静态景物共享材质补丁(统一空气雾),分三个合并网格:
+  // terrain(程序化岛屿群:对岸城市台地、背景山、西/南岛链、灯塔礁)、FarScenery
+  // (码头岸壁/集装箱/港机、跨海桥、摩天轮支架、滨海灯柱)、CitySkyline(实例化+合并
+  // 的程序化天际线)。岛屿高度场是数据源——建筑/树木/摩天轮都种在它上面。
   _buildScenery() {
     const U = this.U;
     const staticParts = [];
@@ -2509,6 +2660,8 @@ export class Environment {
     this.trees = treeInst;
   }
 
+  // 【灯塔】红白条纹塔身 + 灯室 + 守塔人小屋;另加一个加性混合的锥形光束 mesh,
+  // 黄昏(night)才显示,每帧绕 y 旋转(见 _animate)。
   _buildLighthouse(parts, x, y, z) {
     const bands = ['#f7f4ee', '#ea7f6e', '#f7f4ee', '#ea7f6e', '#f7f4ee'];
     const H = 17, r0 = 2.5, r1 = 1.75;
@@ -2551,6 +2704,7 @@ export class Environment {
     this.root.add(this.lhBeam);
   }
 
+  // 【港口集装箱起重机(岸桥)】门腿/横梁/大梁/拉杆/吊具小车,积木拼装;顶部红球为夜航灯。
   _craneGeo(x, y, z, yaw, col) {
     const p = [];
     const W = '#f3f0ea';
@@ -2577,6 +2731,8 @@ export class Environment {
     return xf(g, x, y, z, yaw);
   }
 
+  // 【跨海悬索桥】两塔悬索:主缆为抛物线(tube),吊索按主缆采样,桥面灯与塔顶航空灯
+  // 用 glow=1/2 的小球(夜景 emissive 补丁点亮)。
   _buildBridge(parts, A, B) {
     const ax = A[0], az = A[1], bx = B[0], bz = B[1];
     const L = Math.hypot(bx - ax, bz - az);
@@ -2609,6 +2765,8 @@ export class Environment {
     for (const t of towers) for (const lat of [-10.5, 10.5]) { const [x, , z] = at(t, lat, 0); parts.push(xf(sph(1.0, 6, 4, '#ff4a3a', 2), x, WATER_Y + towerH + 2, z)); }
   }
 
+  // 【摩天轮】A 字支架+基座进静态网格;轮体(轮缘/辐条/座舱/灯珠)单独存 _ferrisGeo,
+  // _buildLife 里建成独立 mesh,每帧绕 z 慢转。
   _buildFerris(parts, x, y, z) {
     const R = 24, hubY = y + R + 5;
     const yaw = Math.atan2(-x, -z); // wheel faces the arena
@@ -2639,6 +2797,10 @@ export class Environment {
   // Procedural skyline: every building is unique geometry (tiers/setbacks, cornices, podiums, rooftop units, water
   // towers, crowns, spires, slanted tops) merged into one mesh. Attribute 'bld' = (facade style, seed, base y) drives the
   // HZ_CITY facade shader (window rows, mullions, glass reflectance, night lights).
+  // 【程序化天际线】每栋楼唯一:层数/收分/裙楼/屋顶设备/皇冠/尖顶随机组合,全部合并为一个
+  // 网格;顶点属性 bld=(立面风格, 随机种子, 基座高度)喂给 HZ_CITY 立面着色器
+  // (窗洞/竖梃/玻璃反射/夜景亮窗按距离淡出,避免远处闪点)。先摆地标(观光针/扭转塔/
+  // 市政厅/双塔/阶梯塔/斜顶玻璃塔),再按 46 m 街网铺满普通街区,越靠核心越高。
   _buildCity(city, rnd) {
     const U = this.U;
     const F = this._cityFrame;
@@ -2823,6 +2985,9 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ living things: sailboats, buoys, gulls, ferris wheel
+  // 【动态物】都需要每帧改 instance 矩阵:摩天轮(静态材质,单独 mesh)、帆船(绕湾慢速
+  // 环行,朝向取切线)、浮标(起浮+倾斜,逐个着色)、海鸥(绕圈+压坡,振翅在顶点着色器)。
+  // 全部 frustumCulled=false(实例散布全场),矩阵用 DynamicDrawUsage。
   _buildLife() {
     const U = this.U;
     const rnd = mulberry(77);
@@ -2915,6 +3080,8 @@ export class Environment {
 
   // ------------------------------------------------------------------ public API
   // Water surface height at (x, z) (includes the gentle swell). Matches the sea vertex shader.
+  // 【公开:水面高度查询】与海面顶点着色器同一套公式(矩形 SDF 定振幅 + 三波叠加),
+  // 系泊船/帆船/浮标的起伏都用它,保证物体贴着真实的浪面。
   waterHeightAt(x, z, t = this.time) {
     let d = 1e5;
     const M = this._marinaData;
@@ -2934,6 +3101,8 @@ export class Environment {
 
   // Points every ~step m along the exposed deck edges — the real (possibly turned) outline, not the rects' AABBs:
   // { x, z, nx, nz } 5 cm out from the face, with its outward normal (e.g. sea-spray FX candidates).
+  // 【公开:甲板边采样点】沿真实(可能旋转的)外轮廓按间距取点带外法线,供 FX(浪花/飞沫)
+  // 找候选位置。
   deckEdges(step = 1.6) {
     const out = [];
     for (const r of this._runs || []) {
@@ -2945,9 +3114,11 @@ export class Environment {
 
   // How lively the water at the stage edges is, 0..1 (FX: wave slaps / spray bursts against the decks). Marina basins
   // are sheltered and glassy: keep spray to a rare, small lap.
+  // 【公开:边缘水体活跃度】FX 用它决定拍岸浪花的频率/规模;港池水面平静,压低到 0.15。
   get seaState() { return this._marina ? 0.15 : 1; }
 
   // Sky colours for other modules (e.g. UI tint, character rim light). Linear THREE.Colors — do not mutate.
+  // 【公开:取天空配色】UI  tint、角色轮廓光等其他模块从这里读当前主题的线性颜色。
   getSkyColors() {
     const U = this.U;
     return {
@@ -2959,6 +3130,8 @@ export class Environment {
 
   // New stage: rebuild everything that hugs the deck (pilings, fenders/ladders, moored boats, foam field) and refit the
   // sun's shadow camera to the new arena bounds.
+  // 【换关卡总入口】重判 marina → 换 bounds/footprint → 重建码头套件 → marina 应用 →
+  // 阴影相机重拟合 → 远景反射重烘。
   rebuildForArena(bounds, rects) {
     this._marina = this._stageMarina();
     this.bounds = { ...bounds };
@@ -2970,6 +3143,7 @@ export class Environment {
   }
 
   // pilings / dock kit / moored boats / foam field for the current footprint + mode
+  // 【码头套件重建】换关卡时先销毁旧网格再按新 footprint 重建;泡沫形状重新登记浮标。
   _rebuildDock() {
     for (const o of [this.pilings, this.dockProps, ...(this.moored || []).map((m) => m.mesh)]) {
       if (!o) continue;
@@ -2982,11 +3156,19 @@ export class Environment {
   }
 
   // Replace the deck outline (array of rects, see orect()) → foam/under-deck shading follow. Pilings are built once.
+  // 【只换轮廓】热更新甲板外轮廓(泡沫/水下阴影立即跟随);木桩不重建。
   setFootprint(rects) {
     this.footprint = rects.map(orect);
     this._syncDeckShading();
   }
 
+  // 【主题换装总控(核心机制)】"原地换装":不重建任何几何,只按 THEMES[name] 刷一遍世界——
+  // ① 太阳方向/天空三段色/辉光/雾/夜景标志 → uniform
+  // ② 海面光色(注意 uSunLight 按 skySun 归一,天空与海保持调校时的平衡,不随灯强重曝光)
+  // ③ grade 调色参数交渲染器;SKY_SHAFTS define 仅云隙光主题编译
+  // ④ marina 模式随关卡变化重建码头;marina 配色整套替换,不留上一主题残留
+  // ⑤ 太阳/半球光/环境强度;雾色雾距;灯塔光束开关
+  // ⑥ 重拟合阴影相机 → 重烘积云 → 重建 envMap → 重烘远景反射
   setTheme(name) {
     const T = THEMES[name] || THEMES.day;
     const r0 = this.renderer;
@@ -3047,6 +3229,7 @@ export class Environment {
     this._bakeFarReflection();
   }
 
+  // 【帧更新】累加时间、推进 uTime(全场动画的统一时钟)、让天空穹顶跟随相机、驱动动态物。
   update(dt, camera) {
     dt = Math.min(dt || 0, 0.1);
     this.time += dt;
@@ -3056,6 +3239,8 @@ export class Environment {
     this._animate(dt);
   }
 
+  // 【每帧动画】泊船:贴水面起伏 + 轻微横摇;帆船:角速度环行、航向取切线、随风倾侧;
+  // 浮标:上下起浮 + 随机倾侧;海鸥:绕圈 + 转弯压坡;摩天轮慢转、灯塔光束扫射。
   _animate() {
     const t = this.time;
     // moored boats: gentle bob + roll
@@ -3104,6 +3289,8 @@ export class Environment {
     this.lhBeam.rotation.y = t * 0.55;
   }
 
+  // 【释放】摘除 root 与两盏灯,遍历释放全部几何/材质,再逐个销毁所有离屏 RT
+  // (envMap/积云/平面反射/远景立方体/距离场)与 PMREM、波形/泡沫纹理。
   dispose() {
     this.scene.remove(this.root, this.sun, this.sun.target, this.hemi);
     this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });

@@ -8,13 +8,28 @@
 // treat local z = 0 as the wall face and project toward +Z. Runs (rails, posts, railings) extend along local +X.
 // Palette: bleached silver timber, salt white, pink brine, faded oxide red, rust and galvanised steel — muted, so the
 // team inks stay the loudest thing on screen. Signage uses 3D channel / painted letters from a small stroke font.
+// 【中文导读】Saltpan Basin(盐沼盆地)关卡专属道具包。
+// 【职责】register(D, H) 向 PropKit 类型表 D 注册全部 saltpan_ 前缀的本关道具,文件末尾导出 PLACEMENTS 布景清单;
+//   契约与 props-marina-dock.js 相同——H 注入 THREE 与 kit 工具(col、shade、mixc、latheGeo 等)。
+// 【镜像约定】PLACEMENTS 只写 Alpha 半场(-Z 侧);除标注 mirror: false 的条目外,引擎按 (x,z) → (-x,-z)、
+//   rotY 加 π 自动镜像出 Bravo 半场,两处地标类道具因此只摆一份。
+// 【碰撞约定】实体道具用 B.col 递交关卡碰撞盒(nav / 物理 / 掩体);rail 标记只挡人(子弹、墨水、视线穿过,
+//   不可站立),roof 标记当顶面(防攀爬落顶)。B.blob 递交墨渍底色。
+// 【坐标约定】米制,Y 向上,pos 为基点,rotY 旋转局部 +Z(即"正面");贴墙件以局部 z = 0 为墙面并向 +Z 凸出;
+//   条状构件(轨道、栏杆、桩排)沿局部 +X 延伸。
+// 【配色基调】漂白银木、盐白、粉卤水、褪氧化红、锈与镀锌钢——整体低饱和,确保队伍的墨水是画面中最抢眼的。
+// 【性能两板斧】tpl 模板缓存(同参数几何只建一次)+ NS 无阴影通道(字牌、小五金、远景不走阴影),控制 draw call。
+// 【描边字体】GL 表自定义"中心线笔画"字体,letters() 统一排版出立体 channel 字与平面漆字,招牌全部程序化生成。
 const P = Math.PI;
 
+// 【注册入口】本包唯一对外函数:D 为类型表(写入即注册),H 为工具集。
 export function register(D, H) {
   const { THREE, col, shade, mixc, chamferBox, latheGeo, tubeGeo, extrudeGeo, blobGeo, drum, PI, TAU, HP, P3 } = H;
+  // 【无阴影包装】NS(mat):glow / blob 是发光、墨渍材质必须保留阴影,其余一律走 H.noShadow 省渲染开销。
   const NS = (m) => (H.noShadow && m !== 'glow' && m !== 'blob' ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ local palette
+  // 【本关调色板】全部颜色集中一处便于整体调基调;键名即语义(timber 漂白木、brine 粉卤水、galv 镀锌…)。
   const K = {
     timber: '#b8ad9c', timberLt: '#d2cabb', timberDk: '#8f8373', timberOld: '#7a6f62', tar: '#3b352f', endgrain: '#cfc2a8',
     salt: '#f5f2eb', saltSh: '#ddd7cd', brine: '#e6bfb9',
@@ -29,6 +44,7 @@ export function register(D, H) {
   };
 
   // Parts whose shadow can't be seen (under-deck posts, lettering, small fittings, far scenery) go through NS(mat).
+  // 【轻量几何构建器 GB】手写顶点缓冲(位置/法线/uv/顶点色/索引),tri/quad 逐面搭建;v() 记顶点并顺带写法线。
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
@@ -53,8 +69,10 @@ export function register(D, H) {
       return g;
     }
   }
+  // 【模板缓存】tpl(key, fn):同参数几何只构建一次(字模、盐堆、车轮等复用度极高),是本包控制 draw call 的关键。
   const TPL = new Map();
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
+  // 【小工具】kf 序列化缓存键;hash 确定性伪随机(镜像两侧摆放一致);cx3 颜色转 rgb 数组;lerp3 / smooth 插值。
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
   const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
   const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
@@ -63,6 +81,7 @@ export function register(D, H) {
 
   // Compose another prop type inside this one (at x,y,z / ry in the current local frame) with its colliders carried
   // along (B.col boxes are prop-local, so nested builds must be re-mapped).
+  // 【子道具组合】在当前局部系内再调另一种道具的 build,并把它新增的碰撞盒按 (x,y,z,ry) 重映射回本道具局部系。
   function sub(B, type, x, y, z, ry, opts = {}) {
     const def = D[type];
     if (!def) return;
@@ -83,10 +102,13 @@ export function register(D, H) {
     }
   }
   // local-frame collider helper: centre + size
+  // 【碰撞盒助手】colBox:中心 + 尺寸 → B.col(道具局部系),build 里快速递交实体碰撞。
   const colBox = (B, x, y, z, w, h, d) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);
 
   // ------------------------------------------------------------------------------------------ stroke font
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
+  // 【描边字体引擎】GL 以"中心线笔画 + 圆头圆角"定义 A-Z / 0-9 及符号;EA 椭圆弧采样、LOOP 闭环。
+  // 字高以 1 为单位,调用时按实际字高缩放;缺字回退为 SPACE 宽度的空白。
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
   const GL = {
@@ -137,6 +159,8 @@ export function register(D, H) {
 
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
+  // 【笔画带】把一条中心线展成有厚度、可倒角、可带侧壁的立体笔画带:正面在 z = d,倒角宽 b,侧壁落到 z0;
+  // b = 0 无倒角,d = z0 退化为只有正面的平面漆字。法线按前后段折线求平均并限幅,急弯处不炸法线。
   function ribbon(g, pts, closed, hw, b, d, z0) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
     const N = pts.map((p, i) => {
@@ -165,6 +189,7 @@ export function register(D, H) {
     }
   }
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
+  // 【圆盘端帽】笔画端头与急转折点的圆头:整圆(0…TAU)或朝外的半圆,同样支持倒角与侧壁。
   function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
     const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
@@ -184,6 +209,8 @@ export function register(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
+  // 【单字几何】按字表把笔画拆成 ribbon(笔画带)+ disc(圆头);dep = 0 为平面漆字;返回 { geo, adv } 供排版。
+  // 开放式笔画在急转折处断开并补半圆/整圆端帽,保证圆角连接;多重笔画沿 z 微错位避免共面闪烁。
   function glyph(ch, wt, dep, bev, ds = 10) {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -226,6 +253,8 @@ export function register(D, H) {
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
+  // 【排版】letters:沿 +X 逐字排版、整体居中/左/右对齐,字面朝 +Z;lit 时在立体字正面再压一层发光亚克力面,
+  // 暮色下招牌呈现"通电亮起"的效果,白天则是利落的亮字招牌。返回整行宽度(米)。
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
@@ -250,11 +279,13 @@ export function register(D, H) {
   }
 
   // 7-segment LED digits (unit cell 0.62 × 1, slight italic): lit segments on 'glow', the unlit "ghost 8" on 'paint'
+  // 【单位盒】pbox:共享 1×1×1 单位盒按 sx/sy/sz 缩放,是本包用得最多的摆放原语(段注释所说的 7 段数码管由 kit 侧实现)。
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
 
   // ------------------------------------------------------------------------------------------ geometry helpers
   // box between two points a → b (current frame): w = horizontal width, h = height of the section
+  // 【两点成梁】beam:由端点 a→b 自动求长度与 ry/rz 转角,任意斜梁一根调用搞定;ext 可两端加长,倒角 r。
   function beam(B, mat, c, a, b, w, h, o = {}) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz);
     B.box(mat, c, L + (o.ext ?? 0), h, w, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, { ry: Math.atan2(-dz, dx), rz: Math.atan2(dy, Math.hypot(dx, dz)), r: o.r ?? 0.012 });
@@ -267,6 +298,8 @@ export function register(D, H) {
   // Railing collision (engine `rail`: kids can't pass; shots, ink, squids and sight go through; nobody stands on it)
   // along a run a → b of base points on the walking surface (prop-local frame), `h` tall above that line. Sloped or
   // non-axis-aligned runs are split into short steps so each axis-aligned box hugs the rail.
+  // 【栏杆碰撞】railCols:沿 a→b 切成若干轴对齐小段(斜段短切,让每个盒子贴住栏杆);标记 rail 表示:
+  // 只挡孩子(不能翻越穿过),子弹、墨水、鱿泳与视线照常穿过,且不可站立。
   function railCols(B, a, b, h = 1.05, w = 0.12, seg = 0.6) {
     const L = Math.hypot(b[0] - a[0], b[2] - a[2]), n = Math.max(1, Math.ceil(L / seg - 1e-6));
     for (let i = 0; i < n; i++) {
@@ -277,12 +310,15 @@ export function register(D, H) {
     }
   }
   // sagging cable / rope a → b
+  // 【垂坠绳缆】sag:抛物线弧下垂(-4s·t(1-t))的绳/电缆,段数 n 调圆滑度。
   function sag(B, mat, c, a, b, s, r, n = 8) {
     const pts = [];
     for (let i = 0; i <= n; i++) { const t = i / n; pts.push(P3(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - s * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t)); }
     B.tube(mat, c, pts, r, { radial: 4 });
   }
   // merge several geometries (position / normal / uv / color + index) into one template
+  // 【几何合并】mergeGeos:把若干 BufferGeometry 的 position/normal/uv/color/index 拼成一个模板,
+  // 缺 color 的几何以纯白填充,配合 tpl 缓存进一步省 draw call。
   function mergeGeos(list) {
     let nv = 0, ni = 0;
     for (const g of list) { nv += g.attributes.position.count; ni += g.index ? g.index.count : g.attributes.position.count; }
@@ -307,6 +343,8 @@ export function register(D, H) {
 
   // Lumpy salt mound / windrow along local X (base y = 0): rounded cross-section, rounded ends, crumbly lumps, a pink
   // brine-wet foot; L = length, W = base width, H = height. Vertex colours carry the shading (multiply by white).
+  // 【盐堆几何】moundGeo:沿局部 X 的不规则盐埂截面网格——三角截面 + 两端圆收 + 多频正弦扰动做出颗粒感;
+  // 顶点色从粉色卤水湿脚渐变到干盐白,明暗全写在顶点色上(材质乘白即可)。缓存键含种子,7 种形态复用。
   function moundGeo(L, W, H, seed) {
     return tpl(['mound', L, W, H, seed % 7].map(kf).join('|'), () => {
       const nu = Math.max(6, Math.min(120, Math.round(L / 0.22))), nv = 10, s = (seed % 7) * 1.37 + 0.4, fq = 1 / Math.max(1, W / 1.15), amp = Math.min(1, 1.6 / W);
@@ -339,9 +377,11 @@ export function register(D, H) {
       return g;
     });
   }
+  // 【盐堆摆放】mound:模板 + 随机种子(默认从 B.r 取 0..7),默认白盐材质。
   const mound = (B, L, W, H, x, y, z, o = {}) => B.add(o.mat ?? 'rubber', moundGeo(L, W, H, o.seed ?? Math.floor(B.r(0, 7))), o.c ?? 'white', x, y, z, { ry: o.ry ?? 0, ao: o.ao });
 
   // ------------------------------------------------------------------------------------------ narrow-gauge railway
+  // 【轨道采样】pathSamples:两点 → 直线等分;多点 → CatmullRom 曲线按步长取点并给出切向(铺轨与枕木共用一份采样)。
   function pathSamples(pts, step) {
     if (pts.length === 2) {
       const [a, b] = pts, dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz), n = Math.max(1, Math.round(L / step));
@@ -353,6 +393,8 @@ export function register(D, H) {
     for (let i = 0; i <= n; i++) { const p = c.getPointAt(i / n), d = c.getTangentAt(i / n); out.push({ x: p.x, z: p.z, tx: d.x, tz: d.z }); }
     return { s: out, L, straight: false };
   }
+  // 【窄轨铁路】600 mm 盐场轻轨:焦油枕木 + 三根钢条叠出平底轨(锈腰 / 抛光轨顶 / 锈底),沿局部 path 铺设;
+  // 轨道贴地不给碰撞(车轮、人物由关卡地面承载)。
   D.saltpan_rail = {
     desc: 'Narrow-gauge (600 mm) salt-works track laid on the ground: tarred timber sleepers every 0.6 m, flat-bottom rails (rusty sides, polished running tops) along a smoothed local path (pos = start; path = [[x, z], …] local points; default a straight run of `length` along +X). Non-colliding.',
     params: { path: 'local [[x, z], …]', length: 'm (8)' }, variants: 1, mount: 'ground',
@@ -379,6 +421,7 @@ export function register(D, H) {
       });
     },
   };
+  // 【止冲挡】窄轨线端车挡:双柱斜撑 + 红白相间缓冲梁 + 红色尾灯;有实体碰撞。
   D.saltpan_buffer = {
     desc: 'Timber buffer stop closing a narrow-gauge line (the track runs along local +X, the stop faces -X at pos): two posts with raking shores, red buffer beam with white bands, a red tail lamp. Collides.',
     params: {}, variants: 1, mount: 'ground',
@@ -395,6 +438,7 @@ export function register(D, H) {
       B.col(-0.12, 0, -0.5, 1.15, 0.95, 0.5); B.blob(1.5, 1.3, 0.5, 0);
     },
   };
+  // 【转盘】与地面齐平的 wagon 转盘:铸铁圆盘 + 十字轨头 + 凸缘 rim 与四个插销孔;无碰撞。
   D.saltpan_turntable = {
     desc: 'Flush wagon turntable at a narrow-gauge junction: round cast-iron deck plate (1.5 m) with crossed rail stubs, a raised rim, handling pin sockets. Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
@@ -410,6 +454,8 @@ export function register(D, H) {
   // V-skip tipper wagon. Local X along the track, pos = track centre at ground (rail tops at y 0.12).
   const VSHELL = [[-0.52, 0.46], [-0.14, -0.07], [0.14, -0.07], [0.52, 0.46], [0.485, 0.46], [0.12, -0.035], [-0.12, -0.035], [-0.485, 0.46]];
   const VEND = [[-0.52, 0.46], [-0.14, -0.07], [0.14, -0.07], [0.52, 0.46]];
+  // 【V 型翻斗车】Decauville 窄轨翻斗车:轮对/轴箱/底架/缓冲木梁与链钩 + 摇架上的 V 斗(绕 y 0.72 翻转);
+  // 变体 0 满载盐、1 空车(露底)、2 翻斗向 +Z 卸盐并撒出盐堆。颜色随机四选一或由 color 指定。
   D.saltpan_wagon = {
     desc: 'Decauville V-skip tipper wagon on 600 mm track (pos = track centre at ground, local X along the rails): flanged wheels on axle boxes, iron frame, timber buffer beams with link couplings, the V skip on rocking cradles with a locking catch. variant 0 heaped with salt, 1 empty, 2 skip tipped over to +Z with the load spilled. color = skip paint. Collides.',
     params: { color: 'skip paint' }, variants: 3, mount: 'ground',
@@ -456,6 +502,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ salt in the pans
+  // 【结晶池盐堆】变体 0 长盐埂、1 一列小盐锥、2 单个大盐锥;粉湿脚白盐顶,均给碰撞与墨渍。
   D.saltpan_saltrow = {
     desc: 'Raked salt in a crystallising pan: variant 0 a windrow (length L × 1.1 m, 0.6 m high), 1 a row of small cones along +X (count, 1.8 m apart), 2 one big cone (1.9 m, 1.0 m high). Lumpy white salt with a pink brine-wet foot. Collides.',
     params: { length: 'windrow m (5)', count: 'cones (3)', height: 'm' }, variants: 3, mount: 'ground',
@@ -483,6 +530,7 @@ export function register(D, H) {
 
   // timber revetment posts lining a pan wall: the wall face at local z = 0 (pan on +Z), dyke top at y = 0, `length`
   // along +X, `depth` = pan depth. Posts + a top waling tucked under the dyke edge. Non-colliding.
+  // 【池壁护坡桩】贴墙件:墙面临局部 z = 0(池在 +Z),焦油桩从池底排到堤顶;无碰撞。
   D.saltpan_revet = {
     desc: 'Timber revetment on a pan wall (wall face at local z = 0, pan on +Z, dyke top at y = 0): tarred posts every `spacing` from the pan floor to just above the dyke edge, iron dogs, a few salt-crusted tide lines. Non-colliding.',
     params: { length: 'm', depth: 'pan depth m (0.9)', spacing: 'm (1.6)' }, variants: 1, mount: 'wall',
@@ -500,6 +548,8 @@ export function register(D, H) {
 
   // boardwalk under-structure: deck top at y = 0 (pos), deck runs along +X for `length`, width W across Z, floor at
   // y = -drop. Paired posts, cross bearers + stringers under the deck, optional post-and-rail handrail on one side.
+  // 【栈桥下部结构】boardwalk 的桩架:成对桩 + 横梁 + 纵梁,可选单侧(rail = ±1)/双侧(2)绳栏与栏灯;
+  // 无碰撞(桥面碰撞由关卡地面给出),栏杆给 rail 碰撞防跌落。
   D.saltpan_bwposts = {
     desc: 'Salt-pan boardwalk structure under a level deck (deck top at pos y, runs along local +X for `length`, width `width` across Z, pan floor `drop` below): paired tarred posts every 1.6 m, cross bearers and stringers, iron straps; `rail` = +1/-1 adds a post-and-rope handrail on that side. Non-colliding.',
     params: { length: 'm', width: 'm (1.8)', drop: 'm (0.9)', rail: '0 | 1 | -1' }, variants: 1, mount: 'ground',
@@ -532,6 +582,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ sluice gate
+  // 【水闸】堤顶闸门:双柱门架 + 提升闸板(open 0..1 控制开度)+ 齿条齿轮手轮 + 涵洞口开在两侧池壁;
+  // 实体件(柱/门梁/闸板)给 roof 碰撞,外围一圈 rail 防止从空心处穿过。
   D.saltpan_sluice = {
     desc: 'Timber sluice headstock on a dyke (pos = dyke top centre; the culvert runs along local Z under the dyke, pans on ±Z): two heavy posts and a head beam, the raised gate paddle with iron straps, rack and pinion with a spoked handwheel, sill timbers, culvert mouths on the pan walls (walls = [[z, depth], …]). Collides.',
     params: { walls: '[[z of pan wall face, pan depth], …]', open: '0..1 paddle raise (0.4)' }, variants: 1, mount: 'ground',
@@ -578,6 +630,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ sacks, barrows, tools
+  // 【单个盐袋】软包袋:圆角方包 + 两端扎口小球,可选印刷色带(两条细带)。
   function sack(B, x, y, z, ry, c, print) {
     B.box('rubber', c, 0.64, 0.19, 0.4, x, y + 0.095, z, { round: true, r: 0.07, ry });
     B.push(x, y, z, ry);
@@ -585,6 +638,7 @@ export function register(D, H) {
     if (print) { pbox(B, NS('paint'), print, 0.36, 0.004, 0.05, 0, 0.192, -0.06); pbox(B, NS('paint'), print, 0.36, 0.004, 0.02, 0, 0.192, 0.03); }
     B.pop();
   }
+  // 【盐袋堆】变体 0 托盘错缝码垛(奇偶层交错)、1 散堆、2 一排盐袋;麻布色随机、印刷带随机蓝/红。
   D.saltpan_sacks = {
     desc: 'Salt sacks: variant 0 a pallet stacked `rows` high in a brick bond (5 sacks a layer, alternating), 1 a loose heap of sacks, 2 a single row of sacks along +X (count). Jute-white sacks with blue or red printed bands. Collides.',
     params: { rows: 'layers (3)', count: 'variant 2 sacks (4)' }, variants: 3, mount: 'ground',
@@ -613,6 +667,8 @@ export function register(D, H) {
     },
   };
 
+  // 【盐手推车】独轮手推车:锥形条板斗 + 长柄(握把磨损)+ 铁箍木轮 + 外撇支腿;
+  // 变体 0 满载盐、1 空车、2 靠柄翘起静置(整车绕轮轴前倾)。有碰撞。
   D.saltpan_barrow = {
     desc: 'Timber salt barrow (wheel at local +X): tapered slatted tray, long handles with worn grips, iron-shod spoked wheel, splayed legs; variant 0 heaped with salt, 1 empty, 2 tipped up on its wheel against nothing (resting on the handles). Collides.',
     params: {}, variants: 3, mount: 'ground',
@@ -638,6 +694,7 @@ export function register(D, H) {
   };
 
   // salt rake (las): long ash pole with a wide timber head
+  // 【盐耙】长杆宽头耙,任意斜放;tools 道具共用此件。
   function rake(B, a, b, headW = 0.62) {
     rodT(B, 'wood', K.timberLt, a, b, 0.018, 5);
     const dx = b[0] - a[0], dz = b[2] - a[2], ry = Math.atan2(-dz, dx);
@@ -645,6 +702,7 @@ export function register(D, H) {
     B.box('wood', K.timberDk, headW, 0.1, 0.025, 0, 0.0, 0, { r: 0.008 });
     B.pop();
   }
+  // 【盐工工具】变体 0 散落耙铲、1 靠架摆放(小料架 + 倚靠工具,给 rail 碰撞)、2 单耙躺池边;无碰撞。
   D.saltpan_tools = {
     desc: 'Salt-worker tools: variant 0 two long salt rakes and a shovel lying on the ground, 1 rakes + shovel + broom leaning on a little timber rack (rack along +X, tools lean toward -Z), 2 one rake lying by a pan edge. Non-colliding.',
     params: {}, variants: 3, mount: 'ground',
@@ -675,12 +733,15 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ lamps
   // enamel dish shade with a warm glowing bulb (shade axis down), at x,y,z in the current frame
+  // 【搪瓷罩灯】伞形搪瓷灯罩 + 暖光球泡(底面再补一片发光盘),灯轴朝下;电杆灯与壁灯共用。
   function dishLamp(B, x, y, z, R = 0.24) {
     B.lathe('gloss', '#2f5a4e', [[0, 0.0], [R * 0.38, -0.02], [R * 0.96, -0.085], [R * 1.02, -0.08], [R, -0.06], [R * 0.4, 0.04], [0.02, 0.06]], x, y, z, { seg: 14 });
     B.cyl(NS('metal'), K.iron, 0.04, 0.08, x, y + 0.08, z, { seg: 8 });
     B.sph('glow', K.lamp, 0.075, x, y - 0.05, z, { ws: 10, hs: 6, glow: 1.9 });
     B.cyl('glow', K.lamp, R * 0.9, 0.012, x, y - 0.075, z, { seg: 14, glow: 1.4 });
   }
+  // 【盐场照明】变体 0 焦油电杆(顶部横担绝缘子 + 鹅颈罩灯;可选 cable 指向下一杆顶部、拉一条下垂缆线)、
+  // 1 壁挂鹅颈灯。电杆给 roof 碰撞(不可攀爬翻越)。
   D.saltpan_lamp = {
     desc: 'Salt-works lighting: variant 0 a tarred timber pole (5.4 m) with a crossarm, pot insulators and a swan-neck enamel dish lamp reaching toward +Z (optional `cable` = [dx, dy, dz] local offset to the next pole top: a sagging line); 1 a wall-mounted swan-neck dish lamp (wall at z = 0). Pole collides.',
     params: { cable: '[dx, dy, dz]', height: 'm (5.4)' }, variants: 2, mount: 'ground|wall',
@@ -708,6 +769,7 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ small fittings
   // four-pane timber window (opening w × h, bottom at y, centred at x) on a wall at z = 0
+  // 【四格窗】贴墙(z = 0)四格木窗:玻璃 + 外框 + 窗台 + 十字棂,可选亮灯(glow 面板)与对开百叶板。
   function window4(B, x, y, w, h, o = {}) {
     const fc = o.frame ?? K.trim, t = 0.07;
     pbox(B, NS('gloss'), o.glass ?? K.glass, w, h, 0.02, x, y + h / 2, 0.012);
@@ -724,8 +786,10 @@ export function register(D, H) {
     }
   }
   // diagonal brace on a wall (x0,y0) → (x1,y1) at depth z
+  // 【墙面斜撑】beamZ:墙面平面内的对角撑杆(板门的 Z 形斜撑、百叶对角线等)。
   function beamZ(B, mat, c, x0, y0, x1, y1, z, w = 0.07) { pbeam(B, mat, c, [x0, y0, z], [x1, y1, z], 0.03, w); }
   // ledged-and-braced timber door leaf (w × h), bottom-left… centred at x, bottom y, on a wall at z = 0
+  // 【板门】横撑竖板木门:板条拼缝 + 三道横撑 + Z 形斜撑,可选上吊轨滑轮(track 长 / trackX 偏移)。
   function ledgedDoor(B, x, y, w, h, c, o = {}) {
     B.box('wood', c, w, h, 0.05, x, y + h / 2, 0.03, { r: 0.012 });
     const nb = Math.max(2, Math.round(w / 0.16));
@@ -737,6 +801,7 @@ export function register(D, H) {
     pbox(B, NS('metal'), K.iron, 0.03, 0.14, 0.03, x + w * 0.38, y + 1.0, 0.085);
   }
   // board sign: text painted on a board (centre x, y; faces +Z at z)
+  // 【板牌】油漆字木牌:底板(可选描边)+ 平面漆字,自动按文字宽度定板宽,返回宽度供调用方排版。
   function boardSign(B, text, x, y, z, o = {}) {
     const h = o.h ?? 0.22, pad = o.pad ?? h * 0.6, W = o.w ?? textW(text, o.wt ?? 0.19, o.track ?? 0.12) * h + pad * 2, Hb = o.hb ?? h + pad * 1.1;
     B.box(o.mat ?? 'paint', o.board ?? K.white, W, Hb, 0.05, x, y, z + 0.025, { r: Math.min(0.03, Hb * 0.15) });
@@ -748,6 +813,8 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ the wind pump
   // multi-blade windwheel template (disc in the XZ plane, spun about Y; the placement turns Y to the wind axis)
+  // 【风轮模板】18 叶多叶风轮(美式农场风车):叶片双面成对 + 三道轮圈 + 六根辐条 + 轮毂,
+  // 经 spinTemplate 注册为可旋转模板(placement 处 B.spin 引用并给转速)。
   H.spinTemplate('saltpan_wheel', () => {
     const g = new GB(), N = 18, r0 = 0.5, r1 = 1.85, blade = cx3('#c3c8cb'), blade2 = cx3('#a9b0b4'), red = cx3('#a8503f');
     for (let i = 0; i < N; i++) {
@@ -770,6 +837,9 @@ export function register(D, H) {
     parts.push(paintGeo(xform(new THREE.SphereGeometry(0.1, 10, 6), 0, 0.16, 0), '#5a6063'));
     return mergeGeos(parts);
   });
+  // 【卤水风泵·地标】9 m 四角镀锌格构塔:混凝土基础 / 双拼角钢腿 / 横杆 / X 撑 / 爬梯 / 顶部木平台与栏杆,
+  // 齿轮头转台上挂 18 叶风轮(旋转体)与红尾翼(SALTPAN 平面字),塔心泵杆直通底部铸铁泵头接卤水槽;
+  // 底部格构通透,四面用 rail 围一圈防孩子钻入;腿部与泵头给碰撞。
   D.saltpan_windpump = {
     desc: 'The brine wind pump (landmark): 9 m four-legged galvanised lattice tower on concrete footings with girts, X-bracing and a ladder, a timber work platform with a rail at the top, the geared head on its turntable, an 18-blade 3.7 m windwheel turning to face +Z, a faded red tail vane lettered SALTPAN on a braced boom, the pump rod down the middle to a cast-iron pump head feeding a brine launder. Feet + pump collide.',
     params: {}, variants: 1, mount: 'ground',
@@ -842,6 +912,7 @@ export function register(D, H) {
     },
   };
   // brine launder: open timber trough on trestles along +X (top rim at `height`), fed by the pump
+  // 【卤水槽】架在 A 字 trestle 上的明槽(宽 0.4 m):内盛粉色卤水、外壁结盐霜,尾端泻口;有碰撞。
   D.saltpan_launder = {
     desc: 'Brine launder: an open timber trough (0.4 m wide) on trestles along local +X at rim height `height`, pink brine inside, drips of salt crust on the outside, a spout at the far end. Collides.',
     params: { length: 'm (4)', height: 'rim m (0.9)' }, variants: 1, mount: 'ground',
@@ -860,6 +931,8 @@ export function register(D, H) {
       B.col(0, 0, -0.3, L, Hh, 0.3);
     },
   };
+  // 【高位卤水箱】木架上的波纹圆铁罐:罐身按余弦压波纹、三道锈箍、锥顶 + 斜开人孔、出水管与红阀轮、
+  // 贴罐爬梯、盐渍流痕;整体给碰撞。
   D.saltpan_tank = {
     desc: 'Brine header tank: corrugated-iron round tank (1.9 m) with a conical lid and hatch on a timber stand (1.2 m), outlet pipe and valve wheel, a ladder, salt-crusted drips. Collides.',
     params: {}, variants: 1, mount: 'ground',
@@ -886,7 +959,10 @@ export function register(D, H) {
   // Built in Alpha-half stage coordinates (place at pos [0,0,0], rotY 0; the mirror copy dresses Bravo's).
   // Level pieces it dresses: catwalk x 20…22.6 / z -26…-13 / top 3.6, head platform x 16…22.6 / z -13…-9.5,
   // incline 2.6 wide from (21.3, 0, -35.6) up to (21.3, 3.6, -26), hopper block x 19.2…23.2 / z -39.8…-36.8 / 1.4.
+  // 【斜坡标高】yInc:斜桥段桥面标高——按 (z + 35.6) 处 0 → (z + 26) 处 3.6 线性内插。
   const yInc = (z) => (3.6 * (z + 35.6)) / 9.6;
+  // 【皮带段】beltRun:沿 Z 的槽形皮带(两侧翻边成槽 + 白色盐负载用 moundGeo 压形 + 每 1.2 m 一组托辊),
+  // 整段随坡旋转;三段拼接成"尾部漏斗 → 斜坡 → 栈桥"的输送线。
   function beltRun(B, z0, y0, z1, y1, x) {
     // troughed belt along Z from (z0, y0) to (z1, y1) (belt surface heights), frame stringers, idlers every 1.2 m
     const L = Math.hypot(z1 - z0, y1 - y0), a = Math.atan2(y1 - y0, z1 - z0), n = Math.max(1, Math.round(L / 1.2));
@@ -903,6 +979,9 @@ export function register(D, H) {
     }
     B.pop();
   }
+  // 【输送栈桥·舞台坐标】置于原点、rotY 0(镜像副本自动装饰 Bravo 半场):格构排架 + 纵向 X 撑封底 +
+  // 镀锌扶手与栏灯 + 皮带运盐至头部滚筒,经卸盐槽浇到盐堆脊上;另有波纹驱动房(带门牌、警示灯、壁灯)与
+  // 尾部格栅漏斗;排架腿 / 皮带架 / 驱动房 / 漏斗给碰撞,底部封 rail 挡人。
   D.saltpan_gantry = {
     desc: 'Conveyor gantry feeding the salt heap (stage coordinates, place at the origin): lattice trestle bents under the catwalk, head platform and incline, troughed belt carrying salt from the tail hopper up the incline and along the catwalk to the head drum, discharge chute with a salt stream onto the heap ridge, corrugated drive house on the head platform, galvanised handrails, hopper funnel with a grizzly. Legs, belt frame, drive house and funnel collide.',
     params: {}, variants: 1, mount: 'ground',
@@ -1006,11 +1085,15 @@ export function register(D, H) {
     },
   };
   // door leaf on a side wall: frame at x,z facing ry
+  // 【侧墙门】在任意侧墙 (x,y,z,ry) 上摆一扇板门(推入局部系调 ledgedDoor 再弹出)。
   function ledgedDoorOn(B, x, y, z, ry, w, h, c) { B.push(x, y, z, ry); ledgedDoor(B, 0, 0, w, h, c); B.pop(); }
 
   // ------------------------------------------------------------------------------------------ the salt heap
   // Heap (stage coordinates, place at the origin): ridge x 17.5 / y 2.4 from z -25 to -13, slopes to x 11.8 and 23.2.
+  // 【盐堆标高】heapY:盐堆脊线(x 向三角剖面)在 x 处的堆顶高度,脊在 x 17.5、高 2.4、坡脚至 ±5.7 m。
   const heapY = (x) => Math.max(0, 2.4 * (1 - Math.abs(x - 17.5) / 5.7));
+  // 【盐堆·舞台坐标】堆场 dressing:后端木垛挡墙(逐层收分挡板 + 立柱斜撑)、中段作业面散盐与盐堆(碰撞)、
+  // 后半幅防水布(卷起的筒边 + 褶皱压条 + 一排压布轮胎)、两端坡脚散粒与脊线圆冠。
   D.saltpan_heap = {
     desc: 'Salt heap dressing (stage coordinates, place at the origin): timber heap-board bulkhead with posts across the back end, the working face at the mid end with a fall of loose salt and a shovel, crumbly salt lumps softening both toes, a rounded crest along the ridge. Bulkhead + salt fall collide.',
     params: {}, variants: 1, mount: 'ground',
@@ -1055,6 +1138,9 @@ export function register(D, H) {
   // Stage coordinates (place at the origin). Shed block x -26…-15 / z -25…-18 / walls 3.2, corrugated roof ridge 4.2
   // at z -21.5 (ridge along X), loading dock x -26…-16 / z -18…-15.4 / 1.1, loft stair x -17.9…-16.1 from (0, -33)
   // up to (3.2, -25), dock steps x -24.9…-23.1 from (0, -12.6) up to (1.1, -15.4).
+  // 【包装棚·舞台坐标】棚屋四面 dressing:角板 / 焦油勒脚 / 前后挑檐(Zone Control 时前檐让位立面楼梯)+
+  // 天沟落水管 / 山墙斜板 + 屋脊卷与两顶通风帽(碰撞)/ 滑门(一扇敞开露暗间盐袋)/ 窗 / 招牌;
+  // zones 参数切换 Zone Control 版本:立面外挂楼梯 + 平台 + 栏杆(rail 碰撞),门、窗、壁灯随之移位让路。
   D.saltpan_shed = {
     desc: 'Packing-shed dressing (stage coordinates, place at the origin): corner boards, tarred plinth, sliding ledged doors onto the loading dock (one open on a dark interior of sacks), four-pane windows, eaves overhangs with fascias, gutters and downpipes, barge boards, galvanised ridge roll, two roof ventilators (collide), PACKING SHED board and a louvred vent on the gable, loft-stair stringers, posts and handrail, dock nosing and rubbing posts, dock-step rails. zones: true = the Zone Control front (layout.js shed-stair + shed-landing): the facade stair and landing dressed (stringer, posts, handrail + rail colliders), the second door, window and wall lamp moved out of the stair\'s way.',
     params: { zones: 'bool: the Zone Control front (facade stair)' }, variants: 1, mount: 'ground',
@@ -1170,6 +1256,8 @@ export function register(D, H) {
   };
 
   // jib crane on a loading dock: cast-iron post, jib reaching +Z, tie rod, chain + hook with a sack sling
+  // 【码头吊机】手摇悬臂吊:铸铁立柱(车削轮廓)+ 悬臂与拉杆 + 链环垂链 + 钩吊一兜盐袋(麻绳两股)+
+  // 卷扬筒与曲柄;立柱给 roof 碰撞。
   D.saltpan_crane = {
     desc: 'Hand jib crane on a loading dock: cast-iron post (3.1 m) on a bolted base, jib reaching toward local +Z with a tie rod, crab, chain and hook carrying a sling of salt sacks, winch with a crank on the post. Post collides.',
     params: {}, variants: 1, mount: 'ground',
@@ -1188,6 +1276,7 @@ export function register(D, H) {
       B.col(-0.2, 0, -0.2, 0.2, 3.1, 0.2, { roof: true }); B.blob(0.9, 0.9);
     },
   };
+  // 【地磅】袋盐平台秤:低秤台 + 铸铁立柱 + 滑动游砣秤杆与挂钩砝码 + 黄铜铭牌;低碰撞(不挡视线)。
   D.saltpan_scale = {
     desc: 'Platform weighing scale for sacks: low iron platform, cast column with a sliding-weight beam and counterweights on a hook, brass plate. Collides (low).',
     params: {}, variants: 1, mount: 'ground',
@@ -1206,6 +1295,10 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ the salt store (spawn)
   // Stage coordinates (place at the origin). Level facade x -12…8 / z -46…-45.4 / 5.4 (face at z -45.4), the loading
   // gallery x -9…5 in front (deck 2.4). Everything above 5.4 and behind z -46 is this prop (outside the arena).
+  // 【盐仓·出生点后景·舞台坐标】竞技场后墙的完整建筑 dressing:立面配装(角板 / 门套 / 装货滑门一扇敞开露盐袋 /
+  // 窗 / 壁灯)、大字山墙(SALTPAN BASIN 立体漆字 + SALT CO. · 1889)、阁楼门 + 吊梁滑轮与吊兜盐袋、
+  // 波纹双坡屋顶(通风帽 + 鱼形风向标)、侧后墙、建筑所立的码头,以及旧煮盐房的红砖高烟囱(航空障碍灯);
+  // 山墙顶给 roof 碰撞防攀爬墙头。
   D.saltpan_store = {
     desc: 'The Salt Store behind the spawn (stage coordinates, place at the origin): facade fittings (corner boards, eaves band, loading doors onto the gallery — one open on stacked sacks — windows, small doors in the side bays, wall lamps), the big boarded gable with SALTPAN BASIN channel letters and SALT CO. · 1889, loft door and hoist beam with pulley, rope and a hanging sling of sacks, corrugated roof with a louvred ventilator and fish weather-vane, side walls, the quay it stands on, and the tall brick chimney of the old boiling house. The gable top collides (keeps climbers off the wall head).',
     params: {}, variants: 1, mount: 'ground',
@@ -1289,6 +1382,9 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ works office
   // Stage coordinates (place at the origin): level block x -25.5…-19 / z -45.5…-40.5 / 2.8 (ochre weatherboard).
+  // 【工务办公室·舞台坐标】赭色板墙小屋 dressing:山形波纹屋顶(挤出三角 + 逐条压楞)+ 砖烟囱 +
+  // 前廊(廊柱给 roof 碰撞)/ 推拉窗(可亮灯、带百叶)/ 板门 / WORKS OFFICE 招牌 / 告示板与图钉纸片 /
+  // 摇铃 / 长凳(碰撞)/ 雨水桶 / 电话杆;屋顶体给碰撞防攀爬。
   D.saltpan_office = {
     desc: 'Works office dressing (stage coordinates, place at the origin): gabled corrugated roof with a brick chimney, a veranda on posts with a lean-to roof along the front, sash windows, a panelled door, WORKS OFFICE board, a notice board with pinned sheets, a bell on a bracket, bench, rain barrel, telephone pole with wires. Roof block collides (keeps climbers off).',
     params: {}, variants: 1, mount: 'ground',
@@ -1346,6 +1442,8 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ spawn gallery
   // Stage coordinates: gallery body x -9…5 / z -45.4…-38.5 / deck 2.4, stair x -4.5…0.5 from (0, -32.4) up to
   // (2.4, -38.5), side ramp x 5…11.4 at z -45.1…-42.1 (2.4 → 0).
+  // 【装货长廊·舞台坐标】出生点 loading gallery dressing:前缘重柱与边梁、柱绳栏杆围出平台(西端留跳下口)、
+  // 前角灯串桅(挂 stringlights 连回盐仓立面)、楼梯弦杆扶手与端柱(newel)、侧坡道栏杆与盐溜槽;无碰撞。
   D.saltpan_gallery = {
     desc: 'Loading-gallery dressing (stage coordinates, place at the origin): heavy timber posts and an edge beam on the gallery front, post-and-rail balustrade round the deck, stair stringers with handrails and newel posts, side-ramp rails, a timber salt chute to the yard. Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
@@ -1395,6 +1493,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ signs
+  // 【盐场标牌】变体 0 双柱牌(如 PAN 4,牌宽随文字定)、1 墙牌、2 立柱搪瓷警示小牌;字朝 +Z;柱给碰撞。
   D.saltpan_sign = {
     desc: 'Salt-works sign: variant 0 a painted pan board on two tarred posts (text, e.g. PAN 4), 1 a wall board (wall at z = 0), 2 a small enamel warning plate on a post (text). Board faces +Z. Posts collide (variant 0).',
     params: { text: 'string', board: 'colour', color: 'letter colour', h: 'letter height' }, variants: 3, mount: 'ground|wall',
@@ -1418,6 +1517,8 @@ export function register(D, H) {
   // Evaporation ponds out on the tidal flat beyond the arena (non-colliding): a patchwork of shallow ponds in
   // green-grey → ochre → rose → pink-white brine stages between low mud dykes, a dyke road with telegraph poles,
   // a distant wind pump and a long white salt camelle. Local frame: the field fills x 0…w, z 0…d.
+  // 【外围蒸发池·远景】竞技场外潮滩布景(局部系填 x 0…w、z 0…d):种子随机网格 mud 埂分隔十级渐变卤水色池面、
+  // 前堤道路 + 电报杆与双股下垂电线、可选远处风泵与白色盐山 camelle(输送廊 + 支柱);全部无碰撞。
   const POND = ['#8fa39b', '#9aab96', '#b5ae8b', '#c2b597', '#cdb3a9', '#d6b1ae', '#e3cdc8', '#ece0dc', '#c7a2a3', '#a8b8b2'];
   D.saltpan_ponds = {
     desc: 'Outer evaporation-pond field (scenery beyond the arena, local x 0…w, z 0…d at sea level): brine ponds of graded colours between mud dykes, a dyke road with telegraph poles, optional distant wind pump and salt camelle. Non-colliding.',
@@ -1464,6 +1565,7 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ salt-marsh plants
   // glasswort / samphire: fleshy jointed cushions, green going red in the salt — a run along +X (length) or one clump
   const SAMP = ['#7c9453', '#8d9d5b', '#9c6049', '#a86c50', '#878a4f', '#93594a'];
+  // 【盐沼多肉】海蓬子(samphire)丛:两团 blob 垫丛随机双色(绿→红)+ 一圈肉质小茎,尺寸随机。
   function sampClump(B, x, y, z, s) {
     const c1 = SAMP[Math.floor(B.r(0, SAMP.length - 0.001))], c2 = SAMP[Math.floor(B.r(0, SAMP.length - 0.001))];
     for (let k = 0; k < 2; k++) {
@@ -1475,6 +1577,7 @@ export function register(D, H) {
       B.cyl(NS('foliage'), k % 3 ? c1 : c2, 0.016 * s, h, x + Math.cos(a) * r, y + h / 2, z + Math.sin(a) * r, { seg: 4, rx: B.r(-0.35, 0.35), rz: B.r(-0.35, 0.35) });
     }
   }
+  // 【海蓬子】变体 0 沿 +X 一长丛参差不齐、1 单丛;无碰撞。
   D.saltpan_samphire = {
     desc: 'Salt-marsh glasswort (samphire): fleshy jointed cushions going from green to red in the salt; variant 0 a ragged run of clumps along +X (length), 1 a single clump. Non-colliding.',
     params: { length: 'm (4)' }, variants: 2, mount: 'ground',
@@ -1486,6 +1589,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ sluice-keeper's hut
+  // 【闸夫小屋】小板屋:板墙(逐条拼缝)+ 单坡波纹顶 + 板门 + 四格亮窗 + stove 烟囱管 + 门边绞轮绳圈;
+  // 整体给 roof 碰撞。特意不放救生圈——这是盐场,不是码头。
   D.saltpan_hut = {
     desc: 'Small timber sluice-keeper hut (front +Z): boarded walls on a tarred plinth, pent corrugated roof, ledged door, four-pane window, stove pipe, a winch wheel and rope coil by the door, lifebuoy-free (this is salt, not a marina). Collides.',
     params: {}, variants: 1, mount: 'ground',
@@ -1512,6 +1617,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ pump staging kit
+  // 【风泵平台配景】平台边缘一圈焦油缘木(四条栈道落脚处留空)+ 角部铸铁系缆桩 + 工具箱(给碰撞)+
+  // 绳圈 + 油桶;缘木与桩无碰撞。
   D.saltpan_staging = {
     desc: 'Wind-pump staging dressing (centred on the staging, mirror: false): tarred kerb timbers round the edge (open where the boardwalks land), iron bollards at the corners, a tool chest, rope coil, oil drum. Kerbs + bollards non-colliding, chest collides.',
     params: { size: 'half-size m (3.6)' }, variants: 1, mount: 'ground',
@@ -1534,6 +1641,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ flamingos (scenery)
+  // 【火烈鸟】单只大红鹳:细腿(一立一收)+ S 形脖颈(进食低垂 / 抬头直立两套曲线)+ 头与下弯喙;
+  // 群体随机散布浅水,约四成低头觅食。
   function flamingo(B, x, y, z, ry, feeding, s = 1) {
     B.push(x, y, z, ry, 0, 0, s);
     const pink = '#eea7a1', pinkDk = '#d98580', leg = '#d88e8a';
@@ -1548,6 +1657,7 @@ export function register(D, H) {
     B.tube(NS('paint'), '#2b2929', [P3(h[0] + 0.05, h[1], 0), P3(h[0] + 0.12, h[1] - (feeding ? 0.08 : 0.03), 0), P3(h[0] + 0.13, h[1] - (feeding ? 0.14 : 0.08), 0)], 0.016, { radial: 4 });
     B.pop();
   }
+  // 【火烈鸟群】浅水景观鸟群:count 只按圆盘随机站位(pos = 水面,腿没入水中);无碰撞。
   D.saltpan_flamingos = {
     desc: 'A flock of greater flamingos wading in a brine pond (scenery): `count` birds scattered over a radius, standing, preening or feeding head-down, legs in the water (pos = water surface). Non-colliding.',
     params: { count: 'birds (7)', radius: 'm (4)' }, variants: 1, mount: 'ground',
@@ -1559,6 +1669,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ small works clutter
+  // 【卤水标尺】池内水尺:白漆刻度板(黑分度、五分位红色)+ 底部盐潮线;无碰撞。
   D.saltpan_gauge = {
     desc: 'Brine staff gauge in a pan: white graduated board with black ticks and red decimetre numbers on a tarred post (pos = pan floor), a salt tide line near the foot. Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
@@ -1569,6 +1680,7 @@ export function register(D, H) {
       pbox(B, NS('paint'), K.salt, 0.14, 0.08, 0.1, 0, 0.1, -0.02);
     },
   };
+  // 【标记桩】白漆红顶界桩沿 +X 每 2 m 一根,微倾、脚结盐霜;无碰撞。
   D.saltpan_stakes = {
     desc: 'A run of white-painted marker stakes with red tops along +X (length, every 2 m), leaning a little, salt-crusted at the foot. Non-colliding.',
     params: { length: 'm (6)' }, variants: 1, mount: 'ground',
@@ -1581,6 +1693,7 @@ export function register(D, H) {
       }
     },
   };
+  // 【备用枕木】# 字形错层叠放的焦油枕木垛 + 顶层两根锈轨;有碰撞。
   D.saltpan_sleepers = {
     desc: 'A crib-stacked pile of spare tarred rail sleepers with a few rail lengths on top. Collides.',
     params: { rows: 'layers (4)' }, variants: 1, mount: 'ground',
@@ -1596,6 +1709,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ gulls (perched)
+  // 【海鸥】栖息海鸥(pos = 双脚,面朝局部 +X):变体 0 站立露腿、1 缩卧团身;无碰撞。
   D.saltpan_gull = {
     desc: 'A herring gull perched on a post or beam (pos = its feet), facing local +X; variant 0 standing, 1 hunkered down. Non-colliding.',
     params: {}, variants: 2, mount: 'ground',
@@ -1612,6 +1726,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ tidal-flat quay edge
+  // 【潮滩码头沿】木桩护岸:打泥桩(约 1.3 m 一根)+ 双道护舷板 + 顶部护缘 + 水线藻带与盐霜线,
+  // 可选半道处系缆桩(带缆绳);无碰撞。
   D.saltpan_seaedge = {
     desc: 'Timber-revetted tidal-flat quay edge along local +X (length) at a deck edge (deck top y = 0 at pos, sea on local +Z): tarred piles every ~1.3 m driven into the mud, two waling planks on the face, a capping fender along the top, a weed band and a salt tide-line at the waterline, the odd mooring post with a rope. Non-colliding.',
     params: { length: 'm (6)', post: 'bool: a mooring post at mid-length' }, variants: 1, mount: 'ground',
@@ -1636,10 +1752,16 @@ export function register(D, H) {
 }
 
 // ================================================================================================ placements
+// 【中文导读·布景清单】本数组只列 Alpha 半场(-Z);引擎按 (x,z) → (-x,-z)、rotY 加 π 镜像出 Bravo 半场。
+// 【条目字段】pos / rotY 及各类型专属参数(length、variant、rows…)即对应 props 参数;notIn / onlyIn 按关卡
+//   模式(如 zones)取舍条目;mirror: false 表示该条目两侧各摆一份(非对称地标、按侧编号的标牌等)。
+// 【舞台坐标道具】store、gallery、office、shed、heap、gantry 等大型建筑以舞台坐标撰写,统一摆在原点,
+//   镜像副本自动装饰另一半场。
 // Alpha half (−Z); every entry is mirrored (x,z) → (−x,−z), rotY + π unless `mirror: false`. Site-specific structure
 // dressing (store, gallery, office, shed, heap, gantry) is authored in stage coordinates and placed at the origin.
 const H2 = P / 2;
 export const PLACEMENTS = [
+  // 【大型建筑】全部置于原点的舞台坐标道具(镜像自动出另一半场);风车与栈桥平台为非对称地标,两侧各摆一份。
   // ---- structures
   { type: 'saltpan_store', pos: [0, 0, 0] },
   { type: 'saltpan_gallery', pos: [0, 0, 0] },
@@ -1653,6 +1775,8 @@ export const PLACEMENTS = [
   { type: 'saltpan_staging', pos: [0, 0.08, 0], mirror: false },
   { type: 'saltpan_hut', pos: [24.6, 0, -5.0], rotY: -H2 },
 
+  // 【窄轨铁路网】货场主线 + 棚屋码头支线 + 水闸堤线 + 堆场面线 + 中段侧线;
+  // zones 模式下码头支线缩短止于转盘、止冲挡随移(立面楼梯占去了码头后半)。
   // ---- narrow-gauge railway: yard line, shed-dock spur, sluice-dyke track, heap-face spur, mid siding
   { type: 'saltpan_rail', pos: [-17.2, 0, -31.3], length: 34.7 },
   { type: 'saltpan_buffer', pos: [-17.3, 0, -31.3], rotY: P },
@@ -1670,6 +1794,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_rail', pos: [14.2, 0, -4.4], length: 10.2 },
   { type: 'saltpan_buffer', pos: [24.45, 0, -4.4], rotY: 0 },
 
+  // 【翻斗车】沿各股道停放,兼作掩体;满载 / 空车 / 翻卸形态混摆。
   // ---- tipper wagons (cover)
   { type: 'saltpan_wagon', pos: [-10.4, 0, -31.3], variant: 0 },
   { type: 'saltpan_wagon', pos: [-8.5, 0, -31.3], variant: 0 },
@@ -1686,6 +1811,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_buffer', pos: [-6.2, -1.2, -2.3], rotY: 0 },
   { type: 'saltpan_wagon', pos: [-9.6, -1.2, -2.3], variant: 0, color: '#9a5d42' },
 
+  // 【池内盐堆】各结晶池里已耙好的盐埂与盐锥,高度随池底标高分层。
   // ---- salt in the pans
   { type: 'saltpan_saltrow', pos: [5.2, -0.6, -27.3], variant: 0, length: 6 },
   { type: 'saltpan_saltrow', pos: [4.6, -0.6, -24.6], variant: 0, length: 5 },
@@ -1699,11 +1825,13 @@ export const PLACEMENTS = [
   { type: 'saltpan_saltrow', pos: [-20.6, 0, -11.2], variant: 2, height: 1.05 },
   { type: 'saltpan_saltrow', pos: [-24.4, 0, -9.3], variant: 1, count: 2, height: 0.5 },
 
+  // 【水闸】三处涵闸,开度各异(两侧池壁涵洞口随 walls 参数生成)。
   // ---- sluices (culvert mouths on the pan walls)
   { type: 'saltpan_sluice', pos: [-8.2, 0, -19.0], walls: [[-1.0, 0.6], [2.0, 0.9]], open: 0.5 },
   { type: 'saltpan_sluice', pos: [8.0, 0, -19.0], walls: [[-1.0, 0.6], [2.0, 0.9]], open: 0.25 },
   { type: 'saltpan_sluice', pos: [7.2, 0, -9.0], walls: [[-1.0, 0.9], [1.0, 1.2]], open: 0.6 },
 
+  // 【池壁护坡】四面池坎的焦油护坡桩,rotY 随坎走向取 0 / ±半π / π。
   // ---- pan walls: timber revetment posts
   { type: 'saltpan_revet', pos: [-12, 0, -30], rotY: 0, length: 21, depth: 0.6 },
   { type: 'saltpan_revet', pos: [9, 0, -20], rotY: P, length: 21, depth: 0.6 },
@@ -1716,12 +1844,15 @@ export const PLACEMENTS = [
   { type: 'saltpan_revet', pos: [-13, 0, -8], rotY: 0, length: 26, depth: 1.2 },
   { type: 'saltpan_revet', pos: [13, 0, -8], rotY: -H2, length: 16, depth: 1.2 },
 
+  // 【栈道桥下部】四条 boardwalk 的桩架(带单侧绳栏,两段落栏灯)。
   // ---- boardwalk structures
   { type: 'saltpan_bwposts', pos: [-2.7, 0.08, -30.0], rotY: -H2, length: 10, width: 1.8, drop: 0.68, rail: 1, lamps: true },
   { type: 'saltpan_bwposts', pos: [3.63, 0.08, -17.0], rotY: -2.234, length: 8.9, width: 1.8, drop: 0.98, rail: -1 },
   { type: 'saltpan_bwposts', pos: [2.3, 0.08, -8.0], rotY: -H2, length: 4.4, width: 1.8, drop: 1.28 },
   { type: 'saltpan_bwposts', pos: [3.6, 0.08, -1.7], rotY: 0, length: 9.4, width: 1.8, drop: 1.28, rail: -1, lamps: true },
 
+  // 【码头与堆场杂物】盐袋垛(含 zones 版贴楼梯的台阶垛)、吊机、地磅、手推车、工具;
+  // zones 模式下吊机与部分垛位移位,给立面楼梯让路。
   // ---- loading dock + yard clutter
   { type: 'saltpan_sacks', pos: [-24.4, 1.1, -16.3], variant: 0, rows: 4, notIn: 'zones' },
   { type: 'saltpan_sacks', pos: [-24.4, 1.1, -17.45], variant: 0, rows: 7, notIn: 'zones' },
@@ -1756,6 +1887,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_tools', pos: [8.6, -0.6, -25.9], rotY: -0.3, variant: 0 },
   { type: 'saltpan_tools', pos: [-11.3, -1.2, -3.2], rotY: 1.2, variant: 2 },
 
+  // 【照明】六根焦油电杆分布在各走线要冲,朝向错开避免影子呆板。
   // ---- lighting
   { type: 'saltpan_lamp', pos: [-13.0, 0, -36.2], rotY: 0.2 },
   { type: 'saltpan_lamp', pos: [11.8, 0, -35.2], rotY: -0.3 },
@@ -1764,6 +1896,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_lamp', pos: [-12.5, 0, -8.6], rotY: 0.5 },
   { type: 'saltpan_lamp', pos: [25.2, 0, -7.0], rotY: -H2 },
 
+  // 【标牌】池号牌两侧各一份(mirror: false,编号不同),搪瓷警示小牌随镜像。
   // ---- signs (pan boards are per side)
   { type: 'saltpan_sign', pos: [10.2, 0, -30.35], rotY: P, text: 'PAN 2', mirror: false },
   { type: 'saltpan_sign', pos: [-10.2, 0, 30.35], rotY: 0, text: 'PAN 7', mirror: false },
@@ -1774,6 +1907,8 @@ export const PLACEMENTS = [
   { type: 'saltpan_sign', pos: [-12.3, 0, -19.9], rotY: P, variant: 2, text: 'SOFT BRINE' },
   { type: 'saltpan_sign', pos: [12.4, 0, -29.6], rotY: P, variant: 2, text: 'NO BARROWS', board: '#ffffff', color: '#b8493d' },
 
+  // 【溪上对角栈道 + 全线码头沿】斜跨溪流的栏桥(双侧绳栏),以及环绕整个场地轮廓的木桩护岸
+  // (转角、系缆桩处按需加粗),拼出潮滩与场地的交界。
   // ---- the diagonal causeway over the creek (railed both sides) + the timber quay edges along the whole outline
   { type: 'saltpan_bwposts', pos: [-20.2, 0.08, -38.4], rotY: -2.071, length: 14.6, width: 1.8, drop: 2.7, rail: 2 },
   { type: 'saltpan_seaedge', pos: [-12, 0, -46], rotY: P, length: 14 },
@@ -1801,6 +1936,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_seaedge', pos: [-26, 0, -38], rotY: 0, length: 8, post: true },
   { type: 'saltpan_seaedge', pos: [-26, 0, -46], rotY: -H2, length: 8 },
 
+  // 【棚屋码头外侧】绕棚屋的新通路:一台临水吊机 + 盐袋 + 手推车;近溪处补两丛海蓬子与一只海鸥。
   // ---- the shed quay's far side (the new path round the shed): a quay crane over the water, sacks, a barrow
   { type: 'saltpan_crane', pos: [-28.6, 0, -23.2], rotY: -H2 },
   { type: 'saltpan_sacks', pos: [-28.3, 0, -17.8], variant: 0, rows: 2, rotY: H2 },
@@ -1810,6 +1946,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_samphire', pos: [25.2, 0, -12.6], rotY: -H2, variant: 1 },
   { type: 'saltpan_gull', pos: [29.0, 0.68, -5.0], rotY: 1.3 },
 
+  // 【海蓬子】沿海岸、堤角与堆场边缘撒布的盐沼多肉,成丛与单丛混摆。
   // ---- salt-marsh glasswort along the sea edges, dyke corners and the yard
   { type: 'saltpan_samphire', pos: [25.0, 0, -29.4], rotY: -H2, length: 3.2 },
   { type: 'saltpan_samphire', pos: [25.1, 0, -9.6], rotY: -H2, length: 3.5 },
@@ -1826,6 +1963,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_samphire', pos: [22.3, 0, 7.4], rotY: P, length: 2.5 },
   { type: 'saltpan_samphire', pos: [14.2, 0, 7.4], variant: 1 },
 
+  // 【小型工务杂物】各池水尺、界桩、备用枕木垛,以及 kit 通用 barrel(非本包类型,直接引用)。
   // ---- small works clutter: staff gauges, marker stakes, spare sleepers, drums
   { type: 'saltpan_gauge', pos: [-11.6, -0.6, -20.5], rotY: P },
   { type: 'saltpan_gauge', pos: [10.6, -0.9, -16.5], rotY: -H2 },
@@ -1838,6 +1976,7 @@ export const PLACEMENTS = [
   { type: 'barrel', pos: [-18.8, 0, -39.0], variant: 0, color: '#8d6e4f' },
   { type: 'barrel', pos: [13.2, 0, -38.8], variant: 1, color: '#6f848b', color2: '#e8e0cf' },
 
+  // 【海鸥与警示牌】海鸥落在烟囱、标牌、栏杆等高处栖枝上(含一只非镜像的中心位),盐堆边立 KEEP OFF 牌。
   // ---- gulls on the works' perches, a warning plate at the heap
   { type: 'saltpan_gull', pos: [-2.0, 8.93, -44.3], rotY: 1.2 },
   { type: 'saltpan_gull', pos: [-7.9, 1.73, -19.0], rotY: 2.6, variant: 1 },
@@ -1848,6 +1987,7 @@ export const PLACEMENTS = [
   { type: 'saltpan_sign', pos: [11.2, 0, -25.4], rotY: -H2 + 0.3, variant: 2, text: 'KEEP OFF THE HEAP', board: '#ffffff', color: '#b8493d' },
   { type: 'saltpan_sign', pos: [-14.4, 0, -25.6], rotY: P, variant: 2, text: 'LOFT', board: '#f1c95c' },
 
+  // 【潮滩远景】三块不同种子 / 朝向的外围蒸发池(各带远风泵与盐山),三群火烈鸟点缀水面。
   // ---- out on the tidal flat: evaporation ponds, a distant wind pump and camelle
   { type: 'saltpan_ponds', pos: [38, 0, 0], rotY: H2, w: 82, d: 60, seed: 11, pump: [38, 24] },
   { type: 'saltpan_ponds', pos: [38, 0, 82], rotY: H2, w: 82, d: 60, seed: 23, camelle: [32, 38, 26] },

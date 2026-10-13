@@ -1,3 +1,13 @@
+// ====================================================================================================
+// 【中文导读】Terrace Heights(梯田高地)关卡专属道具包
+// 本文件只做两件事:一、register(D, H) 向 PropKit 类型表 D 注册本关全部 "terraces_" 前缀道具
+//   (机制见 docs ASSETS-WEAPONS 文档第 5.2 节;类型名带前缀,保证关卡之间永不冲突);
+// 二、导出 PLACEMENTS —— 本关的布景摆放清单(Alpha 半场;每条默认镜像到另一半场)。
+// 文件结构自上而下:【调色板 K】【几何底层 GB 与缓存】【手绘笔画字体】【植物】【建筑构件库】
+// 【建筑整装 terraces_house】【栏杆 / 护栏 / 压顶】【花架与盆栽】【街道家具】【地标(教堂 / 亭 / 缆车)】
+// 【远景衬底(山坡 / 悬崖)】【基地背面(别墅 / 上站 / 园墙)】【村庄杂物】【摆放清单】。
+// 约定:米制、Y 轴向上;pos 为基点;实体道具把碰撞盒交给关卡(可涂墨 / 导航 / 物理)。
+// ====================================================================================================
 // Terrace Heights — stage prop pack + placements (owner: the terraces stage; see layout.js for the folder contract).
 //
 // register(D, H): add this stage's own prop builders to the PropKit definition table D (same contract as
@@ -18,6 +28,7 @@ export function register(D, H) {
   const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ palette
+  // 调色板:石灰白、地中海百叶窗蓝绿、烧陶土、马略尔卡彩釉点缀色,全部压在墨饱和度之下
   // limewash whites, Mediterranean shutter blues/greens, fired terracotta, majolica accents — all kept below ink saturation
   const K = {
     white: '#f4f0e7', whiteSh: '#e6dfd0', lime: '#ece3cf', ochre: '#e7cf9f', pink: '#eecbbd', sky: '#dde7e8',
@@ -35,6 +46,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ geometry helpers
+  // 【几何底层】GB = 手工顶点组装器:先攒 位置 / 法线 / UV / 顶点色,再一次性生成 BufferGeometry
+  // tri() 用叉积与顶点法线点积判断绕向,自动校正三角形朝向;退化三角形(面积近零)直接丢弃
   class GB {
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
     v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
@@ -59,21 +72,30 @@ export function register(D, H) {
       return g;
     }
   }
+  // 模板缓存:同参数的构件几何只做一次,全场共享(瓦片、陶罐、字形等都靠它省内存)
   const TPL = new Map();
   const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
   const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
   const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  // 单位立方体几何(缓存共享),pbox = 用它在 (x,y,z) 摆一个 w×h×d 的盒子
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  // 噪声团(puff)/不规则团块(blob)/开口圆柱段 的缓存几何,参数编进缓存键
   const puff = (det, seed) => tpl('pf|' + det + '|' + seed, () => puffGeo(det, seed));
   const blob = (r, det, seed) => tpl(['bl', r, det, seed].map(kf).join('|'), () => blobGeo(r, det, seed));
   const cylGeo = (rt, rb, h, seg, open = false, t0 = 0, tl = TAU) => tpl(['cy', rt, rb, h, seg, open ? 1 : 0, t0, tl].map(kf).join('|'), () => new THREE.CylinderGeometry(rt, rb, h, seg, 1, open, t0, tl));
+  // 碰撞盒:(中心 x/z,底部 y);roof = 禁止站立的顶面(永不涂墨,踩上去会滑落)
   // collision box (centre x/z, base y); roof = an off-limits top nobody can stand on (never inked, you slide off)
   const colBox = (B, x, y, z, w, h, d, roof = false) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, roof ? ROOF : undefined);
+  // 屋顶标志对象(引用共享)
   const ROOF = { roof: true };
+  // 栏杆类碰撞:小孩无法穿过,但子弹 / 墨水 / 鱿鱼 / 视线可以,顶上也不能站人
   // railings, balustrades, handrails: kids can't pass, shots / ink / squids / sight lines go through, nobody stands on top
   const RAIL = { rail: true };
+  // 画质分档:qf 越高,植物 / 栏杆细节级别越高(1 以上用 2 档)
   const det = (B) => (B.k.qf >= 1 ? 2 : 1);
+  // 【sub 组合子】在自身内部再摆一个道具类型;先推入子框架建,再把子碰撞盒
+  // 从子坐标系旋转重映射回自身坐标系(保留 roof / rail 标志)
   // compose another type inside this one (its colliders re-mapped from its own frame into ours)
   function sub(B, type, x, y, z, ry, opts = {}) {
     const def = D[type];
@@ -91,14 +113,17 @@ export function register(D, H) {
         const wx = x + lx * c + lz * s, wz = z - lx * s + lz * c;
         x0 = Math.min(x0, wx); x1 = Math.max(x1, wx); z0 = Math.min(z0, wz); z1 = Math.max(z1, wz);
       }
-      B.cols[i] = b[6] ? [x0, b[1] + y, z0, x1, b[4] + y, z1, b[6]] : [x0, b[1] + y, z0, x1, b[4] + y, z1];   // keep the roof / rail flags
+      B.cols[i] = b[6] ? [x0, b[1] + y, z0, x1, b[4] + y, z1, b[6]] : [x0, b[1] + y, z0, x1, b[4] + y, z1];   // keep the roof / rail flags  【保留 roof / rail 标志】
     }
   }
+  // 【onFace】把构建函数临时切到 W×D 方块某一侧面的局部框架里执行(x 沿面,z 朝面外);
+  // 侧面编号 0=+Z 1=+X 2=−Z 3=−X,每面自带旋转与偏移
   // run fn in the frame of one face of a W x Dd block centred on the prop origin (x along the face, z out of it)
   function onFace(B, W, Dd, side, fn) {
     const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
     B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
   }
+  // 【faceCol】沿某面边缘的一条碰撞盒,返回道具自身坐标系里的 AABB(由面局部矩形旋转求包围盒)
   // collider of a strip along one face edge, in the prop frame (from the face's local x0..x1, depth into the block)
   function faceCol(W, Dd, side, x0, x1, y0, y1, dz0, dz1) {
     const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2, c = Math.cos(ry), s = Math.sin(ry);
@@ -108,9 +133,13 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ stroke font
+  // 【手绘笔画字体】无外部贴图:每个字符由中心线笔画 + 圆头端盖拼成圆体粗无衬线(字高大写为 1)
   // rounded bold sans for channel letters and painted lettering (cap height 1): centre-line strokes, round caps
+  // 椭圆弧采样:按角度取 n 段折线,用来拼 O、C、S 等圆弧笔画
   const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  // 闭合环(大写 O 之类)
   const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 【GL 字形表】每个条目 = [字宽, ...若干笔画];笔画是点数组(开口)或 {c: 点数组}(闭合环)
   const GL = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
@@ -156,8 +185,11 @@ export function register(D, H) {
     '↑': [0.6, [[0.3, 0], [0.3, 1]], [[0, 0.7], [0.3, 1], [0.6, 0.7]]],
     '↓': [0.6, [[0.3, 1], [0.3, 0]], [[0, 0.3], [0.3, 0], [0.6, 0.3]]],
   };
+  // 点号 / 间隔号(单独一组小圆盘)
   const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]] };
+  // 空格宽度(单位:字高)
   const SPACE = 0.34;
+  // 【ribbon】把一条折线挤出成有厚度、有端盖的"缎带"(笔画体);d>0 时还挤出侧面墙
   function ribbon(g, pts, closed, hw, d) {
     const n = pts.length;
     const N = pts.map((p, i) => {
@@ -168,8 +200,10 @@ export function register(D, H) {
       if (!n1) return [n2[0], n2[1], 1];
       if (!n2) return [n1[0], n1[1], 1];
       let mx = n1[0] + n2[0], my = n1[1] + n2[1]; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
+      // 内缩系数 k 上限 1.6:限制折线转角处缎带加宽,避免尖角爆开
       return [mx, my, Math.min(1.6, 1 / Math.max(0.3, mx * n2[0] + my * n2[1]))];
     });
+    // d 大于零才生成侧壁(平面贴字 d≈0,只有正面)
     const walls = d > 1e-5;
     const rings = pts.map((p, i) => {
       const [nx, ny, k] = N[i];
@@ -181,6 +215,7 @@ export function register(D, H) {
     const segs = closed ? n : n - 1, np = rings[0].length;
     for (let i = 0; i < segs; i++) { const A = rings[i], Bq = rings[(i + 1) % n]; for (let j = 0; j < np; j += 2) g.quad(A[j], A[j + 1], Bq[j + 1], Bq[j]); }
   }
+  // 【disc】圆盘(端盖 / 点号):扇形面片 + 可选侧壁
   function disc(g, cx, cy, r, d, seg, a0 = 0, a1 = TAU) {
     const full = a1 - a0 > TAU - 1e-4, walls = d > 1e-5;
     const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], wt = [], wb = [];
@@ -192,6 +227,8 @@ export function register(D, H) {
     }
     for (let k = 0; k < seg; k++) { const j = full ? (k + 1) % seg : k + 1; g.tri(c0, f[k], f[j]); if (walls) g.quad(wt[k], wb[k], wb[j], wt[j]); }
   }
+  // 【glyph】把一个字符烘焙成几何:模板缓存(按字符+粗细+厚度+分段);先按笔画深度微错位,
+  // 再逐笔画走 ribbon(开口)或环形 ribbon(闭合),转折处拆段并补端盖 / 圆头
   function glyph(ch, wt, dep, ds = 8) {
     return tpl(['gl', ch, wt, dep, ds].map(kf).join('|'), () => {
       const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
@@ -199,6 +236,7 @@ export function register(D, H) {
       if (DOTS[ch]) { for (const p of DOTS[ch]) { const q = T(p); disc(g, hw * 1.15, q[1], hw * 1.15, dep, ds); } return { geo: g.geo(), adv: wt * 1.3 }; }
       const def = GL[ch];
       if (!def) return { geo: null, adv: SPACE };
+      // 相邻笔画深度错开 4mm:重叠笔画间留出轮廓,避免烘焙成一团
       const [w, ...strokes] = def;
       strokes.forEach((st, si) => {
         const d = dep > 0 ? dep - si * 0.004 : si * 0.0004;
@@ -225,7 +263,9 @@ export function register(D, H) {
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
+  // 字符串总宽(用于居中 / 对齐)
   const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.1).adv; if (i < cs.length - 1) w += track; }); return w; };
+  // 【letters】在当前框架里摆一行朝 +Z 的字(立体槽字,或 flat:true 的平面漆字);返回总宽
   // a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true); returns width
   function letters(B, str, o = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat, dep = flat ? 0 : o.dep ?? 0.1, track = o.track ?? 0.12;
@@ -244,17 +284,20 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ plants
+  // 【cluster】植物团:n 个半径约 R 的噪声团撒在一个椭球(rx,ry,rz)里;颜色按高度由深到浅渐变
   // puff cluster: n puffs of radius ~R scattered in an ellipsoid (rx, ry, rz) around (x, y, z); tints lerp dark → light by height
   function cluster(B, x, y, z, rx, ry, rz, n, R, cDk, cLt, seed, mat = 'foliage', o = {}) {
     const dd = (R >= 0.5 ? det(B) : R >= 0.25 ? det(B) - 1 : 0) - (o.low ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const h1 = hash(seed * 13.1 + i * 7.7), h2 = hash(seed * 3.7 + i * 1.3), h3 = hash(seed * 5.9 + i * 2.9);
+      // 菲波那契式黄金角散布(2.39996 rad)+ 哈希扰动:团块均匀又不规则
       const a = i * 2.39996 + h1 * 0.6, t = n > 1 ? i / (n - 1) : 0.5, yy = 1 - 2 * t, r = Math.sqrt(Math.max(0, 1 - yy * yy)) * (0.55 + 0.45 * h2);
       const px = x + Math.cos(a) * r * rx, py = y + yy * ry * 0.75, pz = z + Math.sin(a) * r * rz;
       const s = R * (0.75 + 0.45 * h3);
       B.add(mat, puff(Math.max(0, dd), (seed + i) % 6), mixc(cDk, cLt, Math.max(0, Math.min(1, 0.5 + yy * 0.5)) * 0.8 + h2 * 0.2), px, py, pz, { s, sy: s * (o.flat ?? 0.85), ry: h1 * TAU, ao: false });
     }
   }
+  // 【dots】在椭球表面撒小珠子(果实 / 花),只出现在上半球一带
   // small scattered spheres (fruit / flowers) on the surface of an ellipsoid
   function dots(B, x, y, z, rx, ry, rz, n, r, c, seed, mat = NS('gloss'), yMin = -0.6) {
     for (let i = 0; i < n; i++) {
@@ -262,15 +305,19 @@ export function register(D, H) {
       B.sph(mat, c, r * (0.85 + 0.3 * hash(seed + i)), x + Math.cos(a) * rr * rx, y + yy * ry, z + Math.sin(a) * rr * rz, { ws: 5, hs: 3, ao: false });
     }
   }
+  // 【陶罐剖面】车削轮廓:足、腹、沿;r = 罐口半径,h = 高
   // terracotta pot (lathe): rim, belly, foot; r = rim radius, h = height
   const potProf = (r, h) => [[0, 0], [r * 0.62, 0], [r * 0.66, 0.03], [r * 0.8, h * 0.45], [r * 0.9, h * 0.82], [r * 0.9, h * 0.86], [r, h * 0.88], [r, h], [r * 0.9, h], [r * 0.86, h * 0.9], [0, h * 0.9]];
+  // 摆一个陶罐 + 顶部一圈土面
   function pot(B, x, y, z, r, h, c = K.terra) {
     B.lathe('paint', c, potProf(r, h), x, y, z, { seg: r > 0.25 ? 12 : 8 });
     B.cyl(NS('paint'), K.soil, r * 0.84, 0.02, x, y + h * 0.9, z, { seg: 12 });
   }
 
   // ------------------------------------------------------------------------------------------ building kit
+  // 【建筑构件库】全部构件贴墙安装:局部 z=0 为墙面、朝 +Z;y 为该特征底部的世界高度
   // (all mount flush on a wall at local z = 0 facing +Z; y = world height of the feature's bottom)
+  // 百叶窗扇(persiana):框 + 水平百叶片,w×h;open 参数目前恒开(void ang 占位)
   // louvred shutter leaf (persiana): frame + slats, w x h, hinged at x (opens against the wall toward sx)
   function shutter(B, x, y, w, h, c, open = 1) {
     const ang = open >= 1 ? 0 : (1 - open) * 1.2;
@@ -282,6 +329,8 @@ export function register(D, H) {
     B.pop();
     void ang;
   }
+  // 【windowU】地中海窗:石材窗套带、内凹深色玻璃 + 十字窗棂、石窗台、百叶窗;
+  // 可选铁护栏(grille)/ 窗台花箱(box,自带绿植和小花)/ 暖光帘(lit)
   // window: surround band, recessed dark glass with a cross frame, stone sill, shutters, optional grille / flower box / lit blind
   function windowU(B, x, y, w, h, o = {}) {
     const fc = o.frame ?? K.white2, sc = o.shut ?? K.blue, sur = o.surround;
@@ -314,10 +363,12 @@ export function register(D, H) {
       dots(B, x, y + 0.08, 0.17, w * 0.45, 0.08, 0.1, 9, 0.035, o.flowers ?? K.geranium, Math.round(x * 17 + y * 3), NS('paint'), -0.1);
     }
   }
+  // 【doorU】地中海板门:竖木板拼门扇(逐板色相微扰)、横档、默认圆拱过梁(arch:false 变平梁门)、
+  // 石门框、铜门环 / 门钮、门槛石,可选拱顶小圆窗(lunette)
   // plank door with a stone frame (round-arched when arch), knocker, threshold step
   function doorU(B, x, y, w, h, o = {}) {
     const lc = o.leaf ?? K.green, fc = o.frame ?? K.stone, arch = o.arch !== false;
-    const hs = arch ? h - w / 2 : h;       // spring line
+    const hs = arch ? h - w / 2 : h;       // spring line  【起拱线:拱高 = 总高 − 半宽】
     pbox(B, NS('paint'), K.dark, w, hs, 0.01, x, y + hs / 2, 0.006);
     // leaf: vertical boards
     const nb = Math.max(3, Math.round(w / 0.16));
@@ -333,6 +384,7 @@ export function register(D, H) {
     if (o.step !== false) B.box('paint', K.stoneLt, w + 0.36, 0.1, 0.34, x, y + 0.05, 0.17, { r: 0.02 });
     if (o.lunette) { pbox(B, NS('gloss'), K.glass, w * 0.6, 0.02, 0.01, x, y + hs + 0.02, 0.06); }
   }
+  // 【archU】圆拱开口(敞廊 / 商铺 / 通道):深色凹槽 + 石拱环 + 两侧门垛,不做门扇
   // round-arched opening (loggia / shop / passage) shown as a dark recess with a stone arch ring
   function archU(B, x, y, w, h, o = {}) {
     const hs = h - w / 2, fc = o.frame ?? K.stone;
@@ -341,6 +393,7 @@ export function register(D, H) {
     B.tube('paint', fc, Array.from({ length: 15 }, (_, i) => { const a = (i / 14) * PI; return P3(x + Math.cos(a) * (w / 2 + 0.08), y + hs + Math.sin(a) * (w / 2 + 0.08), 0.03); }), 0.085, { radial: 6 });
     for (const sx of [-1, 1]) B.box('paint', fc, 0.16, hs, 0.06, x + sx * (w / 2 + 0.08), y + hs / 2, 0.03, { r: 0.012 });
   }
+  // 【balconyU】阳台:牛腿上的石板 + 锻铁栏杆,背后是法式长窗 + 百叶,两端摆花盆,可选垂蔓
   // balcony: slab on corbels, wrought-iron railing, French window with shutters behind, pots
   function balconyU(B, x, y, w, o = {}) {
     const dp = o.depth ?? 0.62, rc = o.rail ?? K.iron;
@@ -359,10 +412,12 @@ export function register(D, H) {
         cluster(B, x + px, y + 0.38, dp - 0.18, 0.14, 0.1, 0.14, 3, 0.1, K.leafDk, K.leaf, Math.round(px * 31 + y), 'foliage', { low: true });
         dots(B, x + px, y + 0.42, dp - 0.18, 0.14, 0.08, 0.14, 6, 0.028, o.flowers ?? K.geranium, Math.round(px * 7 + y * 3), NS('paint'), -0.2);
       }
+      // 栏杆外侧垂下来的藤蔓
       // trailing plant over the railing
       if (o.trail) cluster(B, x + o.trail, y + 0.55, dp + 0.02, 0.3, 0.45, 0.08, 6, 0.12, K.leafDk, K.leafLt, Math.round(x * 5 + y), 'foliage', { low: true });
     }
   }
+  // 【lanternU】锻铁壁挂灯:S 形卷草支架 + 四棱玻璃灯罩(黄昏亮灯,默认发光强度 1.6)
   // wrought-iron wall lantern: scroll bracket + lantern with glowing panes (dusk)
   function lanternU(B, x, y, o = {}) {
     const ic = K.iron;
@@ -376,6 +431,7 @@ export function register(D, H) {
     B.lathe(NS('metal'), ic, [[0, -0.14], [0.07, -0.1], [0.08, -0.09], [0, -0.09]], lx, ly, lz, { seg: 4 });
     B.sph(NS('metal'), ic, 0.018, lx, ly + 0.24, lz, { ws: 5, hs: 4 });
   }
+  // 【plaqueU】马略尔卡彩釉陶牌:白底釉板 + 彩边 + 平面漆字(门牌号 / 街名)
   // majolica plaque (tile panel) with a painted border and flat lettering or a number
   function plaqueU(B, x, y, text, o = {}) {
     const h = o.h ?? 0.1, W = o.w ?? Math.max(0.3, textW(text, 0.2, 0.12) * h + 0.16), Hh = o.hh ?? h + 0.12;
@@ -385,6 +441,7 @@ export function register(D, H) {
     for (const sx of [-1, 1]) B.sph(NS('gloss'), o.accent ?? K.majYel, 0.018, x + sx * (W / 2 - 0.045), y, 0.024, { ws: 6, hs: 4 });
     letters(B, text, { h, x, y: y - h / 2, z: 0.025, c: o.c ?? K.majBlue, flat: true, wt: 0.2, track: 0.12 });
   }
+  // 【pipeU】雨水管:陶土圆管从檐口到地面,顶部有漏斗(-hopper)、每 1.1m 一个铁卡子
   // downpipe: terracotta pipe from the roof to the ground with a hopper head and brackets
   function pipeU(B, x, y0, y1, c = K.terraDk) {
     B.cyl('paint', c, 0.045, y1 - y0 - 0.2, x, (y0 + y1) / 2 - 0.05, 0.06, { seg: 8 });
@@ -392,6 +449,7 @@ export function register(D, H) {
     B.cyl(NS('paint'), c, 0.05, 0.16, x, y0 + 0.08, 0.1, { rx: 0.8, seg: 8 });
     for (let yy = y0 + 0.8; yy < y1 - 0.4; yy += 1.1) pbox(B, NS('metal'), K.iron, 0.12, 0.025, 0.08, x, yy, 0.04);
   }
+  // 【bougainU】三角梅:沿墙攀爬的藤本(木质茎 + 随机散布的叶团 / 品红花苞团)
   // bougainvillea mass climbing a wall (w wide, from y0 to y1): leafy base, magenta bracts in clumps, a woody stem
   function bougainU(B, x, y0, y1, w, o = {}) {
     const seed = Math.round(x * 37 + y0 * 11), hgt = y1 - y0, c1 = o.c ?? K.bougain, c2 = o.c2 ?? K.bougainLt;
@@ -405,9 +463,12 @@ export function register(D, H) {
       B.add('foliage', puff(Math.max(0, det(B) - 1), (seed + i) % 6), flower ? mixc(c1, c2, hash(i * 3.3 + seed)) : mixc(K.leafDk, K.leaf, t), px, py, pz, { s, sy: s * 0.8, sz: s * 0.6, ry: u * TAU, ao: false });
     }
   }
+  // 可上人平屋顶的女儿墙压顶:0.28m 宽(可直接跨过)、白色带滴水线,有碰撞
   // the roof edge coping of a walkable flat roof: 0.28 m (walk-over) white cap with a drip line, collides
   const COPE_H = 0.18, COPE_W = 0.3;
 
+  // 【瓦楞陶瓦片(coppi)】两片瓦合成人字坡面:沿长度方向做正弦波起伏 + 檐口封边,
+  // 波峰 / 波谷顶点色微差营造瓦垄光影;模板缓存
   // pitched coppi roof over a W (along the ridge) x Dd block at eave height y: gable prism, two corrugated slopes,
   // ridge tiles, eave cornice. Built along local X (ridge along X).
   function coppiSheet(L, S) {
@@ -425,6 +486,8 @@ export function register(D, H) {
       return g.geo();
     });
   }
+  // 【gableRoof】双坡 coppi 屋顶(人字山墙棱柱 + 两侧波纹坡面 + 脊瓦 + 檐口白线脚);
+  // 默认沿长边起脊(alongX),整体推入子框架旋转
   function gableRoof(B, cx, cz, W, Dd, yE, rise, o = {}) {
     const alongX = o.alongX ?? W >= Dd, L = alongX ? W : Dd, d = alongX ? Dd : W, ov = o.ov ?? 0.3, rc = o.roof ?? K.coppi, wc = o.wall ?? K.white;
     B.push(cx, 0, cz, alongX ? 0 : HP);
@@ -436,14 +499,17 @@ export function register(D, H) {
       B.add('paint', coppiSheet(L + ov * 2, sl), rc, 0, 0, 0, {});
       B.pop();
       B.pop();
+      // 檐口:双排瓦当 + 下方白色线脚
       // double row of eave tiles + white cornice under the eaves
       B.box('paint', wc, L + 0.06, 0.18, 0.2, 0, yE - 0.02, s * (d / 2 - 0.02), { r: 0.03 });
       B.box(NS('paint'), shade(rc, 0.85), L + ov * 2, 0.07, 0.12, 0, yE - 0.02 - ov * Math.tan(pitch) * 0.6, s * (d / 2 + ov * 0.85), { r: 0.02 });
     }
+    // 屋脊:coppi 筒瓦卧在顶上(半圆柱横放)
     // ridge: coppi laid along the top
     B.add('paint', cylGeo(0.1, 0.1, L + ov * 2 + 0.05, 8, false, 0, PI), shade(rc, 0.9), 0, yE + rise + 0.03, 0, { rz: HP, rx: HP });
     B.pop();
   }
+  // 【vaultRoof】筒形拱顶(volta a botte):半圆弧剖面沿长边挤出 + 基座线脚
   // barrel vault (volta a botte) in limewash over a W x Dd block at y, axis along X unless alongX false
   function vaultRoof(B, cx, cz, W, Dd, y, rise, o = {}) {
     const alongX = o.alongX ?? W >= Dd, L = alongX ? W : Dd, d = alongX ? Dd : W, wc = o.wall ?? K.white;
@@ -454,6 +520,7 @@ export function register(D, H) {
     B.box('paint', shade(wc, 0.96), L + 0.12, 0.12, d + 0.12, 0, y - 0.04, 0, { r: 0.04 });
     B.pop();
   }
+  // 【chimney】烟囱(comignolo):石灰白方柱 + 四根小柱撑着的小瓦顶
   // chimney (comignolo): limewashed stack with a tiny tiled roof on four posts
   function chimney(B, x, y, z, c = K.white) {
     B.box('paint', c, 0.5, 0.95, 0.5, x, y + 0.47, z, { r: 0.04 });
@@ -466,17 +533,25 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ building dressing
+  // 【terraces_house 建筑整装】一个类型打扮任意民居方块:pos = 方块中心 [x,0,z],w×d 底面,top = 屋面高度;
+  // faces = { 侧面: [条目] },条目 { t: 种类, x, y, w, h, ... } 写在该面局部框架里:
+  //   win 窗 · door 门 · arch 拱 · balc 阳台 · lamp 壁灯 · plaque 牌 · pipe 雨水管 · bougain 三角梅
+  //   sign 招牌槽字 · awning 雨棚 · shop 店面 · niche 神龛 · plates 挂盘 · gnomon 日晷 · vent 通风口 · band 腰线
+  // roof: 'flat' 平屋顶(cope 列出的边做视觉压顶)· 'gable' 双坡 · 'vault' 筒拱 · null 无;
+  // 屋顶附加:chimneys 烟囱 [[x,z]]、tank 水箱 [x,z]、antenna 天线 [x,z](平屋顶)
   // One type dresses any house block. pos = [block centre x, 0, block centre z], w × d block footprint, top = roof
   // height (world y). faces: { side: [items] } with items { t: kind, x, y, w, h, ... } in that face's frame:
   //   win, door, arch, balc, lamp, plaque, pipe, bougain, sign (channel letters), awning, shop, niche, band (string course)
   // roof: 'flat' (low coping on the listed edges: cope: [sides], visual only) · 'gable' · 'vault' · null
   // extras on the roof: chimneys [[x, z]], tank [x, z], antenna [x, z] (roof items on flat roofs only where noted).
+  // 重置 AO 基准:整装类道具按世界坐标计算环境光遮蔽
   D.terraces_house = {
     desc: 'Terrace Heights house dressing for a level block (pos = block centre at y 0; w, d, top): per-face windows with louvred shutters, arched plank doors, balconies, lanterns, majolica plaques, downpipes, bougainvillea, shop signs, string courses; roof: flat (low visual coping on chosen edges; chimneys + water tank collide with off-limits tops), coppi gable or limewashed barrel vault.',
     params: { w: 'm', d: 'm', top: 'm (roof y)', faces: '{ side: [items] }', roof: "'flat' | 'gable' | 'vault'", cope: 'sides with coping', color: 'wall colour (for roof prisms)' }, variants: 1, mount: 'ground',
     build(B, o) {
       B.aoBase = null;
       const W = o.w, Dd = o.d, top = o.top, wc = o.color ?? K.white;
+      // 逐面:切到该侧面框架,分发每种构件条目('balc' 额外补一条栏杆碰撞)
       for (const side of [0, 1, 2, 3]) {
         const items = o.faces && o.faces[side];
         if (!items) continue;
@@ -509,7 +584,7 @@ export function register(D, H) {
           }
         });
       }
-      // roof
+      // 屋面:cope 列出的边做可跨过的视觉压顶;gable / vault 走子构建器
       const roof = o.roof ?? 'flat';
       if (roof === 'flat') {
         for (const side of o.cope ?? []) {
@@ -527,6 +602,7 @@ export function register(D, H) {
       if (o.antenna) { const [x, z] = o.antenna; B.cyl('metal', K.ironLt, 0.02, 2.2, x, top + 1.1, z, { seg: 5 }); for (const [yy, l] of [[1.8, 0.9], [2.0, 0.7], [2.15, 0.5]]) B.cyl(NS('metal'), K.ironLt, 0.01, l, x, top + yy, z, { rz: HP, seg: 4 }); }
     },
   };
+  // 【awningU】条纹帆布雨棚:倾斜棚面 + 扇贝形垂边(valance)+ 铁臂
   // striped canvas awning on a shop (projects 1.1 m), scalloped valance, iron arms
   function awningU(B, x, y, w, o = {}) {
     const cA = o.cA ?? K.blue, cB = o.cB ?? K.cloth, pr = o.proj ?? 1.0, drop = 0.42, n = Math.max(4, Math.round(w / 0.3));
@@ -539,6 +615,7 @@ export function register(D, H) {
     B.box('metal', K.iron, w + 0.06, 0.06, 0.06, x, y, 0.03, { r: 0.015 });
     for (const sx of [-1, 1]) B.tube(NS('metal'), K.iron, [P3(x + sx * (w / 2 - 0.05), y - 0.75, 0.01), P3(x + sx * (w / 2 - 0.05), y - drop, pr)], 0.012, { radial: 4 });
   }
+  // 【shopU】店面:木框大玻璃 + 门、货台基座,可选台面商品(ceramics 彩陶 / lemons 柠檬)
   // shopfront: timber-framed glazing + door, stall riser, lettering fascia (optional)
   function shopU(B, x, y, w, h, o = {}) {
     const fc = o.frame ?? K.greenDk;
@@ -554,6 +631,7 @@ export function register(D, H) {
     if (o.goods === 'ceramics') for (let k = 0; k < Math.round(w / 0.25); k++) { const gx = x - w / 2 + 0.2 + k * 0.25; B.lathe(NS('gloss'), [K.majBlue, K.majYel, K.majGreen, K.majWhite][k % 4], [[0, 0], [0.06, 0], [0.08, 0.06], [0.05, 0.14], [0.04, 0.18], [0, 0.18]], gx, y + 0.5, 0.09, { seg: 8 }); }
     if (o.goods === 'lemons') for (let k = 0; k < Math.round(w / 0.16); k++) { const gx = x - w / 2 + 0.15 + k * 0.16; B.lathe(NS('gloss'), k % 3 ? K.lemon : '#e8e0c0', [[0, 0], [0.035, 0], [0.04, 0.12], [0.015, 0.2], [0.012, 0.26], [0, 0.26]], gx, y + 0.5, 0.09, { seg: 6 }); }
   }
+  // 【nicheU】还愿神龛(edicola):拱形石龛 + 彩釉圣母瓷砖画 + 小瓦顶 + 花盆和烛灯
   // votive niche (edicola): arched recess with a painted tile Madonna, a little roof, flowers and a lamp
   function nicheU(B, x, y, o = {}) {
     B.box('paint', K.stoneLt, 0.62, 0.9, 0.08, x, y + 0.45, 0.04, { r: 0.02 });
@@ -570,6 +648,7 @@ export function register(D, H) {
   }
 
   // ------------------------------------------------------------------------------------------ edges, balustrades, rails
+  // 【terraces_balustrade 石栏杆】石灰华观景栏杆,沿 +X 延伸:底座、车削葫芦柱、方形墩柱(端头球饰)、线脚扶手
   // stone balustrade (belvedere): plinth, turned balusters, moulded top rail; runs along +X for `length`; collides (1.0)
   D.terraces_balustrade = {
     desc: 'Limestone belvedere balustrade along +X (pos = start, face +Z): plinth, turned balusters every 0.24 m, square piers every ~2.4 m with ball finials at the ends, moulded rail. Rail collider 1.0 m high (0.34 deep): kids blocked, shots / ink / squids pass.',
@@ -594,6 +673,8 @@ export function register(D, H) {
       B.col(0, 0, -0.17, L, Hh, 0.17, RAIL);
     },
   };
+  // 【terraces_rail 铁扶手】楼梯旁 / 临空边缘的锻铁扶手:圆扶手 + 立柱 + 卷草;沿 +X,可带坡度(rise),
+  // 碰撞随坡度每约 2m 一段
   // wrought-iron handrail beside stairs / along drops (non-colliding): posts + rail + scroll bars; runs along +X, slope
   D.terraces_rail = {
     desc: 'Wrought-iron handrail along +X from pos (rise over its length for stairs): square posts every ~1.1 m, round top rail, a lower rail and simple scrolls. Rail colliders follow the slope in ~2 m steps (kids blocked, shots / ink / squids pass).',
@@ -610,6 +691,7 @@ export function register(D, H) {
       for (let i = 0; i < ns; i++) { const xa = (i * L) / ns, xb = ((i + 1) * L) / ns; B.col(xa - (i ? 0 : 0.02), Math.min(yAt(xa), yAt(xb)) - 0.05, -0.06, xb + (i < ns - 1 ? 0 : 0.02), Math.max(yAt(xa), yAt(xb)) + Hh + 0.03, 0.06, RAIL); }
     },
   };
+  // 【terraces_edge 压顶】台地边缘的石质压顶条:0.9m 分缝石板、圆角滴水、底部阴影线;平贴地面(≤5cm)可直接跨过
   // terrace edge cap: limestone coping slabs along a slab edge (flush, 4 cm), with a drip shadow line (non-colliding)
   D.terraces_edge = {
     desc: 'Limestone edge coping along +X on a terrace / wall top edge (pos = start on the edge, the drop on local +Z): slabs 0.9 m with joints, rounded nosing, a thin drip shadow under it. Flat (≤ 5 cm): walk over.',
@@ -622,6 +704,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ pergola + planting
+  // 【terraces_pergola 花架】石灰华方柱 + 栗木梁 / 椽 + 葡萄藤叶冠,垂下葡萄串(变体 1 = 紫藤,垂淡紫花串)
   // pergola: limewashed masonry pillars, chestnut beams + rafters, a vine canopy with grape bunches (or wisteria)
   D.terraces_pergola = {
     desc: 'Pergola over a terrace (pos = centre, w along X, d along Z, h clear height): square limewashed pillars at the corners (+ midspan when long), chestnut beams and rafters, a leafy grapevine canopy with bunches hanging through (variant 1 = wisteria with lilac racemes). Pillars collide.',
@@ -656,6 +739,8 @@ export function register(D, H) {
       }
     },
   };
+  // 【terraces_potplant 大盆栽】大陶土盆 + 地中海植物;变体:0 柠檬树(带果)、1 橄榄(银灰)、
+  // 2 三角梅丛、3 龙舌兰(蓝灰莲座)、4 夹竹桃(粉花);盆体有碰撞
   // potted plants in big terracotta pots: lemon tree, olive, bougainvillea bush, agave, palm-free Mediterranean set
   D.terraces_potplant = {
     desc: 'Big terracotta pot (rim ~0.4 m) with a Mediterranean plant: variant 0 lemon tree (glossy dark canopy, lemons), 1 small olive (silvery), 2 bougainvillea bush (magenta), 3 agave (blue-grey rosette), 4 oleander (pink). Pot collides.',
@@ -689,6 +774,7 @@ export function register(D, H) {
       B.blob(1.2, 1.2);
     },
   };
+  // 【terraces_pots 小盆栽群】门口 / 楼梯旁的三五只小陶盆(天竺葵 / 罗勒 / 多肉),无碰撞
   // cluster of small pots (geraniums, basil, succulents) — doorstep / stair-side clutter, non-colliding
   D.terraces_pots = {
     desc: 'Doorstep cluster of 3–5 small terracotta and majolica pots with geraniums, basil and succulents (along +X, ~1 m). Non-colliding.',
@@ -706,6 +792,7 @@ export function register(D, H) {
       }
     },
   };
+  // 【terraces_olive 橄榄树】圆形石灰华大种植池(坐高边缘)里的老树:扭曲双干 + 银灰团冠;池 + 干均有碰撞
   // big olive tree in a round limestone planter (collides): gnarled twin trunk, silvery clumped canopy
   D.terraces_olive = {
     desc: 'Old olive tree in a round limestone planter (1.5 m, 0.55 high, seat-height rim): gnarled twisted twin trunk, silvery clumped canopy (~4 m). Planter + trunk collide.',
@@ -727,6 +814,7 @@ export function register(D, H) {
       B.blob(3.4, 3.4);
     },
   };
+  // 【terraces_fountain 壁泉】靠墙石灰华壁龛式喷泉:壳形神龛 + 狮头吐水 + 半圆水池(撞 0.8m)
   // wall fountain: limestone aedicule with a shell niche, lion-mask spout, semicircular basin (collides)
   D.terraces_fountain = {
     desc: 'Wall fountain (wall at z = 0, front +Z, 2.2 m wide): limestone back with pilasters, pediment and a shell niche, lion-mask spout pouring into a semicircular basin on a moulded base, majolica name tile, mossy streak. Basin collides (0.8 high).',
@@ -759,6 +847,8 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ street furniture
+  // 【terraces_lamppost 路灯】3.4m 铸铁灯柱(底座 + 灯杆 + 发光灯罩 + 王冠顶);
+  // wall:true 时退化为壁挂灯(lanternU);mount 支持 ground 与 wall
   D.terraces_lamppost = {
     desc: 'Cast-iron street lamp (3.4 m): fluted post on a moulded base, a lantern with glowing panes under a crown; wall: true = the same lantern on a scroll wall bracket (wall at z = 0).',
     params: { wall: 'bool', height: 'm (3.4)' }, variants: 1, mount: 'ground|wall',
@@ -777,6 +867,8 @@ export function register(D, H) {
       B.blob(0.6, 0.6);
     },
   };
+  // 【terraces_cafe 咖啡座】大理石圆桌面 + 铁座,两三把藤面 Bistro 椅,桌上咖啡杯与柠檬酒;
+  // 变体 1 加奶油蓝条纹遮阳伞;碰撞盖桌面 + 椅
   // café set: round marble-top table on an iron base, 2–3 bistro chairs, optional parasol (cream / blue)
   D.terraces_cafe = {
     desc: 'Café set: round marble table on a cast-iron base, three bistro chairs with cane seats, an espresso cup + a glass of limoncello; variant 1 adds a cream-and-blue parasol. Collider covers table + chairs (0.75 m).',
@@ -809,6 +901,7 @@ export function register(D, H) {
       B.blob(1.9, 1.9);
     },
   };
+  // 【terraces_bench 石凳】2m 石灰华长凳(涡卷凳脚),靠背镶马略尔卡彩釉瓷砖(柠檬 + 蓝图案)
   // stone bench with a majolica-tiled back (the tiles are painted boxes)
   D.terraces_bench = {
     desc: 'Limestone bench (2 m along +X, seat faces +Z) on two scroll supports, the backrest faced with majolica tiles (lemon + blue pattern). Collides 0.5 m (the back 0.95).',
@@ -832,8 +925,11 @@ export function register(D, H) {
   };
 
   // ================================================================================================ landmarks
+  // 【地标区】教堂 / 亭 / 缆车系统等大型单体道具
+  // 三角山花单元几何(z/y 平面内 1×1 三角,沿 x 厚 1):摆放时 ry:HP,sz = 宽,sy = 高,sx = 进深
   // unit pediment (triangle 1 wide x 1 high in the geometry's z/y plane, 1 long along x): place with ry: HP, sz = width, sy = height, sx = depth
   const pedGeo = () => tpl('ped', () => extrudeGeo([[-0.5, 0], [0.5, 0], [0, 1]], 1, 0.004));
+  // 【domeGeo 马略尔卡穹顶】半球(带轻微葱形过渡到采光亭),釉面砖以锯齿人字带拼出柠檬 / 绿 / 钴蓝
   // majolica dome: hemisphere (+ a slight ogee to the lantern) in glazed tiles, zig-zag bands of lemon / green / cobalt
   function domeGeo(R, Hd, seg, rings) {
     return tpl(['dome', R, Hd, seg, rings].map(kf).join('|'), () => {
@@ -846,6 +942,7 @@ export function register(D, H) {
         const n0 = nrm(t0), n1 = nrm(t1);
         for (let k = 0; k < seg; k++) {
           const a0 = (k / seg) * TAU, a1 = ((k + 1) / seg) * TAU;
+          // 锯齿人字带:按环号 + 周向三角波决定带色,顶部一环统一奶油色;顶点色微扰模拟釉面色差
           // zig-zag chevron bands (lemon / green / cobalt) climbing the dome, a cream band at the top
           const tri = Math.abs((k % 8) - 4) * 0.5, band = Math.floor((j + tri) / 1.5) % 4, c = j >= rings - 1 ? cols[3] : cols[[0, 1, 0, 2][band]];
           const kk = 0.92 + 0.12 * hash(j * 31 + k);
@@ -856,6 +953,9 @@ export function register(D, H) {
       return g.geo();
     });
   }
+  // 【terraces_chapel 圣维托教堂】本关地标:白石灰外墙 + 石材隅石 / 线脚,两端巴洛克立面(铜钉大门、
+  // 玫瑰窗、曲线山墙、双钟钟楼),八角鼓座 + 马略尔卡穹顶 + 采光亭与十字架;门前广场(sagrato)做
+  // 石压顶与四角灯柱。鼓座 / 穹顶 / 钟楼 / 灯柱均按禁止站立的 roof 碰撞处理。单一自对称,不镜像。
   // ---- San Vito: dresses the chapel block (x ±5.5, z ±3, from the sagrato top 1.2 up to 5.8) and the sagrato
   D.terraces_chapel = {
     desc: 'Chapel of San Vito (single, self-symmetric; pos = piazza centre): limewashed block dressing with stone quoins, plinth and cornice, a baroque facade at each end (studded door in a stone frame, rose window, pilasters, curved gable) crowned by a bell gable with two bells, tall arched side windows, a flat roof with coping round an octagonal drum and a majolica-tiled dome with a lantern and cross; the sagrato gets stone edge coping and a lantern post at each corner. Drum/dome, bell gables and lantern posts collide as off-limits tops (roof).',
@@ -863,6 +963,7 @@ export function register(D, H) {
     build(B) {
       B.aoBase = null;
       const W = 11, Dd = 6, y0 = 1.2, y1 = 5.8, wc = K.white, sc = K.stoneLt;
+      // 圣台广场:平台边缘石压顶 + 四角灯柱(复用路灯道具)
       // sagrato: limestone coping on the platform edge + corner lanterns
       for (const side of [0, 1, 2, 3]) onFace(B, 16, 10, side, (L) => {
         B.box('paint', sc, L + 0.06, 0.06, 0.38, 0, y0 + 0.01, -0.16, { r: 0.02 });
@@ -877,6 +978,7 @@ export function register(D, H) {
         B.box(NS('paint'), shade(sc, 0.95), L + 0.18, 0.12, 0.2, 0, y1 - 0.26, 0.06, { r: 0.03 });
         B.box(NS('paint'), shade(wc, 0.93), L + 0.1, 0.35, 0.03, 0, y1 - 0.55, 0.015, { r: 0.01 });
       });
+      // 长边:三扇高拱窗 + 窗间壁柱条 + 两端壁灯
       // long sides: three tall arched windows between pilaster strips, a lantern at each end
       for (const side of [0, 2]) onFace(B, W, Dd, side, () => {
         for (const x of [-3.2, 0, 3.2]) {
@@ -888,6 +990,7 @@ export function register(D, H) {
         for (const x of [-1.6, 1.6]) B.box('paint', shade(wc, 0.97), 0.34, y1 - y0 - 0.9, 0.06, x, y0 + 0.34 + (y1 - y0 - 0.9) / 2, 0.03, { r: 0.015 });
         lanternU(B, -4.6, y0 + 2.9); lanternU(B, 4.6, y0 + 2.9);
       });
+      // ±X 两端的巴洛克立面
       // facades at ±X
       for (const side of [1, 3]) onFace(B, W, Dd, side, (L) => {
         for (const sx of [-1, 1]) B.box('paint', sc, 0.42, y1 - y0 - 0.5, 0.14, sx * 1.75, y0 + 0.34 + (y1 - y0 - 0.84) / 2, 0.07, { r: 0.02 });
@@ -903,6 +1006,7 @@ export function register(D, H) {
         for (const s2 of [-1, 1]) B.box('paint', sc, 0.22, dh - dw / 2, 0.1, s2 * (dw / 2 + 0.11), y0 + (dh - dw / 2) / 2, 0.05, { r: 0.02 });
         B.add('paint', pedGeo(), sc, 0, y0 + dh + 0.12, 0.14, { ry: HP, sz: 2.3, sy: 0.34, sx: 0.28 });
         B.box('paint', sc, 2.4, 0.1, 0.3, 0, y0 + dh + 0.08, 0.14, { r: 0.02 });
+        // 玫瑰窗:石环 + 蓝玻 + 八根轮辐 + 马略尔卡彩珠一圈
         // rose window with a majolica ring
         const ry = y0 + 3.55;
         B.tor('paint', sc, 0.55, 0.09, 0, ry, 0.05, { ts: 24, rs: 6 });
@@ -912,6 +1016,7 @@ export function register(D, H) {
         for (let k = 0; k < 16; k++) { const a = (k / 16) * TAU; B.box(NS('gloss'), k % 2 ? K.majYel : K.majBlue, 0.12, 0.12, 0.02, Math.cos(a) * 0.72, ry + Math.sin(a) * 0.72, 0.02, { rz: a, r: 0.01 }); }
         // SAN VITO on the frieze
         letters(B, 'SAN VITO', { h: 0.22, x: 0, y: y1 - 0.66, z: 0.035, c: K.stoneDk, wt: 0.2, track: 0.2, dep: 0.04 });
+        // 檐口上方的曲线巴洛克山墙(钟楼两侧)
         // curved baroque gable above the cornice (both sides of the bell gable)
         for (const s2 of [-1, 1]) {
           const pts = []; for (let i = 0; i <= 10; i++) { const t = i / 10; pts.push(P3(s2 * (2.95 - t * 1.3), y1 + 0.05 + Math.sin(t * HP) * 0.7, 0.02)); }
@@ -919,6 +1024,7 @@ export function register(D, H) {
           B.add('paint', tpl('chgab', () => { const pr = []; for (let i = 0; i <= 10; i++) { const t = i / 10; pr.push([-(2.95 - t * 1.3), Math.sin(t * HP) * 0.7]); } pr.push([-1.65, 0]); return extrudeGeo(pr.map(([a, b]) => [a, b]).reverse().map(([a, b]) => [a, b]), 0.3, 0.01); }), wc, 0, y1 + 0.02, -0.1, { ry: HP, sx: s2 });
           B.lathe('paint', sc, [[0, 0], [0.12, 0], [0.12, 0.05], [0.06, 0.1], [0.12, 0.22], [0.03, 0.36], [0, 0.37]], s2 * 2.95, y1 + 0.02, 0.02, { seg: 10 });
         }
+        // 帆式钟楼(campanile a vela):实墙开两个拱洞,内挂两盏铜钟,顶上线脚 + 山花 + 十字架
         // bell gable (campanile a vela): wall with two arched openings, two bronze bells, a cornice and a cross
         const gy = y1 - 0.05, gw = 3.1, gh = 2.7, gz = -0.25;
         B.push(0, 0, gz);
@@ -936,6 +1042,7 @@ export function register(D, H) {
         B.pop();
       });
       B.col(5.1, y1, -1.6, 5.6, y1 + 2.8, 1.6, ROOF); B.col(-5.6, y1, -1.6, -5.1, y1 + 2.8, 1.6, ROOF);
+      // 屋面(教堂本体在 layout 里标为 roof 禁足区):周边压顶 + 鼓座 + 马略尔卡穹顶 + 采光亭
       // roof (off-limits: the chapel block is `roof` in layout.js): coping, drum + majolica dome + lantern
       for (const side of [0, 2]) onFace(B, W, Dd, side, (L) => { B.box('paint', sc, L - 1.2, 0.24, 0.3, 0, y1 + 0.12, -0.18, { r: 0.05 }); });
       const dR = 2.0;
@@ -953,6 +1060,9 @@ export function register(D, H) {
       B.col(-dR - 0.2, y1, -dR - 0.2, dR + 0.2, y1 + 3.2, dR + 0.2, ROOF);
     },
   };
+  // 【terraces_tempietto 圣维托亭】Zone Control 变体:教堂向四周"打开"成圆形柱廊亭 ——
+  // 八根多立克式圆柱(落在 3.4m 圆上、避开轴线以便看穿)承檐部环(马略尔卡檐壁 + 线脚),
+  // 内顶是星空蓝拱 + 吊灯,上接鼓座、人字纹穹顶、采光亭与十字架;整个穹顶为禁足 roof。单一自对称。
   // ---- San Vito's tempietto (Zone Control build, layout.js SINGLE): the chapel opened up into a round colonnade on
   // the deeper sagrato (16 x 12) — the centre zone is the whole open platform. Eight Tuscan columns on a 3.4 m circle
   // (set between the axes, so the stairs and the long sides look straight through), an entablature ring with a
@@ -969,6 +1079,7 @@ export function register(D, H) {
         B.box(NS('paint'), K.stone, L, 0.14, 0.03, 0, y0 - 0.09, 0.015, { r: 0.01 });
       });
       for (const [sx, sz] of [[-1, -1], [1, 1], [-1, 1], [1, -1]]) sub(B, 'terraces_lamppost', sx * 7.55, y0, sz * 5.55, 0, { height: 3.2 });
+      // 柱式:方础 + 环座(torus)+ 带卷杀(entasis)的柱身 + 颈环 + 柱帽;柱身为车削轮廓,各柱碰撞为禁足 roof
       // columns: square plinth, torus base, a shaft with entasis, necking, echinus, abacus
       const shaft = [[0, 0], [0.25, 0], [0.252, 1.1], [0.238, 2.3], [0.214, 3.33], [0, 3.33]];
       const yCap = y0 + 0.16 + 0.16 + 3.33 + 0.3;   // 5.15: underside of the entablature
@@ -982,6 +1093,7 @@ export function register(D, H) {
         B.box('paint', sc, 0.72, 0.14, 0.72, x, yCap - 0.07, z, { r: 0.015, ry: -a });
         colBox(B, x, y0, z, 0.6, yCap - y0, 0.6, true);
       }
+      // 檐部环:额枋 + 马略尔卡檐壁(32 块菱形彩釉砖)+ 线脚;lathe 剖面里 null 分隔独立环带
       // entablature ring: architrave, majolica frieze, cornice (the soffit and inner face close it)
       const yE = yCap;
       B.lathe('paint', sc, [[3.0, 0], [3.72, 0], null, [3.72, 0], [3.72, 0.24], null, [3.72, 0.24], [3.6, 0.26], null, [3.0, 0.64], [3.0, 0]], 0, yE, 0, { seg: 40 });
@@ -991,6 +1103,7 @@ export function register(D, H) {
         B.box(NS('gloss'), k % 2 ? K.majYel : K.majWhite, 0.2, 0.12, 0.02, Math.cos(a) * 3.635, yE + 0.36, Math.sin(a) * 3.635, { ry: -a + HP, rz: P / 4, r: 0.01 });
       }
       B.lathe('paint', sc, [[3.6, 0.46], [3.95, 0.52], null, [3.95, 0.52], [3.95, 0.64], null, [3.95, 0.64], [3.0, 0.64]], 0, yE, 0, { seg: 40 });
+      // 亭内拱顶:深蓝底 + 44 颗金箔星(按半径插值贴曲面),铁链吊一盏灯(黄昏发光)
       // the vault inside: deep blue with gilt stars, a lantern hanging on a chain (lit at dusk)
       B.lathe('paint', '#2d4a73', [[0, 1.05], [1.5, 0.95], [2.5, 0.55], [3.0, 0.02]], 0, yE, 0, { seg: 32 });
       for (let k = 0; k < 44; k++) {
@@ -1002,6 +1115,7 @@ export function register(D, H) {
       for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) pbox(B, NS('metal'), K.iron, 0.03, 0.38, 0.03, sx * 0.135, yE + 0.22, sz * 0.135);
       B.lathe('metal', K.iron, [[0, 0.17], [0.2, 0.17], [0.18, 0.21], [0.05, 0.34], [0, 0.36]], 0, yE + 0.22, 0, { seg: 4, ry: P / 4 });
       B.lathe(NS('metal'), K.iron, [[0, -0.27], [0.1, -0.21], [0.13, -0.17], [0, -0.17]], 0, yE + 0.22, 0, { seg: 4 });
+      // 鼓座(带圆窗)+ 石环 + 人字纹穹顶 + 八根肋 + 采光亭与十字架
       // attic drum with oculi, a stone ring, the majolica dome + ribs, lantern and cross
       const yA = yE + 0.64, dR = 3.1, yD = yA + 0.6;
       B.lathe('paint', wc, [[3.3, 0], [3.3, 0.08], null, [3.3, 0.08], [dR + 0.05, 0.1], null, [dR + 0.05, 0.1], [dR + 0.05, 0.5], null, [dR + 0.05, 0.5], [dR + 0.18, 0.54], null, [dR + 0.18, 0.54], [dR + 0.18, 0.6], null, [dR + 0.18, 0.6], [0, 0.6]], 0, yA, 0, { seg: 40 });
@@ -1025,6 +1139,7 @@ export function register(D, H) {
       B.sph('metal', K.brass, 0.08, 0, ly + 1.3, 0, { ws: 8, hs: 6 });
       B.box('metal', K.iron, 0.06, 0.7, 0.06, 0, ly + 1.65, 0, { r: 0.01 });
       B.box('metal', K.iron, 0.34, 0.06, 0.06, 0, ly + 1.78, 0, { r: 0.01 });
+      // 整个亭盖是禁足 roof:檐部 + 鼓座一圈方盒近似圆,穹顶、采光亭逐层缩小,共三圈碰撞
       // the canopy is an off-limits roof: a round-ish stack of boxes (entablature + drum, dome, lantern)
       const R0 = 3.95, Rd = R0 * 0.415, Rx = R0 * 0.707;
       for (const [hx, hz] of [[R0, Rd], [Rd, R0], [Rx, Rx]]) B.col(-hx, yE, -hz, hx, yA + 0.6, hz, ROOF);
@@ -1033,8 +1148,12 @@ export function register(D, H) {
     },
   };
 
+  // ------------------------------------------------------------------------------------------
+  // 【缆车系统】轨道 / 车厢 / 车站;坡度角 INC 与斜面长 INCL 由 rise 4.8、run 28 算出
   // ---- funicular: track (rails, sleepers, rollers), the car, the two stations -------------------------------
   const INC = Math.atan2(4.8, 28), INCL = Math.hypot(4.8, 28);
+  // 【terraces_track 轨道】铺在斜坡上的登山轨道:0.7m 枕木、1.0m 轨距钢轨、中线电缆滚轮与缆绳、
+  // 底部缓冲止挡、楼梯侧矮缘石;凸起 ≤9cm 可直接跨过
   D.terraces_track = {
     desc: 'Funicular track dressing on the incline ramp (pos = low end on the track centre-line, local +Z uphill along the ramp, rise/run given): timber sleepers every 0.7 m, two steel rails (gauge 1.0), cable rollers on the centre-line with the haul cable, a buffer stop at the bottom, a low kerb along the stair side. Flush (≤ 9 cm): walk over.',
     params: { run: 'm (28)', rise: 'm (4.8)' }, variants: 1, mount: 'ground',
@@ -1050,6 +1169,7 @@ export function register(D, H) {
       for (let z = 1.5; z < L - 0.5; z += 3.2) { B.cyl(NS('metal'), '#8c8c86', 0.07, 0.24, 0, 0.09, z, { rz: HP, seg: 8 }); pbox(B, NS('metal'), K.iron, 0.3, 0.05, 0.1, 0, 0.03, z); }
       B.cyl(NS('metal'), '#3c3b38', 0.015, L - 1.0, 0, 0.17, L / 2, { rx: HP, seg: 4 });
       B.pop();
+      // 底部缓冲止挡:钢架上的两根弹簧缓冲器 + 警示条纹
       // buffer stop at the low end: two sprung buffers on a steel frame
       B.box('metal', K.iron, 1.6, 0.5, 0.2, 0, 0.35, -0.25, { r: 0.02 });
       for (const sx of [-0.45, 0.45]) { B.cyl('metal', '#c6a23c', 0.1, 0.25, sx, 0.45, -0.05, { rx: HP, seg: 10 }); B.cyl('metal', K.iron, 0.14, 0.04, sx, 0.45, 0.08, { rx: HP, seg: 12 }); }
@@ -1057,6 +1177,8 @@ export function register(D, H) {
       B.col(-0.8, 0, -0.35, 0.8, 0.6, -0.15);
     },
   };
+  // 【terraces_funicar 缆车车厢】停在斜坡上的三段阶梯式车体(车身永远水平):庞贝红 + 奶油窗带,
+  // 两端阶梯玻璃 + 雨刷 + 车灯,车顶 FUNICOLARE 目的地牌,转向架压在钢轨上;碰撞 = 三个阶梯盒
   // funicular car on the incline (pos = centre of its footprint on the track centre-line at track height there,
   // local +Z uphill): stepped body (three level compartments), Pompeian red with a cream window band, glazed stepped
   // ends, roof with a destination board, bogies on the rails, headlamps. Collides as three stepped boxes.
@@ -1066,6 +1188,7 @@ export function register(D, H) {
     build(B, o) {
       const a = Math.atan2(o.rise ?? 4.8, o.run ?? 28), ta = Math.tan(a);
       const Lc = 5.4, Wc = 1.9, red = '#a84a3d', cream = '#efe3c8', roofC = '#5b5f63', ncomp = 3, cl = Lc / ncomp;
+      // 底盘 + 转向架(在斜面框架里:先推入旋转 -a 的坡面坐标)
       // chassis + bogies (in the slope frame)
       B.push(0, 0, 0, 0, -a);
       B.box('metal', K.iron, Wc - 0.3, 0.22, Lc - 0.3, 0, 0.38, 0, { r: 0.03 });
@@ -1074,6 +1197,7 @@ export function register(D, H) {
         for (const sx of [-0.5, 0.5]) for (const dz of [-0.3, 0.3]) B.cyl('metal', '#55585c', 0.14, 0.08, sx, 0.2, bz + dz, { rz: HP, seg: 12 });
       }
       B.pop();
+      // 三段水平车厢:底缘高度 yb 随坡就势逐段抬升(0.5 + cz·tan a),厢间用立板收口
       // level compartments stepping up the slope
       for (let i = 0; i < ncomp; i++) {
         const cz = -Lc / 2 + cl * (i + 0.5), yb = 0.5 + cz * ta, Hc = 2.25;
@@ -1100,11 +1224,13 @@ export function register(D, H) {
         letters(B, '2', { h: 0.28, x: 0, y: 0, z: 0, c: cream, flat: true, wt: 0.22 });
         B.pop();
       }
+      // 中段车顶目的地牌(两侧发光字)
       // roof destination board (both sides) on the middle compartment
       const yr = 0.5 + 2.25;
       B.box('paint', '#2f3a4a', 0.08, 0.34, 2.6, 0, yr + 0.22, 0, { r: 0.02 });
       for (const sx of [-1, 1]) { B.push(sx * 0.045, yr + 0.1, 0, sx * HP); letters(B, o.name ?? 'FUNICOLARE', { h: 0.17, x: 0, y: 0, z: 0, c: '#f0d78a', flat: true, wt: 0.2, track: 0.14, mat: 'glow', glow: 1.0 }); B.pop(); }
       for (const dz of [-0.9, 0.9]) B.box('metal', K.iron, 0.05, 0.12, 0.05, 0, yr + 0.02, dz, { r: 0.01 });
+      // 碰撞:每厢一个世界轴对齐盒(车体沿局部 Z,故直接用 AABB)
       // colliders: one per compartment (world-axis boxes; the car sits along local Z)
       for (let i = 0; i < ncomp; i++) {
         const cz = -Lc / 2 + cl * (i + 0.5), yb = 0.5 + cz * ta;
@@ -1112,6 +1238,8 @@ export function register(D, H) {
       }
     },
   };
+  // 【terraces_station 车站雨棚】缆车下站:四根铸铁柱 + coppi 四坡瓦顶(木枋 + 扇贝垂边),
+  // +Z 檐口挂发光 FUNICOLARE 招牌,柱上有时刻表与时钟;booth:true 加售票亭(有碰撞)
   // station canopy (lower station at the foot of the incline): four iron columns, a tiled hip roof, the FUNICOLARE
   // sign, a ticket booth with a timetable, a turnstile, a bench
   D.terraces_station = {
@@ -1126,6 +1254,7 @@ export function register(D, H) {
       }
       for (const sz of [-1, 1]) B.box('wood', K.chestnut, W + 0.1, 0.16, 0.1, 0, Hh + 0.08, sz * (Dd / 2 - 0.15), { r: 0.02 });
       for (const sx of [-1, 1]) B.box('wood', K.chestnut, 0.1, 0.16, Dd + 0.1, sx * (W / 2 - 0.15), Hh + 0.08, 0, { r: 0.02 });
+      // 四坡顶:四个斜面拼出(手动法线),屋脊线用深色筒瓦表现
       // hip roof: four sloped tiled panels
       const rise = 0.9, ov = 0.4;
       B.add('paint', tpl(['hip', W, Dd, rise, ov].map(kf).join('|'), () => {
@@ -1136,6 +1265,7 @@ export function register(D, H) {
         return g.geo();
       }), 'white', 0, Hh + 0.18, 0, {});
       for (const sz of [-1, 1]) B.add(NS('foliage'), cylGeo(0.05, 0.05, W + 2 * ov, 6), K.coppiDk, 0, Hh + 0.18, sz * (Dd / 2 + ov), { rz: HP });
+      // +Z 檐口招牌:蓝底金字发光字
       // sign on the +Z eave
       const sy = Hh + 0.55;
       B.box('paint', '#2f4a66', 2.6, 0.42, 0.06, 0, sy, Dd / 2 + ov + 0.05, { r: 0.03 });
@@ -1162,11 +1292,15 @@ export function register(D, H) {
     },
   };
 
+  // ================================================================================================
+  // 【远景衬底】赛场外的布景:简版房屋、柏树、石松、岩块 —— 全部无碰撞、不参与玩法
   // ---- backdrop kit (outside the arena): simple houses, cypresses, stone pines, rock masses ------------------
+  // 【backHouse 远景房】粗白盒民居:前面 + 侧面随机开暗窗(部分带百叶 / 暖光),屋顶 gable 双坡 / 平顶上花架 / 筒拱
   function backHouse(B, x, y, z, w, d, h, o = {}) {
     const wc = o.c ?? K.white, ry = o.ry ?? 0;
     B.push(x, y, z, ry);
     B.box(NS('paint'), wc, w, h, d, 0, h / 2, 0, { r: 0.08 });
+    // 前面(+Z)与侧面(+X)的窗:平面暗洞 + 随机百叶 / 灯光,哈希决定是否跳过
     // windows on the front (+Z) and the side (+X): flat dark openings + shutters
     const nw = Math.max(1, Math.floor(w / 1.6)), nf = Math.max(1, Math.floor((h - 0.6) / 2.6));
     for (let f = 0; f < nf; f++) for (let i = 0; i < nw; i++) {
@@ -1190,6 +1324,7 @@ export function register(D, H) {
     }
     B.pop();
   }
+  // 【cypress 柏树】瘦高深绿"火焰":短树干 + 一串半径渐变的噪声团(越往上越小)
   function cypress(B, x, y, z, h, seed = 1, mat = 'foliage') {
     B.cyl(NS('wood'), K.barkDk, 0.1, 0.8, x, y + 0.4, z, { seg: 6 });
     const n = Math.max(4, Math.round(h / 0.9));
@@ -1198,14 +1333,17 @@ export function register(D, H) {
       B.add(mat, puff(Math.max(0, det(B) - 1), (seed + i) % 6), mixc('#2c4a2c', '#4b6b3c', t * 0.7 + 0.2 * hash(seed + i)), x + 0.06 * Math.sin(seed + i), y + 0.6 + t * (h - 0.9), z + 0.06 * Math.cos(seed + i * 2), { s: r, sy: h / n * 0.95, ry: hash(i + seed) * TAU, ao: false });
     }
   }
+  // 【stonePine 石松】地中海伞松:弯曲高干 + 顶部一把扁伞盖
   function stonePine(B, x, y, z, h, seed = 1) {
     B.tube(NS('wood'), K.bark, [P3(x, y, z), P3(x + 0.3, y + h * 0.5, z + 0.1), P3(x + 0.1, y + h * 0.85, z - 0.1)], (t) => 0.2 - 0.1 * t, { radial: 6 });
     cluster(B, x + 0.1, y + h, z, 2.4, 0.5, 2.4, 9, 1.0, '#34502e', '#5f7d42', seed, NS('foliage'), { flat: 0.45 });
   }
+  // 【rockGeo 岩石】二十面体做底,顶点按哈希抖动出棱面;非索引几何让每个面保有自己的角点(flat 着色),
+  // 顶点色按高度提亮、底部压暗
   // faceted rock (icosahedron, jittered corners, flat facets, darker underside): tufa / limestone boulders
   function rockGeo(seed) {
     return tpl('rock|' + seed, () => {
-      const g = new THREE.IcosahedronGeometry(1, 1);   // polyhedra are non-indexed: every facet keeps its own corners
+      const g = new THREE.IcosahedronGeometry(1, 1);   // polyhedra are non-indexed: every facet keeps its own corners  【多面体非索引:每个面独立角点,flat 面片】
       const P = g.attributes.position, pos = [];
       for (let i = 0; i < P.count; i++) {
         const x = P.getX(i), y = P.getY(i), z = P.getZ(i);
@@ -1225,14 +1363,19 @@ export function register(D, H) {
       return geo;
     });
   }
+  // 摆一块岩石(缩放 + 随机转向,缓存复用同一几何)
   function rockMass(B, x, y, z, sx, sy, sz, seed, c = K.tufa) {
     B.add(NS('paint'), rockGeo(seed % 9), mixc(c, '#a89a82', hash(seed) * 0.5), x, y, z, { sx, sy, sz, ry: hash(seed * 3) * TAU, ao: false });
   }
+  // 【terraces_cypress 柏树道具】对 cypress() 的薄封装,自带树干碰撞与软阴影团
   D.terraces_cypress = {
     desc: 'Italian cypress: a tall narrow dark-green flame on a short trunk (h 5–9 m). Trunk collides.',
     params: { height: 'm (7)', seed: 'shape' }, variants: 1, mount: 'ground',
     build(B, o) { cypress(B, 0, 0, 0, o.height ?? 7, o.seed ?? 3); colBox(B, 0, 0, 0, 0.5, 2.0, 0.5, true); B.blob(1.3, 1.3); },
   };
+  // 【terraces_hillside 后山】基地背面的山坡布景:一级级台地(土坡 + 石灰华挡土墙 + 橄榄园),
+  // 约 14 栋白 / 赭 / 粉色小屋沿山势抬升(双坡、平顶花架、筒拱轮换),山顶一座圆废墟瞭望塔,
+  // 柏树石松点缀。纯布景,无碰撞。
   // hillside rising behind a base (outside the arena, pos = centre of the back wall line at y 0, local −Z = away):
   // terraced garden walls, houses stepping up the slope with pitched coppi roofs and roof terraces, cypresses and
   // stone pines, a ruined watchtower on the crest
@@ -1241,6 +1384,7 @@ export function register(D, H) {
     params: {}, variants: 1, mount: 'ground',
     build(B, o) {
       B.aoBase = null;
+      // 台地体:草坡土台 + 石灰华乱石挡土墙,两端逐级缩进、由岩块过渡到海面上方
       // ground mass: stepped terrace slabs (earth + limewashed retaining walls) rising away
       const tiers = [[-0.6, 7.5, 8.4], [-9, 10.5, 9], [-15, 13.5, 8], [-21, 16, 7], [-27, 18, 6]];
       let prev = 4.8;
@@ -1251,6 +1395,7 @@ export function register(D, H) {
         B.box(NS('paint'), mixc(K.stone, '#cbbd9f', ti * 0.15), Wt, top - prev + 0.4, 0.5, 0, prev + (top - prev) / 2 - 0.1, z + 0.2, { r: 0.05 });
         B.box(NS('paint'), K.stoneLt, Wt + 0.2, 0.18, 0.62, 0, top + 0.02, z + 0.2, { r: 0.04 });
         for (const sx of [-1, 1]) for (let k = 0; k < 4; k++) rockMass(B, sx * (Wt / 2 + 0.6 + k * 1.3), (top - 2) * (1 - k * 0.22) - 0.8, z - dz * (0.2 + 0.2 * k), 2.4 + k * 0.4, (top + 1.8) * (0.55 - k * 0.08), dz * 0.42, ti * 13 + k * 5 + (sx > 0 ? 3 : 0));
+        // 台地上的橄榄园
         // olive groves on the terrace
         const n = 7 - ti;
         for (let i = 0; i < n; i++) {
@@ -1269,10 +1414,12 @@ export function register(D, H) {
         [-20, 13.5, -17.5, 5, 4, 3.8, K.pink, 'gable'], [21, 13.5, -17, 5, 4, 4.0, K.white, 'flat'],
       ];
       houses.forEach(([x, y, z, w, d, h, c, roof], i) => backHouse(B, x, y, z, w, d, h, { c: c === K.lemon ? '#efe0a4' : c, roof, lit: true, pergola: roof === 'flat' && i % 3 === 0, vault: roof === 'flat' && i % 3 === 1 }));
+      // 山顶的圆形废墟瞭望塔(凝灰岩车削 + 雉堞圈 + 暗窗)
       // watchtower on the crest
       B.lathe(NS('paint'), K.tufa, [[0, 0], [3.2, 0], [2.9, 6], [3.1, 6.2], [3.1, 7.2], [0, 7.2]], -6, 18, -30, { seg: 16 });
       for (let k = 0; k < 10; k++) { const a = (k / 10) * TAU; B.box(NS('paint'), K.tufa, 0.8, 0.7, 0.5, -6 + Math.cos(a) * 2.95, 25.5, -30 + Math.sin(a) * 2.95, { ry: -a, r: 0.05 }); }
       pbox(B, NS('paint'), K.dark, 0.5, 1.1, 0.1, -6, 21, -26.9);
+      // 树:柏树按表摆、石松五棵、台地灌木丛 26 团
       // trees
       const cyp = [[-24, 7.5, -2.5, 7], [-16.5, 7.5, -2.8, 6], [8, 7.5, -2.5, 7.5], [23, 7.5, -3, 6.5], [-9.5, 10.5, -8.5, 7], [12, 10.5, -8.5, 6], [0, 13.5, -14, 8], [-15, 13.5, -14.5, 6.5], [19, 13.5, -14.5, 7], [-11, 18, -26, 7], [2, 18, -25, 6]];
       cyp.forEach(([x, y, z, h], i) => cypress(B, x, y, z, h, i * 3 + 1, NS('foliage')));
@@ -1280,6 +1427,8 @@ export function register(D, H) {
       for (let i = 0; i < 26; i++) { const x = -30 + hash(i * 3.1) * 60, t = hash(i * 7.7); const tier = tiers[Math.min(4, Math.floor(t * 5))]; cluster(B, x, tier[1] + 0.3, tier[0] - tier[2] * (0.2 + 0.5 * hash(i)), 1.1, 0.5, 0.8, 3, 0.7, '#4a6336', '#7a8f4e', i * 5, NS('foliage'), { low: true, flat: 0.6 }); }
     },
   };
+  // 【terraces_cliff 海崖】长边外侧的凝灰岩崖壁:从边缘高度线性降到海面,岩板 + 巨石 + 平台植被,
+  // 仙人掌(扁掌片)、龙舌兰、滨藜丛;纯布景
   // cliff below the arena's long edge (outside, pos = on the edge line at y 0, local +Z = out to sea): tufa rock face
   // falling to the water with ledges, prickly pear, agave, caper bushes, a fishing-hut cove with a rowing boat
   D.terraces_cliff = {
@@ -1293,7 +1442,7 @@ export function register(D, H) {
         rockMass(B, x, top - hh / 2 - 0.25, 1.45 + 0.4 * hash(seed + i), 1.5 + 0.4 * hash(i + seed * 2), hh / 2 + 0.1, 1.2, seed * 7 + i);
         rockMass(B, x + 0.8, -1.4, 2.6 + 0.8 * hash(i * 3 + seed), 1.3 + 0.5 * hash(i), 0.9, 1.1, seed * 11 + i * 3, '#9c8f77');
         if (hash(seed * 5 + i) > 0.55) cluster(B, x, top - 0.5 - 1.5 * hash(i + 9), 1.4, 0.6, 0.35, 0.4, 3, 0.4, '#50663a', '#7c8f4c', seed + i, NS('foliage'), { low: true, flat: 0.7 });
-        if (hash(seed * 9 + i) > 0.7) { // prickly pear: flat paddles
+        if (hash(seed * 9 + i) > 0.7) { // 仙人掌:一串压扁的掌片  【prickly pear: flat paddles】
           const px = x + 0.3, py = top - 1.0 * hash(i), pz = 1.1;
           for (let k = 0; k < 6; k++) B.sph(NS('foliage'), '#6f8f4f', 0.22, px + (hash(k + i) - 0.5) * 0.5, py + 0.2 + k * 0.12, pz + (hash(k * 3 + i) - 0.5) * 0.3, { sx: 1, sy: 1.25, sz: 0.3, ry: hash(k) * PI, ws: 8, hs: 6 });
         }
@@ -1304,6 +1453,8 @@ export function register(D, H) {
 
 
   // ================================================================================================ the back of each base
+  // 【基地背面】每个基地后墙一线的布景(远观即可,细节低于场内道具)
+  // 【hipRoof 四坡顶】w×d 上的四坡瓦屋顶(四块斜面 + 屋脊,长边走向自动定脊),檐口两道瓦垄肋条暗示瓦行
   // hip roof over w x d at y (rise r): four coppi-coloured planes + ridge (for buildings seen from afar)
   function hipRoof(B, x, y, z, w, d, r, c = K.coppi, ov = 0.35) {
     B.add('paint', tpl(['hip2', w, d, r, ov].map(kf).join('|'), () => {
@@ -1314,10 +1465,14 @@ export function register(D, H) {
       else { face([A, Bq, R0]); face([Bq, C, R1, R0]); face([C, Dq, R1]); face([Dq, A, R0, R1]); }
       return g.geo();
     }), c, x, y, z, {});
+    // 瓦行:檐口两道细肋,远看即读作 coppi 瓦垄
     // tile courses as thin ribs across the slopes (read as coppi rows at a distance)
     B.box(NS('paint'), shade(c, 0.85), w + ov * 2 + 0.05, 0.08, 0.14, x, y + 0.02, z - d / 2 - ov, { r: 0.02 });
     B.box(NS('paint'), shade(c, 0.85), w + ov * 2 + 0.05, 0.08, 0.14, x, y + 0.02, z + d / 2 + ov, { r: 0.02 });
   }
+  // 【terraces_villa 柠檬别墅】出生点背景:墙面上层三拱敞廊 + 法式门(黄昏亮扇形气窗)、百叶窗、壁灯、
+  // 柠檬大盆、VILLA LIMONI 槽字;墙后二层退台(阳台 + 双坡顶)、中央观景塔楼(altana)、烟囱、
+  // 两侧配楼与柏树。上层按 camera-safe 的 roof 碰撞。
   // ---- Villa Limoni: the spawn's backdrop (pos = centre of the back wall face, wall top at `top`, terrace at `floor`)
   D.terraces_villa = {
     desc: 'Villa Limoni (pos = centre of the back wall face, local z = 0 = the wall face, building behind): ground floor on the spawn terrace — a three-arched loggia with French doors, shuttered windows, lanterns, pots of lemons, VILLA LIMONI letters on the frieze; a set-back upper storey with balconies and a coppi hip roof, a belvedere tower (altana) with open arches on top, chimneys, a pergola roof garden and cypresses at the sides. The upper storey collides (camera-safe).',
@@ -1325,11 +1480,13 @@ export function register(D, H) {
     build(B, o) {
       B.aoBase = null;
       const F = o.floor ?? 4.8, T = o.top ?? 8.4, W = o.w ?? 20, wc = K.villa ?? '#f2e6cf', tc = K.stoneLt, sh = K.green, k = W / 20;
+      // 一层(面向场内的墙面):基座、壁柱、三拱敞廊 + 法式门、窗、壁灯、檐口、别墅名
       // ground floor (on the playable face): plinth, pilasters, loggia arches + French doors, windows, cornice
       B.box('paint', K.stone, W, 0.3, 0.06, 0, F + 0.15, 0.03, { r: 0.015 });
       for (const x of [-9.7, -5.4, 5.4, 9.7]) B.box('paint', tc, 0.4, T - F - 0.3, 0.1, x * k, F + (T - F) / 2, 0.05, { r: 0.02 });
       for (const x of [-2.4 * k, 0, 2.4 * k]) {
         archU(B, x, F, 2.0 * k, 3.0, { inside: '#4a3f36', frame: tc });
+        // 每个拱内是法式门:百叶门扇 + 玻璃,拱顶一片黄昏亮起的扇形气窗
         // French doors inside each arch: glazed leaves, a lit fanlight at dusk
         for (const s2 of [-1, 1]) { pbox(B, NS('paint'), sh, 0.66 * k, 2.0, 0.03, x + s2 * 0.36 * k, F + 1.0, 0.02); pbox(B, NS('gloss'), K.glass, 0.5 * k, 1.6, 0.01, x + s2 * 0.36 * k, F + 1.1, 0.036); }
         pbox(B, NS('glow'), K.lamp, 1.5 * k, 0.28, 0.01, x, F + 2.25, 0.02, { glow: 1.0 });
@@ -1339,9 +1496,11 @@ export function register(D, H) {
       B.box('paint', tc, W + 0.3, 0.26, 0.34, 0, T - 0.13, 0.12, { r: 0.04 });
       B.box(NS('paint'), shade(wc, 0.94), W + 0.1, 0.5, 0.05, 0, T - 0.55, 0.025, { r: 0.01 });
       letters(B, 'VILLA LIMONI', { h: 0.36, x: 0, y: T - 0.72, z: 0.05, c: '#a0845a', wt: 0.19, track: 0.22, dep: 0.07, lit: 0.9, litC: '#ffe3a6' });
+      // 立面两侧的大陶盆柠檬树(复用盆栽道具)+ 三角梅
       // big terracotta pots with lemon trees against the facade
       for (const x of [-6.2, 6.2]) sub(B, 'terraces_potplant', x * k, F, 0.6, 0, { variant: 0 });
       for (const x of [-9.2, 9.2]) bougainU(B, x * k, F, T + 0.4, 1.6);
+      // 墙后二层 + 屋顶 + 观景塔楼
       // upper storey (behind the wall top) + roofs + altana
       const uz = -3.2, ud = 6.4, uh = 3.4;
       B.box('paint', wc, W - 1.2, uh, ud, 0, T + uh / 2, uz, { r: 0.06 });
@@ -1354,6 +1513,7 @@ export function register(D, H) {
       B.col(-1.6, T + 0.4, uz + ud / 2, 1.6, T + 1.6, uz + ud / 2 + 0.62, RAIL);
       hipRoof(B, -5.2 * k, T + uh + 0.1, uz, 7.8 * k, ud, 1.7);
       hipRoof(B, 5.2 * k, T + uh + 0.1, uz, 7.8 * k, ud, 1.7);
+      // 中央 altana 观景塔:四面开拱、栏台式顶、风向标
       // altana (belvedere tower) in the middle: open arches, balustraded roof, weather vane
       const az = uz, ay = T + uh;
       B.box('paint', wc, 3.4, 2.8, 3.4, 0, ay + 1.4, az, { r: 0.05 });
@@ -1363,6 +1523,7 @@ export function register(D, H) {
       B.cyl('metal', K.iron, 0.02, 1.2, 0, ay + 4.6, az, { seg: 5 });
       B.box('metal', K.iron, 0.5, 0.2, 0.02, 0.15, ay + 4.9, az, { r: 0.01 });
       for (const [x, z] of [[-8.2, uz - 1.5], [8.6, uz + 1.2]]) chimney(B, x * k, T + uh + 0.5, z, wc);
+      // 两侧退台式配楼 + 柏树
       // side wings stepping down + cypresses
       for (const s2 of [-1, 1]) {
         const wx = W / 2 + 1.6;
@@ -1376,6 +1537,8 @@ export function register(D, H) {
       B.col(-W / 2, T, -0.6, W / 2, T + 0.3, 0.2, ROOF);
     },
   };
+  // 【terraces_upstation 缆车上站】背面墙上的机房立面:轨道尽头的大拱洞(内见缆绳导轮)、
+  // 小山花下的时钟、FUNICOLARE 发光槽字、绿百叶窗,墙后机房屋身 + 四坡瓦顶 + 烟囱;上部按 roof 碰撞
   // ---- upper funicular station (pos = centre of its back-wall face; the track's top end is at trackX, floor F):
   //      the engine house on the wall with a big arched portal over the track end, FUNICOLARE · STAZIONE letters,
   //      a clock, windows; a hip roof behind; a platform canopy is placed separately (terraces_station)
@@ -1386,15 +1549,18 @@ export function register(D, H) {
       B.aoBase = null;
       const F = o.floor ?? 4.8, T = o.top ?? 7.6, W = o.w ?? 14, tx = o.trackX ?? -5.77, wc = K.ochre, tc = K.stoneLt;
       B.box('paint', K.stone, W, 0.3, 0.06, 0, F + 0.15, 0.03, { r: 0.015 });
+      // 轨道尽头的大拱洞:黑暗隧道口 + 石拱,洞内挂着牵引缆绳的导轮
       // portal over the track end: dark tunnel mouth + stone arch, the cable wheel inside
       archU(B, tx, F - 0.02, 2.6, 2.75, { inside: '#2a2724', frame: tc });
       B.tor(NS('metal'), '#55585c', 0.7, 0.05, tx, F + 1.25, -0.25, { ts: 20, rs: 5 });
       for (let k = 0; k < 6; k++) pbox(B, NS('metal'), '#55585c', 0.04, 1.4, 0.04, tx, F + 1.25, -0.25, { rz: (k / 6) * PI });
+      // 立面其余部分的窗与门(free() 避开拱洞与边缘)
       // windows + door along the rest of the facade
       const free = (x, hw) => Math.abs(x - tx) > 1.45 + hw && Math.abs(x) < W / 2 - hw - 0.2;
       for (const x of [-4.6, -1.6, 1.6, 4.6]) if (free(x, 0.75)) windowU(B, x, F + 0.9, 0.9, 1.25, { shut: K.green, lit: 0.9 });
       if (free(-3.4, 0.7)) doorU(B, -3.4, F, 1.1, 2.3, { leaf: K.greenDk });
       for (const x of [-2.5, 0.3, 3.1]) if (free(x, 0.2)) lanternU(B, x, F + 2.4);
+      // 檐口线脚、FUNICOLARE 发光字、时钟(表盘 12 刻度 + 两根指针)
       // cornice, FUNICOLARE letters, clock
       B.box('paint', tc, W + 0.3, 0.24, 0.3, 0, T - 0.12, 0.1, { r: 0.04 });
       const px = W < 10 ? 0 : 2.0, pw = Math.min(7.6, W - 0.2);
@@ -1409,6 +1575,7 @@ export function register(D, H) {
       for (let k = 0; k < 12; k++) { const a = (k / 12) * TAU; pbox(B, NS('paint'), K.iron, 0.03, k % 3 ? 0.06 : 0.12, 0.01, tx + Math.cos(a) * 0.45, cy + Math.sin(a) * 0.45, 0.2, { rz: a + HP }); }
       pbox(B, NS('paint'), K.iron, 0.035, 0.36, 0.01, tx, cy + 0.15, 0.205, { rz: 0.4 });
       pbox(B, NS('paint'), K.iron, 0.035, 0.26, 0.01, tx + 0.08, cy - 0.06, 0.21, { rz: -1.9 });
+      // 墙后的机房屋身 + 四坡顶 + 烟囱;上部整体按 roof 碰撞
       // engine house body + roof behind the wall
       B.box('paint', wc, W - 0.6, 2.2, 5.6, 0.2, T + 1.1, -3.0, { r: 0.06 });
       hipRoof(B, 0.2, T + 2.2, -3.0, W - 0.6, 5.6, 1.6);
@@ -1416,6 +1583,8 @@ export function register(D, H) {
       B.col(-W / 2 + 0.3, T, -5.8, W / 2 - 0.1, T + 2.2, -0.2, ROOF);
     },
   };
+  // 【terraces_gardenwall 园墙】台地后墙的花园边界:石压顶、柱墩之间的锻铁大门(球饰柱头)、
+  // 墙后柠檬树 / 柏树 / 石松与漫过墙头的三角梅、马略尔卡街名牌。仅门柱有碰撞。
   // ---- garden wall at the back of the pergola terrace: coping, a wrought-iron gate between piers, lemon trees and
   //      cypresses behind, bougainvillea spilling over
   D.terraces_gardenwall = {
@@ -1426,6 +1595,7 @@ export function register(D, H) {
       const F = o.floor ?? 4.8, T = o.top ?? 7.0, W = o.w ?? 14, gx = o.gateX ?? 2, tc = K.stoneLt;
       B.box('paint', tc, W, 0.16, 0.42, 0, T + 0.02, -0.12, { r: 0.04 });
       B.box('paint', K.stone, W, 0.28, 0.06, 0, F + 0.14, 0.03, { r: 0.015 });
+      // 大门:深处幽暗的园景 + 铁栅栏直棂(顶端圆珠)+ 三根横档 + 卷拱顶饰
       // gate: dark garden beyond, iron bars with a scrolled top
       pbox(B, NS('paint'), '#3b4a33', 1.9, 2.2, 0.01, gx, F + 1.1, 0.005);
       for (let k = 0; k < 10; k++) { const x = gx - 0.85 + k * 0.19; B.cyl(NS('metal'), K.iron, 0.014, 2.2, x, F + 1.1, 0.06, { seg: 5 }); B.sph(NS('metal'), K.iron, 0.03, x, F + 2.25, 0.06, { ws: 5, hs: 4 }); }
@@ -1437,6 +1607,7 @@ export function register(D, H) {
         colBox(B, gx + s2 * 1.2, F, 0.1, 0.5, T - F, 0.5, true);
       }
       plaqueU(B, gx - 2.2, F + 2.2, 'GIARDINO', { h: 0.09 });
+      // 墙后:柠檬树五棵、一棵柏树、一棵石松,三角梅漫过墙头(主簇 + 垂落小簇)
       // behind the wall: lemon trees, a cypress, a pine, the bougainvillea over the top
       for (const [x, z, s] of [[-5.5, -2, 1], [-1.5, -3, 2], [4.5, -2.5, 3], [-3.5, -5.5, 4], [2.5, -6, 5]]) {
         B.tube(NS('wood'), K.bark, [P3(x, T - 1.5, z), P3(x + 0.1, T + 0.6, z)], 0.08, { radial: 5 });
@@ -1449,12 +1620,15 @@ export function register(D, H) {
       B.push(0, 0, 0); for (let i = 0; i < 9; i++) { const x = -3.5 + (hash(i * 2.3) - 0.5) * 3; B.add('foliage', puff(0, i % 6), mixc(K.bougain, K.bougainLt, hash(i)), x, T - 0.2 - hash(i * 5) * 1.3, 0.18, { s: 0.28, sy: 0.35, sz: 0.18, ao: false }); } B.pop();
     },
   };
+  // 【terraces_laundry 晾衣绳】两墙之间沿 +X 拉索,抛物线下垂(sag),随机挂衬衫 / 床单 / 毛巾 / 袜子,
+  // 木夹子是 2cm 小盒;posts>0 时两端立杆。无碰撞。
   // ---- washing line between two walls (along +X): sagging line with shirts, sheets and towels, pegs
   D.terraces_laundry = {
     desc: 'Washing line strung along +X for `length` between two walls (pos = start, at the line height): a sagging cord with pegged shirts, sheets, towels and socks in soft colours (hung pieces are thin boxes). Non-colliding.',
     params: { length: 'm', sag: 'm (0.3)', posts: 'pole height m (0 = wall anchors)' }, variants: 2, mount: 'wall',
     build(B, o) {
       const L = o.length ?? 5, sag = o.sag ?? 0.3, seed = Math.round(L * 7 + (o.variant ?? 0) * 13);
+      // 抛物线下垂曲线:y = -4·sag·u(1-u),u 为归一化位置
       const yAt = (x) => -sag * 4 * (x / L) * (1 - x / L);
       const pts = []; for (let i = 0; i <= 10; i++) { const x = (i / 10) * L; pts.push(P3(x, yAt(x), 0)); }
       B.tube(NS('paint'), K.cream, pts, 0.006, { radial: 3 });
@@ -1471,6 +1645,8 @@ export function register(D, H) {
       }
     },
   };
+  // 【terraces_well 村井】八角石灰华井栏(高 0.9m)、锻铁拱架 + 滑轮 + 绳与铜桶、
+  // 沿口一盆天竺葵;井栏与拱脚均有碰撞
   // ---- piazza well (pozzo): octagonal limestone curb, wrought-iron arch with a pulley, bucket; collides
   D.terraces_well = {
     desc: 'Village well: octagonal limestone curb (1.5 m, 0.9 high) with a moulded rim, a wrought-iron arch with scrolls and a pulley, a copper bucket on the rim, a pot of geraniums. Collides (0.9 m).',
@@ -1493,12 +1669,15 @@ export function register(D, H) {
       B.blob(2.2, 2.2);
     },
   };
+  // 【terraces_truck 三轮货车】柠檬送货车(车头朝 +X):圆角车斗 + 单大灯 + 风挡 + 车把,
+  // 平板货斗带活动栏板,码四箱柠檬(一箱血橙)+ 顶上柳条篮;整车按 roof 碰撞
   // ---- three-wheeled delivery truck with crates of lemons (cover)
   D.terraces_truck = {
     desc: 'Little three-wheeled delivery truck (front +X): rounded cab with a single headlamp, windscreen, handlebar inside, a flatbed with dropsides loaded with lemon crates and a basket. Collides (2.6 × 1.3 × 1.4).',
     params: { color: 'cab (sky blue)' }, variants: 1, mount: 'ground',
     build(B, o) {
       const cc = o.color ?? '#7fa6b8', L = 2.6, Wd = 1.3;
+      // 车轮:前一轮后两轮,轮毂金属圈
       // wheels
       B.cyl('rubber', '#2a2a2c', 0.24, 0.16, 1.0, 0.24, 0, { rx: HP, seg: 14 });
       for (const s2 of [-1, 1]) B.cyl('rubber', '#2a2a2c', 0.24, 0.16, -0.75, 0.24, s2 * 0.52, { rx: HP, seg: 14 });
@@ -1511,6 +1690,7 @@ export function register(D, H) {
       for (const s2 of [-1, 1]) pbox(B, NS('gloss'), K.glassLt, 0.4, 0.32, 0.02, 0.8, 1.5, s2 * 0.56);
       B.cyl(NS('glow'), K.lamp, 0.07, 0.03, 1.31, 1.02, 0, { rz: HP, seg: 10, glow: 1.2 });
       B.box(NS('metal'), '#c9ccd0', 0.06, 0.1, 1.0, 1.3, 0.55, 0, { r: 0.02 });
+      // 驾驶斗 + 货斗栏板 + 柠檬箱载荷
       // flatbed + dropsides + load
       B.box('wood', K.woodLt, 1.5, 0.08, Wd, -0.55, 0.62, 0, { r: 0.015 });
       for (const s2 of [-1, 1]) B.box('paint', cc, 1.5, 0.32, 0.04, -0.55, 0.82, s2 * (Wd / 2 - 0.02), { r: 0.01 });
@@ -1526,6 +1706,8 @@ export function register(D, H) {
       B.blob(3.0, 1.7);
     },
   };
+  // 【terraces_planterbox 陶土花槽】沿 +X 的长条陶盆(0.6m 高):翻沿、花环带、土面,
+  // 变体 0 天竺葵 / 变体 1 迷迭香 + 薰衣草;碰撞 0.6
   // ---- terracotta planter wall (fioriera) along +X with flowers / rosemary; collides 0.6
   D.terraces_planterbox = {
     desc: 'Long terracotta planter along +X (pos = start, 0.5 deep, 0.6 high): moulded rim, a garland band, rosemary / geraniums / trailing ivy. Collides 0.6.',
@@ -1545,6 +1727,7 @@ export function register(D, H) {
       B.col(0, 0, -Dp / 2, L, Hh, Dp / 2);
     },
   };
+  // 【terraces_telescope 观景望远镜】投币式双人望远镜,铸铁立柱 1.4m,镜筒朝海面(+Z)下倾;底座碰撞
   // ---- belvedere telescope (coin-operated) on a pedestal
   D.terraces_telescope = {
     desc: 'Coin-operated belvedere telescope on a cast-iron pedestal (1.4 m), binocular head tilted out to sea (+Z). Pedestal collides.',
@@ -1562,6 +1745,9 @@ export function register(D, H) {
 
 
   // ================================================================================================ village clutter
+  // 【村庄杂物】小尺度生活化道具(报刊亭 / 木箱 / 猫 / 摩托 / 工具棚 / 菜畦 / 藤蔓)
+  // 【terraces_kiosk 报刊亭】八角墨绿亭身、扇贝锌皮穹顶、亭檐下杂志架与报纸堆,
+  // 双面 GIORNALI 檐字、檐下暖灯;整体按 roof 碰撞
   // ---- newspaper kiosk (edicola): octagonal green kiosk, domed zinc roof, magazines, GIORNALI fascia; collides
   D.terraces_kiosk = {
     desc: 'Newspaper kiosk (edicola, 1.9 m octagon, front +Z): bottle-green panelled body, open counter with stacked papers and a rack of magazines, a scalloped zinc canopy and dome with a finial, GIORNALI fascia letters on both sides, a lamp under the canopy. Collides (1.9 × 2.6).',
@@ -1570,11 +1756,13 @@ export function register(D, H) {
       const R = 0.95, gc = '#3d6b55', gcd = '#2e5242', H1 = 2.3;
       B.lathe('paint', gc, [[0, 0], [R, 0], [R, 0.12], [R - 0.03, 0.14], [R - 0.03, H1], [0, H1]], 0, 0, 0, { seg: 8, ry: PI / 8 });
       for (let k = 0; k < 8; k++) { const a = (k / 8) * TAU + PI / 8 + PI / 8; const cx = Math.sin(a) * (R - 0.02), cz = Math.cos(a) * (R - 0.02); pbox(B, NS('paint'), gcd, 0.04, H1 - 0.2, 0.04, cx, H1 / 2 + 0.05, cz); }
+      // 正面开敞售货口:暗洞 + 木柜台 + 报纸堆 + 杂志挂架
       // open counter on the front: dark opening, papers + magazines
       pbox(B, NS('paint'), '#2a2622', 1.0, 1.0, 0.02, 0, 1.45, R - 0.02);
       B.box('wood', K.woodLt, 1.1, 0.06, 0.34, 0, 0.95, R + 0.1, { r: 0.01 });
       for (let i = 0; i < 6; i++) { const x = -0.42 + i * 0.17; B.box(NS('paint'), ['#f1ede4', '#e8e2d2', '#d9d2c4'][i % 3], 0.14, 0.06 + 0.02 * (i % 3), 0.22, x, 1.0, R + 0.1, { r: 0.004 }); }
       for (let r2 = 0; r2 < 2; r2++) for (let i = 0; i < 5; i++) pbox(B, NS('paint'), ['#d35d4b', '#4a78a8', '#e2b23c', '#6aa57d', '#b46aa0'][(i + r2 * 2) % 5], 0.16, 0.22, 0.01, -0.36 + i * 0.18, 1.35 + r2 * 0.28, R - 0.005, { rx: -0.15 });
+      // 亭檐 + 锌皮穹顶 + 金球顶饰
       // canopy + dome + finial
       B.lathe('metal', '#8f9aa0', [[0, 0], [R + 0.35, -0.02], [R + 0.36, 0.06], [R * 0.7, 0.35], [R * 0.35, 0.62], [0.12, 0.72], [0, 0.74]], 0, H1, 0, { seg: 16 });
       for (let k = 0; k < 16; k++) { const a = (k / 16) * TAU; B.sph(NS('metal'), '#8f9aa0', 0.07, Math.cos(a) * (R + 0.32), H1 - 0.03, Math.sin(a) * (R + 0.32), { ws: 6, hs: 3, half: true, rx: PI }); }
@@ -1585,12 +1773,15 @@ export function register(D, H) {
       B.blob(2.4, 2.4);
     },
   };
+  // 【terraces_crates 柠檬木箱】托板上码放的条板木箱(内装柠檬,一箱血橙)+ 顶上柳条篮;
+  // 变体 1 = 低矮双排;有碰撞
   // ---- stacked wooden crates of lemons (and one of oranges) on a pallet; collides
   D.terraces_crates = {
     desc: 'Stack of slatted wooden produce crates full of lemons (one of blood oranges), a wicker basket on top; variant 1 = low double row. Collides.',
     params: {}, variants: 2, mount: 'ground',
     build(B, o) {
       const v = (o.variant ?? 0) % 2, seed = Math.round((o.pos?.[0] ?? 0) * 13 + (o.pos?.[2] ?? 0) * 7);
+      // 单个条板箱:四角立柱 + 三层横板 + 底板,箱口一层面果
       const crate = (x, y, z, ry, fruit) => {
         B.push(x, y, z, ry);
         for (const s2 of [-1, 1]) { B.box('wood', K.woodLt, 0.03, 0.3, 0.4, s2 * 0.29, 0.15, 0, { r: 0.006 }); }
@@ -1611,6 +1802,8 @@ export function register(D, H) {
       B.blob(2.0, 1.4);
     },
   };
+  // 【terraces_cat 村猫】变体 0 蜷睡、1 端坐正视(+Z)、2 面包趴;毛色随 color(橘 / 虎斑灰 / 黑白)。
+  // 眼睛用微发光点。无碰撞。
   // ---- cat (sleeping curled or sitting): village life, non-colliding
   D.terraces_cat = {
     desc: 'Village cat: variant 0 curled asleep, 1 sitting upright watching (+Z), 2 loaf. Coat from color (ginger / tabby grey / black-white). Non-colliding.',
@@ -1637,6 +1830,8 @@ export function register(D, H) {
       void s;
     },
   };
+  // 【terraces_scooter 小摩托】经典踏板摩托支起大脚撑停放(车头 +X):圆鼓后身 + 侧盖板 + 腿挡、
+  // 圆大灯、小轮、坐垫,货架一筐柠檬;整车按 roof 碰撞
   // ---- scooter (classic step-through with rounded side panels), parked on its stand; collides
   D.terraces_scooter = {
     desc: 'Classic step-through scooter parked on its stand (front +X): rounded rear body with side cowls, leg shield, round headlamp on the handlebar, small wheels, a saddle and a rack with a crate of lemons. Colour from color. Collides (1.7 × 0.7 × 1.1).',
@@ -1661,6 +1856,8 @@ export function register(D, H) {
       B.blob(1.8, 0.8);
     },
   };
+  // 【terraces_shed 工具棚】菜园(Orto)里的石灰白小屋:单坡 coppi 顶、微开的板门、
+  // 倚墙的锄头铁锹、浇水壶、侧边雨水桶;有碰撞
   // ---- tool shed in the Orto: limewashed hut with a mono-pitch coppi roof, plank door, tools; collides
   D.terraces_shed = {
     desc: 'Garden tool shed (2.0 × 1.6, front +Z): limewashed rubble walls, a mono-pitch coppi roof, a plank door ajar, a hoe and spade leaning, a watering can, a rain barrel at the side. Collides.',
@@ -1687,6 +1884,7 @@ export function register(D, H) {
       B.col(W / 2, 0, -0.65, W / 2 + 0.7, 0.8, 0.05);
     },
   };
+  // 【terraces_bed 菜畦】木板框抬高苗床:番茄(竹竿三脚架 + 红果)、朝鲜蓟、罗勒;碰撞 0.5
   // ---- raised vegetable bed: timber frame with tomatoes on canes, artichokes, basil; collides 0.5
   D.terraces_bed = {
     desc: 'Raised vegetable bed along +X (pos = start; 0.9 deep, 0.5 high): timber boards on corner posts, dark soil, a row of tomato plants tied to cane tripods with red fruit, artichokes and basil. Collides 0.5.',
@@ -1707,12 +1905,15 @@ export function register(D, H) {
       B.col(0, 0, -Dp / 2, L, Hh, Dp / 2);
     },
   };
+  // 【terraces_ivy 垂藤】从墙头(局部 y=0、朝 +Z 墙面)垂落的常春藤 / 刺山柑:
+  // 沿口一圈叶垫 + 若干条逐渐变细的垂蔓;变体 1 = 刺山柑,开白粉小花。无碰撞。
   // ---- ivy / caper cascade spilling over a wall top (wall face at z = 0 facing +Z, top at y = 0; along +X)
   D.terraces_ivy = {
     desc: 'Trailing ivy / caper plant spilling over a wall top down the face (pos = wall top edge, along +X for `width`, hanging `drop` m down local −Y in front of the face at +Z): a leafy cushion along the top edge and hanging strands of shrinking leaf clumps. variant 1 = caper with white-pink flowers. Non-colliding.',
     params: { width: 'm (1.2)', drop: 'm (1.0)' }, variants: 2, mount: 'wall',
     build(B, o) {
       const Wd = o.width ?? 1.2, dr = o.drop ?? 1.0, seed = Math.round((o.pos?.[0] ?? 0) * 7 + (o.pos?.[2] ?? 0) * 11 + (o.pos?.[1] ?? 0) * 3);
+      // 单簇叶片 = 压扁的 blob,尺寸随垂落深度衰减(u 越大叶越小)
       const leaf = (x, y, z, s, k) => B.add(NS('foliage'), blob(1, 0, (seed + k) % 8), mixc(K.leafDk, K.leaf, 0.25 + 0.6 * hash(k * 1.7 + seed)), x, y, z, { s, sy: s * 0.9, sz: s * 0.55, ry: hash(k) * TAU, ao: false });
       const nTop = Math.max(2, Math.round(Wd / 0.22));
       for (let i = 0; i < nTop; i++) leaf((i + 0.5) * (Wd / nTop) + (hash(seed + i) - 0.5) * 0.08, 0.02 + 0.03 * hash(i * 3 + seed), 0.06, 0.15 + 0.04 * hash(i + seed), i);
@@ -1728,6 +1929,11 @@ export function register(D, H) {
 }
 
 // ------------------------------------------------------------------------------------------------------------
+// 【中文导读 · 摆放清单】PLACEMENTS = 本关布景的 Alpha 半场摆放表。
+// 每条默认被镜像到另一半场:(x,z) → (−x,−z)、rotY 加 π;除非条目写 mirror:false 或带
+// onlyIn / notIn 限定模式。部分条目由 layout.js 的 TERRAIN 几何自动导出(棱线、楼梯、坡道),
+// 让栏杆 / 悬崖 / 藤蔓精确跟随每条台地边缘的曲线。
+// ------------------------------------------------------------------------------------------------------------
 // Placements (Alpha half; each entry is mirrored (x, z) → (−x, −z), rotY + π)
 // ------------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------------
@@ -1736,23 +1942,30 @@ export function register(D, H) {
 // every terrace edge, the stairs — so balustrades, cliffs, ivy and handrails follow the curves exactly.
 // ------------------------------------------------------------------------------------------------------------
 const HP_ = P / 2, rad = (deg) => (deg * P) / 180;
+// 五个台地级(L0..L4)的轮廓与高度,来自 layout 的 TERRAIN
 const TR = TERRAIN;
 const LV = [TR.R0, TR.R1, TR.R2, TR.R3, TR.R4], LVY = [TR.H0, TR.H1, TR.H2, TR.H3, TR.H4];
+// (x,z) 处的地形高度(Alpha 半场):取包含该点的最高一级台地
 // terrain height at (x, z) (Alpha half): the highest level whose region holds the point
 const yAt = (x, z) => { let y = 0; for (let L = 0; L < 5; L++) if (TR.inside(LV[L], x, z)) y = LVY[L]; return y; };
+// 摆一条:自动把 pos 的 y 设为该点地形高度(除非条目自带 y)
 const at = (type, x, z, o = {}) => ({ type, pos: [x, o.y ?? yAt(x, z), z], ...o });
 const W_ = '#f4f0e7', OCHRE = '#e9cf9c', PINK = '#efcdbd', SKYC = '#dfe8ea', BLUE = '#41709c', GREEN = '#4f7e62', TEAL = '#3f8588';
+// 把道具局部 +X 轴转向平面方向 (dx,dz) 的 rotY(此时局部 +Z 指向 (−dz,dx))
 // rotY (radians) that turns a prop's local +X along the plan direction (dx, dz); its local +Z is then (−dz, dx)
 const rotX = (dx, dz) => Math.atan2(-dz, dx);
+// 把道具正面(局部 +Z)转向 (dx,dz) 的 rotY
 // rotY (radians) that turns a prop's local +Z (its front) toward (dx, dz)
 const rotZ = (dx, dz) => Math.atan2(dx, dz);
 const HALF = LAYOUT.half;
 
+// 【rimsOf】收集某一级台地的全部棱线(layout 里 tag 为 rim-L-* 的段):
+// 求出外法线、外棱起点、切向与长度 —— 栏杆 / 悬崖 / 藤蔓都沿这条线生成
 // ---- the rim chords of each level: centre, direction, length, outward normal (toward the lower side)
 function rimsOf(L) {
   return HALF.filter((d) => String(d.tag).startsWith('rim-' + L + '-')).map((d) => {
     const a = rad(d.rotY), dx = Math.cos(a), dz = -Math.sin(a);
-    let nx = -dz, nz = dx;                                   // one of the two normals
+    let nx = -dz, nz = dx;                                   // one of the two normals  【两个法线候选之一,下一步会校正朝外】
     if (TR.inside(LV[L], d.center[0] + nx * 0.6, d.center[2] + nz * 0.6)) { nx = -nx; nz = -nz; }
     const len = d.size[0], hw = d.size[2] / 2;
     // chord on the outer face, oriented so that (−dz', dx') points outward (the balustrade / cliff / ivy frame)
@@ -1761,14 +1974,19 @@ function rimsOf(L) {
     return { L, cx: d.center[0], cz: d.center[2], ox, oz, ux, uz, nx, nz, len, y: d.center[1] + d.size[1] / 2, start: [ox - (ux * len) / 2, oz - (uz * len) / 2] };
   });
 }
+// L0(滨海一级)的全部棱线
 const RIM0 = rimsOf(0);
+// 整条海缘的观景石栏杆(压在压顶条上,内退 0.18m)
 // belvedere balustrades along the whole sea edge (on the coping, 0.18 m in from the face)
 const seaBalustrades = RIM0.map((r) => ({ type: 'terraces_balustrade', pos: [r.start[0] - r.nx * 0.18, r.y, r.start[1] - r.nz * 0.18], rotY: rotX(r.ux, r.uz), length: r.len, piers: r.len > 2.2, finials: false }));
+// 海缘下方(场外)的海崖
 // sea cliffs under the edge (outside the arena)
 const seaCliffs = RIM0.map((r, i) => ({ type: 'terraces_cliff', pos: [r.start[0], 0, r.start[1]], rotY: rotX(r.ux, r.uz), length: r.len, top0: 0, top1: 0, seed: 3 + i }));
+// L1–L3 每三段台地墙挂一条常春藤 / 刺山柑垂蔓
 // ivy / caper cascades on every third terrace wall (levels 1–3)
 const ivy = [1, 2, 3].flatMap((L) => rimsOf(L).filter((r, i) => (i + L) % 3 === 0 && r.len > 0.8).map((r, i) => ({ type: 'terraces_ivy', pos: [r.start[0] + r.ux * 0.1, r.y, r.start[1] + r.uz * 0.1], rotY: rotX(r.ux, r.uz), width: r.len - 0.2, drop: 0.95, variant: (i + L) % 2 })));
 
+// 【stairRails】每条大台阶两侧的铁扶手:从 low 指向 high,沿坡度生成(rise = 高差),栏杆碰撞随坡
 // ---- handrails both sides of every stair (rail colliders follow the slope)
 const STAIRS = HALF.filter((d) => d.kind === 'ramp' && /scalinata|vicolo|passo|stair|salita|gradoni/.test(d.tag) && !/incline/.test(d.tag));
 const stairRails = STAIRS.flatMap((d) => {
@@ -1776,44 +1994,54 @@ const stairRails = STAIRS.flatMap((d) => {
   return [1, -1].map((s) => ({ type: 'terraces_rail', pos: [d.low[0] + sx * off * s, d.low[1], d.low[2] + sz * off * s], rotY: rotX(ux, uz), length: run, rise: d.high[1] - d.low[1] }));
 });
 
+// 【民居】layout 导出的房子(H)与上层块(U);dress() 一键生成 terraces_house 条目
 // ---- the houses (dressing for the turned blocks in layout.js)
 const H = TR.HOUSES, U = TR.UPPERS;
 const dress = (h, faces, o = {}) => ({ type: 'terraces_house', pos: [h.cx, 0, h.cz], rotY: rad(h.rot), w: h.w, d: h.d, top: h.top, faces, color: h.color, ...o });
 
+// 【缆车】坡道的几何(TR.INC / incN / incDir)与朝向;up/down = 朝坡上 / 朝坡下的 rotY
 // ---- the funicular along the incline (local +Z uphill)
 const I = TR.INC, iN = TR.incN, iD = TR.incDir, up = rotZ(-iD[0], -iD[1]), down = rotZ(iD[0], iD[1]);
 const trackFoot = [I.foot[0] - iN[0] * 0.9, I.foot[2] - iN[1] * 0.9];
 const incAt = (t, off) => TR.incP(t, off);
 
+// 【piazza 极坐标】ψ = 绕广场中心的罗盘角,r = 半径;onP 在广场环上摆道具
 // ---- the piazza ring: compass angle ψ round the centre, radius r
 const po = (psi, r) => { const u = TR.uO(psi); return [u[0] * r, u[1] * r]; };
 const onP = (type, psi, r, o = {}) => { const [x, z] = po(psi, r); return at(type, x, z, o); };
+// 【hill 极坐标】φ 从"指向广场的方向"起算(东为正),r 从山顶起算;onH 在山坡坐标上摆道具
 // ---- the hill frame: φ from the direction to the piazza (+ east), radius from the hilltop
 const ph = (r, phi) => { const q = TR.P(r, phi); return [q[0], q[1]]; };
 const onH = (type, r, phi, o = {}) => { const [x, z] = ph(r, phi); return at(type, x, z, o); };
 
 export const PLACEMENTS = [
+  // ================= San Vito(教堂:单一自对称,不镜像)
   // ================= San Vito (single, self-symmetric)
   { type: 'terraces_chapel', pos: [0, 0, 0], mirror: false, notIn: 'zones' },
+  // Zone Control 模式:教堂换成柱廊亭
   // Zone Control: the chapel opened up into the tempietto on the deeper sagrato (layout.js SINGLE)
   { type: 'terraces_tempietto', pos: [0, 0, 0], mirror: false, onlyIn: 'zones' },
 
+  // ================= 基地背面:柠檬别墅(出生点背景)、缆车上站、园墙、后山
   // ================= the back of the base: Villa Limoni (spawn backdrop), upper funicular station, garden wall, hill
   { type: 'terraces_villa', pos: [-12, 0, -45.4], rotY: 0, w: 15.2 },
   { type: 'terraces_upstation', pos: [-23.2, 0, -45.4], rotY: 0, w: 7.2, trackX: -25.18 + 23.2 },
   { type: 'terraces_gardenwall', pos: [2.05, 0, -45.4], rotY: 0, w: 12.9, gateX: -1.5, floor: 2.4, top: 5.0 },
   { type: 'terraces_hillside', pos: [-10, 0, -46], rotY: 0 },
+  // 海缘:压顶上的栏杆 + 下方悬崖;西坡道一侧另有专属悬崖
   // sea edge: balustrades on the coping, cliffs below; the incline's own cliff down the west side
   ...seaBalustrades, ...seaCliffs,
   { type: 'terraces_cliff', pos: [I.top[0] - iN[0] * 2.2, 0, I.top[2] - iN[1] * 2.2], rotY: rotX(iD[0], iD[1]), length: iD[2], top0: 4.8, top1: 0, seed: 2 },
   { type: 'terraces_balustrade', pos: [-26.6, 4.8, -45.2], rotY: -HP_, length: 3.9 },
 
+  // ================= 缆车:轨道、停在半坡的车厢、上下两站雨棚
   // ================= the funicular: track, car stopped halfway, lower + upper station canopies
   { type: 'terraces_track', pos: [trackFoot[0], 0, trackFoot[1]], rotY: up, run: iD[2], rise: 4.8 },
   (() => { const p = incAt(0.5, -0.9); return { type: 'terraces_funicar', pos: [p[0], 2.4, p[1]], rotY: up }; })(),
   (() => { const p = incAt(1.03, -0.9); return { type: 'terraces_station', pos: [p[0], 0, p[1]], rotY: down, w: 1.9, d: 2.0, h: 2.8, sign: 'FUNICOLARE' }; })(),
   { type: 'terraces_station', pos: [-24.6, 4.8, -43.2], rotY: 0, w: 3.4, d: 3.6, h: 2.8, sign: 'STAZIONE', clock: false },
 
+  // ================= 绕广场的新月形排屋(咖啡 / 彩陶 / 柠檬酒三店 + 各自上层)
   // ================= the crescent round the piazza
   dress(H.caffe, {
     0: [{ t: 'shop', x: -1.3, y: 0, w: 2.3, h: 2.1, frame: '#3f5f7f', lit: 1.0 }, { t: 'door', x: 1.5, y: 0, w: 1.0, h: 2.2, arch: false, leaf: '#3f5f7f', frame: '#e9e2d3' },
@@ -1844,6 +2072,7 @@ export const PLACEMENTS = [
   { type: 'terraces_house', pos: [U.mare.cx, 0, U.mare.cz], rotY: rad(U.mare.rot), w: U.mare.w, d: U.mare.d, top: U.mare.top, color: U.mare.color, roof: 'gable', rise: 0.8, alongX: false,
     faces: { 1: [{ t: 'win', x: 0, y: 3.6, w: 0.7, h: 1.0, shut: BLUE, lit: 0.9 }], 2: [{ t: 'win', x: 0, y: 3.5, w: 0.6, h: 0.9, shut: BLUE }] } },
   onP('terraces_crates', H.mare.psi - 4, 14.9, { y: 2.6, rotY: rad(H.mare.rot) + 0.1, variant: 1 }),
+  // ================= Largo 广场肩台(H2):壁泉、老橄榄、灯柱、柠檬树、猫
   // ================= the Largo (H2): wall fountain on the shoulder wall, the olive, lamps, a lemon tree, the cat
   (() => { const [x, z] = ph(11.2, -27.2), n = [0.99, 0.14]; return { type: 'terraces_fountain', pos: [x, 2.4, z], rotY: rotZ(n[0], n[1]) }; })(),
   onH('terraces_olive', 16.2, 17, { seed: 5 }),
@@ -1852,12 +2081,14 @@ export const PLACEMENTS = [
   onH('terraces_potplant', 9.6, -24, { variant: 0 }),
   onH('terraces_cat', 15.0, -9, { rotY: 1.2, variant: 0, color: '#d18a4a' }),
 
+  // ================= 新月排屋后的背街(H2):晾衣绳、门口小盆栽
   // ================= the street behind the crescent (H2): laundry on poles, doorstep pots
   onP('terraces_laundry', -34, 20.4, { y: 5.2, rotY: rotX(TR.uO(-34)[1] * -1, TR.uO(-34)[0]), length: 3.6, posts: 2.8, variant: 0 }),
   onP('terraces_laundry', 12, 20.3, { y: 5.2, rotY: rotX(-TR.uO(12)[1], TR.uO(12)[0]), length: 3.4, posts: 2.8, variant: 1 }),
   onP('terraces_pots', -26, 20.9, { count: 4 }),
   onP('terraces_pots', 24, 20.8, { count: 5, variant: 1 }),
 
+  // ================= 广场(Alpha 侧半环):咖啡座、灯柱、报刊亭、货车、水井、猫、串灯
   // ================= the piazza (Alpha side of the ring)
   onP('terraces_cafe', -33, 11.9, { variant: 0, seed: 1.2 }),
   onP('terraces_lamppost', -62, 12.4),
@@ -1868,10 +2099,12 @@ export const PLACEMENTS = [
   onP('terraces_cat', -68.4, 13.55, { y: 0.92, rotY: 1.2, variant: 2, color: '#3a3634' }),
   onP('stringlights', -52, 12.9, { rotY: rotX(-TR.uO(-46)[1], TR.uO(-46)[0]), length: 6.5, height: 2.7, posts: true, sag: 0.3 }),
 
+  // ================= 东炮台(镜像出西炮台):岬角上的望远镜、角落的龙舌兰
   // ================= the east bastion (and, mirrored, the west one): the telescope on the prow, an agave in the corner
   { type: 'terraces_telescope', pos: [TR.BELV[0] + 2.3, -0.1, TR.BELV[1]], rotY: HP_ },
   { type: 'terraces_potplant', pos: [15.0, 0, -5.55], variant: 3 },
 
+  // ================= 东巷:Limonaia(H3 瓣)大凉棚、Orto 菜园(H2)、岬角瞭望台(H0)
   // ================= the east lane: Limonaia (H3 lobe) under its pergola, Orto (H2), the headland lookout (H0)
   at('terraces_pergola', -1.6, -33.8, { rotY: 0.55, w: 8.0, d: 6.0, h: 2.5, variant: 0, cover: 0.6 }),
   at('terraces_potplant', -4.2, -35.6, { variant: 0 }),
@@ -1884,6 +2117,7 @@ export const PLACEMENTS = [
   at('terraces_telescope', 16.8, -20.8, { rotY: rotZ(0.8, -0.6) }),
   at('terraces_lamppost', 12.6, -12.4),
 
+  // ================= 西侧:大台阶道(Salita)、别墅前庭
   // ================= the west: the Salita, the forecourt, the villa terrace
   at('terraces_lamppost', -15.4, -35.6),
   at('terraces_potplant', -20.4, -44.6, { y: 4.8, variant: 3 }),
@@ -1892,6 +2126,7 @@ export const PLACEMENTS = [
   at('terraces_pots', -7.6, -45.0, { y: 4.8, count: 4 }),
   at('terraces_lamppost', -16.8, -40.2, { y: 4.8 }),
 
+  // ================= 楼梯:双侧扶手;台地墙:垂藤(由前面导出的数组批量铺开)
   // ================= stairs: handrails; terrace walls: ivy
   ...stairRails, ...ivy,
 ];
