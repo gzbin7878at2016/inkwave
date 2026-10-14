@@ -20,10 +20,10 @@ Electron 启动,注册 app:// 协议,加载 index.html          【electron/main
 浏览器引擎解析 index.html:4 个空 div + import map + 1 个 module 脚本   【index.html】
    │
    ▼
-下载并执行 src/main.js → 最后一行 new Game().boot()       【main.js:1414】
+下载并执行 src/main.js → 最后一行 new Game().boot()       【main.js:1509】
    │
    ▼
-boot():一段 async 函数,一边干活一边推进度条              【main.js:56】
+boot():一段 async 函数,一边干活一边推进度条              【main.js:91】
    ├─ ① 先把加载界面 itself 显示出来(UI 优先)
    ├─ ② 创建渲染器 / 场景 / 相机
    ├─ ③ 动态 import 加载五大模块(网络请求!)
@@ -33,7 +33,7 @@ boot():一段 async 函数,一边干活一边推进度条              【main.j
    └─ ⑦ 模拟 3 帧 → "就绪!" → 标题画面
    │
    ▼
-主循环 _loop 接管,游戏开始呼吸                          【main.js:1069】
+主循环 _loop 接管,游戏开始呼吸                          【main.js:1155】
 ```
 
 **先记住一个反直觉的事实**:这个项目几乎没有"资产包"可下载(美术全是代码生成的),所以加载条的大头不是网络下载,而是**①下载 JS 代码本身、②跑程序化生成算法、③编译 GLSL 着色器**。
@@ -65,23 +65,23 @@ boot():一段 async 函数,一边干活一边推进度条              【main.j
 
 ## 2. 第 1 步:main.js 的最后一行 —— 发动机点火
 
-跳到 [main.js](../src/main.js) 的最末尾([main.js:1414-1419](../src/main.js#L1414)):
+跳到 [main.js](../src/main.js) 的最末尾([main.js:1509-1514](../src/main.js#L1509)):
 
 ```js
 const game = new Game();
 game.boot().catch((e) => { ... });   // 失败 → 显示 #boot-error 红框
 ```
 
-就两行。`Game` 类的定义在 [main.js:55](../src/main.js#L55),`boot()` 是 async 方法。**从这一刻起,后面所有事情都是 boot() 函数体内的顺序执行**——这就是为什么读启动流程只需要精读一个函数。
+就两行。`Game` 类的定义在 [main.js:78](../src/main.js#L78),`boot()` 是 async 方法。**从这一刻起,后面所有事情都是 boot() 函数体内的顺序执行**——这就是为什么读启动流程只需要精读一个函数。
 
 ---
 
 ## 3. 第 2 步:为什么加载条"秒出现" —— UI 优先策略
 
-boot() 开头([main.js:59-87](../src/main.js#L59))做的第一件事,你可能想不到:**先把加载界面本身做出来**。
+boot() 开头([main.js:95-128](../src/main.js#L95))做的第一件事,你可能想不到:**先把加载界面本身做出来**。
 
 ```js
-// UI first so the loading screen shows immediately        【main.js:76】
+// UI first so the loading screen shows immediately        【main.js:112】
 const [menusMod, hudMod] = await Promise.all([loadModule('./ui/menus.js'), ...]);
 this.menus?.show('loading');                               // ← 进度条上场
 const progress = async (p, label) => { this.menus?.setLoading(p, label); await nextFrame(); };
@@ -92,14 +92,14 @@ await progress(0.05, 'Mixing ink…');                       // 调配墨水中�
 
 ### 进度条的"小秘密":它是表演,不是测量
 
-看 `setLoading` 的实现([menus.js:310-313](../src/ui/menus.js#L310)):
+看 `setLoading` 的实现([menus.js:330-335](../src/ui/menus.js#L330)):
 
 ```js
-this._loading = { target: 0, shown: 0, label: '…' };       // 【menus.js:253】
+this._loading = { target: 0, shown: 0, label: '…' };       // 【menus.js:270】
 setLoading(p, label) { this._loading.target = clamp(p); }  // 只记"目标值"
 ```
 
-注意:`target` 和 `shown` 是**两个变量**。boot() 推进度时只改 `target`,而每帧动画里进度条实际显示的是 `shown` —— 它**缓动追赶** `target`([menus.js:867-871](../src/ui/menus.js#L867))。加上 `nextFrame()` 让浏览器每步至少渲染一帧,你看到的丝滑滚动其实是"固定里程碑 + 缓动动画"。
+注意:`target` 和 `shown` 是**两个变量**。boot() 推进度时只改 `target`,而每帧动画里进度条实际显示的是 `shown` —— 它**缓动追赶** `target`([menus.js:893-897](../src/ui/menus.js#L893))。加上 `nextFrame()` 让浏览器每步至少渲染一帧,你看到的丝滑滚动其实是"固定里程碑 + 缓动动画"。
 
 > 🎯 那些俏皮话(调配墨水中…/教鱿鱼游泳中…)在 [zh.js:107-113](../src/i18n/zh.js#L107),每种语言一份,进 `t()` 函数翻译。
 
@@ -107,7 +107,7 @@ setLoading(p, label) { this._loading.target = clamp(p); }  // 只记"目标值"
 
 ## 4. 第 3 步:渲染三件套 —— 舞台、镜头、胶卷
 
-进度 0.05 之后([main.js:89-102](../src/main.js#L89)):
+进度 0.05 之后([main.js:130-145](../src/main.js#L130)):
 
 ```js
 this.R = new Renderer(app, this.settings);   // ① 渲染器 = "胶卷+冲印厂"
@@ -125,7 +125,7 @@ this.input = new Input(...);                 // 键鼠/手柄输入
 
 ## 5. 第 4 步:加载"别人写的模块" —— 真正的网络请求
 
-[main.js:105-111](../src/main.js#L105):
+[main.js:150-156](../src/main.js#L150):
 
 ```js
 const [charMod, fxMod, envMod, audioMod, musicMod] = await Promise.all([
@@ -138,7 +138,7 @@ const [charMod, fxMod, envMod, audioMod, musicMod] = await Promise.all([
 ```
 
 - **`import()` 动态加载**:和顶部的静态 import 不同,`import('./game/character.js')` 是**运行到这一行才发 HTTP 请求**。五个模块 `Promise.all` 并行下载。
-- **`loadModule` 的容错设计**([main.js:46-53](../src/main.js#L46)):每个模块加载失败不会让整个游戏崩掉,而是降级到 `dev/stubs.js` 的"假实现"。这是"模块按作者划分、允许缺席"的协作契约——详细背景见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
+- **`loadModule` 的容错设计**([main.js:66-73](../src/main.js#L66)):每个模块加载失败不会让整个游戏崩掉,而是降级到 `dev/stubs.js` 的"假实现"。这是"模块按作者划分、允许缺席"的协作契约——详细背景见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
 
 此阶段结束:进度 0.15 → 进入**最重的沉默期** → **0.4「灌注海港中…」**。
 
@@ -146,7 +146,7 @@ const [charMod, fxMod, envMod, audioMod, musicMod] = await Promise.all([
 
 ## 6. 第 5 步:建造世界 —— 加载条背后真正的大活(0.15 → 0.4)
 
-这两句之间([main.js:122-127](../src/main.js#L122))藏着整个加载过程的一半工作量:
+这两句之间([main.js:173-180](../src/main.js#L173))藏着整个加载过程的一半工作量:
 
 ```js
 this.murals = await createMuralTexture();               // 画壁画图集(Canvas 逐笔画)
@@ -163,7 +163,7 @@ await this._buildWorld(map);                            // ★ 建造世界(下�
 
 ### 6.2 `_buildWorld`:九个零件的装配线
 
-`_buildWorldNow`([main.js:224-269](../src/main.js#L224))按严格顺序装配,**顺序本身就是设计**:
+`_buildWorldNow`([main.js:293-344](../src/main.js#L293))按严格顺序装配,**顺序本身就是设计**:
 
 ```
 顺序  零件                    代码                          为什么必须在这步
@@ -181,9 +181,9 @@ await this._buildWorld(map);                            // ★ 建造世界(下�
 
 逐个说新手该关注的点:
 
-**① 道具先行**([main.js:234-244](../src/main.js#L234)):注意 `colliders` 数组——道具(箱子、栏杆)不仅是个"摆设",它会**交还碰撞盒**,和地形一起进入物理系统。如果顺序倒了,箱子就没有碰撞。
+**① 道具先行**([main.js:309-319](../src/main.js#L309)):注意 `colliders` 数组——道具(箱子、栏杆)不仅是个"摆设",它会**交还碰撞盒**,和地形一起进入物理系统。如果顺序倒了,箱子就没有碰撞。
 
-**④ 光照图:全项目唯一像样的"资产下载"**([main.js:272-287](../src/main.js#L272)):
+**④ 光照图:全项目唯一像样的"资产下载"**([main.js:351-366](../src/main.js#L351)):
 
 ```js
 const meta = await (await fetch(`assets/lightmaps/${layoutId}.json`)).json();
@@ -199,14 +199,14 @@ const tex = await new THREE.TextureLoader().loadAsync(`assets/lightmaps/${layout
 
 ### 6.3 为什么换地图也要重新加载?
 
-`_buildWorld` 开头有个"短路"判断([main.js:218](../src/main.js#L218)):
+`_buildWorld` 开头有个"短路"判断([main.js:287](../src/main.js#L287)):
 
 ```js
 const worldKey = variantKey(layoutId, MAP_LAYOUTS[layoutId], dressingFor(layoutId), mode);
 if (this.worldKey === worldKey) { this.mapDef = map; return; }   // 同一个世界 → 啥也不干
 ```
 
-所以:开第一局必建世界;**重赛同一张图,这段直接跳过**(秒进);换图/换模式才重建——这就是你对战时偶尔看到加载条的原因。而联机大厅的地图会在菜单闲置 2.5 秒后**后台偷偷预建**([main.js:182](../src/main.js#L182)),第一次进大厅才不卡。
+所以:开第一局必建世界;**重赛同一张图,这段直接跳过**(秒进);换图/换模式才重建——这就是你对战时偶尔看到加载条的原因。而联机大厅的地图会在菜单闲置 2.5 秒后**后台偷偷预建**([main.js:248](../src/main.js#L248)),第一次进大厅才不卡。
 
 此阶段结束:进度 **0.4「灌注海港中…」**。
 
@@ -214,7 +214,7 @@ if (this.worldKey === worldKey) { this.mapDef = map; return; }   // 同一个世
 
 ## 7. 第 6 步:环境与武器系统(0.4 → 0.7)
 
-[main.js:131-159](../src/main.js#L131):
+[main.js:187-217](../src/main.js#L187):
 
 ```js
 G.env = new envMod.Environment(G.renderer, scene, {...});   // 天空、太阳、环境反射
@@ -238,16 +238,16 @@ installNet();                                               // 联网模块(装�
 
 ```js
 await progress(0.85, 'Warming up…');
-this._warmup();                                             // 【main.js:297】
-try { await G.renderer.compileAsync(scene, camera); }       // 【main.js:169】
+this._warmup();                                             // 【main.js:376】
+try { await G.renderer.compileAsync(scene, camera); }       // 【main.js:232】
 ```
 
 **问题**:着色器(GPU 程序)是**第一次被用到时才编译**的。如果不处理,你比赛中投出第一颗炸弹的瞬间,GPU 要现场编译炸弹的着色器——画面冻结几十到几百毫秒。
 
 **对策分两层**:
 
-1. **`_warmup()`:把每个"第一次"提前演一遍**([main.js:297-310](../src/main.js#L297))——在屏幕外(y = -30,玩家看不见的地方)把每种特效各放一遍:爆炸、涟漪、枪口焰、出生闪光……连炸弹这种"懒创建"的材质也做两个替身球挂进场景。副作用就是:所有该创建的对象、该编译的程序,**此刻全部触发**。
-2. **`compileAsync`:一次性编译全场景**([main.js:169](../src/main.js#L169))。它利用浏览器扩展 `KHR_parallel_shader_compile` 让多个着色器**并行编译**,加载动画照常跑;编完再统一检查。
+1. **`_warmup()`:把每个"第一次"提前演一遍**([main.js:376-392](../src/main.js#L376))——在屏幕外(y = -30,玩家看不见的地方)把每种特效各放一遍:爆炸、涟漪、枪口焰、出生闪光……连炸弹这种"懒创建"的材质也做两个替身球挂进场景。副作用就是:所有该创建的对象、该编译的程序,**此刻全部触发**。
+2. **`compileAsync`:一次性编译全场景**([main.js:232](../src/main.js#L232))。它利用浏览器扩展 `KHR_parallel_shader_compile` 让多个着色器**并行编译**,加载动画照常跑;编完再统一检查。
 
 > 💡 对比:UE4 用"离线排列组合编译 + 磁盘缓存 + PSO 预热"解决同一问题;网页游戏没有文件系统,只能把编译挤进加载条。详见 [RENDERING-UE4.zh-CN.md](RENDERING-UE4.zh-CN.md) 第 3.7 节。
 
@@ -257,7 +257,7 @@ try { await G.renderer.compileAsync(scene, camera); }       // 【main.js:169】
 
 ## 9. 第 8 步:最后三帧与"就绪!"
 
-[main.js:173-180](../src/main.js#L173):
+[main.js:238-245](../src/main.js#L238):
 
 ```js
 for (let i = 0; i < 3; i++) { this._frame(1 / 60); await nextFrame(); }  // 先跑 3 帧
@@ -274,7 +274,7 @@ this.menus?.show(params.has('skipTitle') ? 'main' : 'title');            // 标�
 
 ## 10. 加载之后:主循环接管
 
-boot() 的最后一行([main.js:184](../src/main.js#L184))把控制权交给 `_loop`:
+boot() 的最后一行([main.js:250](../src/main.js#L250))把控制权交给 `_loop`:
 
 ```js
 _loop(ts) {
@@ -289,7 +289,7 @@ _loop(ts) {
 ```
 
 - `requestAnimationFrame`(简称 rAF)是浏览器的"每帧叫我一次"回调,**和显示器刷新同步**(60Hz 屏每秒 60 次)。
-- `_frame(dt)`([main.js:1124](../src/main.js#L1124))是每一帧真正干活的地方:输入 → 网络 → 比赛模拟(物理不够快会自动拆子步)→ 弹道/特效 → 相机 → 渲染。
+- `_frame(dt)`([main.js:1217](../src/main.js#L1217))是每一帧真正干活的地方:输入 → 网络 → 比赛模拟(物理不够快会自动拆子步)→ 弹道/特效 → 相机 → 渲染。
 - `dt`(delta time)是帧间隔秒数,**所有游戏逻辑都用它换算**——这就是为什么 30 帧和 144 帧下手感一致。
 
 到这里,"加载"就完成了它的历史使命:世界已建成、着色器已备好、主循环已开始呼吸。从此每一帧只是 `_frame(dt)` 的循环往复。
@@ -304,10 +304,10 @@ _loop(ts) {
 |---|---|---|
 | **逐阶段计时** | 控制台输入 `__inkwave.bootMarks` | `[["Mixing ink…", 42], ["Building the plaza…", 310], …]` 每个标签的毫秒时间戳 |
 | **总耗时** | `__inkwave.bootMs` | 整个 boot() 的毫秒数 |
-| **URL 参数** | `?skipTitle` | 跳过标题画面直接进主菜单([main.js:180](../src/main.js#L180)) |
-| **URL 参数** | `?autostart=180&map=lockgate` | 跳过所有菜单直接开赛(180 秒局),适合自动化测试([main.js:185](../src/main.js#L185)) |
+| **URL 参数** | `?skipTitle` | 跳过标题画面直接进主菜单([main.js:245](../src/main.js#L245)) |
+| **URL 参数** | `?autostart=180&map=lockgate` | 跳过所有菜单直接开赛(180 秒局),适合自动化测试([main.js:251](../src/main.js#L251)) |
 | **URL 参数** | `?shadercheck` | 打开同步着色器错误检查(默认关掉防卡顿,调试用) |
-| **单步仿真** | 控制台 `__inkwave.freeze()` 后 `__inkwave.step(16.7)` | 冻结后按固定 60Hz 逐帧推进,做确定性测试([main.js:196-204](../src/main.js#L196)) |
+| **单步仿真** | 控制台 `__inkwave.freeze()` 后 `__inkwave.step(16.7)` | 冻结后按固定 60Hz 逐帧推进,做确定性测试([main.js:262-270](../src/main.js#L262)) |
 | **故意画 400 滴墨** | `__inkwave.api.paintRandom()` | 观察墨图集效果 |
 
 > 💡 最有意思的是第一条:把 `bootMarks` 的时间两两相减,你就得到**你自己机器上**每个阶段的真实耗时——可以和第 0 节的预测对比,看看着色器编译在你的显卡上占了多少。
@@ -319,9 +319,9 @@ _loop(ts) {
 如果你想彻底吃透启动流程,建议按这个顺序读,预计一个下午:
 
 1. **[index.html](../index.html) 全文(35 行)** —— 建立"网页即入口"的直觉;
-2. **[main.js:1414](../src/main.js#L1414) → [main.js:56](../src/main.js#L56) `boot()`** —— 跟着进度条标签走一遍主线,遇到 `await` 就跳进去看那个函数;
+2. **[main.js:1509](../src/main.js#L1509) → [main.js:91](../src/main.js#L91) `boot()`** —— 跟着进度条标签走一遍主线,遇到 `await` 就跳进去看那个函数;
 3. **`_buildWorldNow`(第 6 节那张表)** —— 逐个零件跳:`Level` → `Physics` → `_loadLightmap` → `PaintSystem` → `createLevelMaterial`;
-4. **`_warmup` + `compileAsync`** —— 理解"预热"为什么存在(配合 [renderer.js:86](../src/core/renderer.js#L86) 的注释);
+4. **`_warmup` + `compileAsync`** —— 理解"预热"为什么存在(配合 [renderer.js:118](../src/core/renderer.js#L118) 的注释);
 5. **`_loop` / `_frame`** —— 看一帧的完整旅程,启动故事就闭环了;
 6. **最后**:打开控制台,用 `bootMarks` 在你自己机器上验证每一步的耗时,把"读到的"变成"测到的"。
 
@@ -332,13 +332,13 @@ _loop(ts) {
 | 阶段 | 进度 | 标签 | 干什么 | 代码 |
 |---|---|---|---|---|
 | 入口 | — | — | Electron/app:// → index.html → main.js | [index.html](../index.html)、[main.cjs](../electron/main.cjs) |
-| UI 优先 | 0.05 | 调配墨水中… | 先显示加载条,再干重活 | [main.js:76-87](../src/main.js#L76) |
-| 渲染三件套 | →0.15 | 搭建广场中… | Renderer / Scene / Camera / Input | [main.js:89-102](../src/main.js#L89) |
-| 模块下载 | →0.15 | 搭建广场中… | 动态 import 五大模块(容错降级) | [main.js:105](../src/main.js#L105) |
-| 建造世界 | →0.4 | 灌注海港中… | 程序化纹理 + 九零件装配线 | [main.js:122-127](../src/main.js#L122)、[main.js:224](../src/main.js#L224) |
-| 环境武器 | →0.7 | 调校触手中… | 天空/弹道/副武器/大招/特效池 | [main.js:131-159](../src/main.js#L131) |
-| 预热编译 | →0.93 | 预热中… | 屏幕外放遍特效 + compileAsync | [main.js:297](../src/main.js#L297)、[main.js:169](../src/main.js#L169) |
-| 收尾 | →1.0 | 就绪! | 跑 3 帧 → 标题 → 主循环接管 | [main.js:173-184](../src/main.js#L173) |
+| UI 优先 | 0.05 | 调配墨水中… | 先显示加载条,再干重活 | [main.js:112-128](../src/main.js#L112) |
+| 渲染三件套 | →0.15 | 搭建广场中… | Renderer / Scene / Camera / Input | [main.js:130-145](../src/main.js#L130) |
+| 模块下载 | →0.15 | 搭建广场中… | 动态 import 五大模块(容错降级) | [main.js:150](../src/main.js#L150) |
+| 建造世界 | →0.4 | 灌注海港中… | 程序化纹理 + 九零件装配线 | [main.js:173-180](../src/main.js#L173)、[main.js:293](../src/main.js#L293) |
+| 环境武器 | →0.7 | 调校触手中… | 天空/弹道/副武器/大招/特效池 | [main.js:187-217](../src/main.js#L187) |
+| 预热编译 | →0.93 | 预热中… | 屏幕外放遍特效 + compileAsync | [main.js:376](../src/main.js#L376)、[main.js:232](../src/main.js#L232) |
+| 收尾 | →1.0 | 就绪! | 跑 3 帧 → 标题 → 主循环接管 | [main.js:238-250](../src/main.js#L238) |
 
 **三条带走的核心思想**:
 1. **加载条是舞台指示器**——百分比是写死的里程碑,先让"正在加载"可见,再在掩护下干重活;

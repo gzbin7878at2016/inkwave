@@ -83,7 +83,7 @@ CPU 侧(游戏代码)                GPU 侧(显卡)
 | 维度 | INKWAVE | UE4 |
 |---|---|---|
 | 你拿到的 | 一个 npm 包(three.js)+ 源码 | 编辑器程序 + 源码(C++/蓝图) |
-| 启动一个渲染器 | `new THREE.WebGLRenderer(...)` 一行([renderer.js:84](../src/core/renderer.js#L84)) | 创建 GameInstance → World → 一整套对象生命周期 |
+| 启动一个渲染器 | `new THREE.WebGLRenderer(...)` 一行([renderer.js:116](../src/core/renderer.js#L116)) | 创建 GameInstance → World → 一整套对象生命周期 |
 | 场景组织 | `THREE.Scene` 一个树状结构,手动 add/remove | Actor/Component 体系 + 关卡序列化 |
 | 跨平台 | 浏览器(Chrome/Firefox/Safari/Electron 壳) | Win/Mac/Linux/主机,经 RHI 切换图形 API |
 
@@ -108,7 +108,7 @@ UE4 的游戏代码**从不直接碰 DirectX**。它把"画一个三角形"翻�
 
 Windows 上的 Chrome/Edge 用 **ANGLE** 把 WebGL 翻译成 Direct3D 11。也就是说,INKWAVE 作者**没有写一行平台相关代码,却免费获得了 RHI 级别的跨平台能力**——这是 Web 平台最被低估的优势。
 
-代价是控制力:UE4 可以为 PS5 手写专用路径;INKWAVE 只能祈祷浏览器不抽风。一个真实案例就在本项目里([renderer.js:2](../src/core/renderer.js#L2)):
+代价是控制力:UE4 可以为 PS5 手写专用路径;INKWAVE 只能祈祷浏览器不抽风。一个真实案例就在本项目里([renderer.js:18](../src/core/renderer.js#L18)):
 
 > Apple 芯片(M 系列)的 ANGLE/Metal 后端上,**半浮点多重采样渲染目标慢到离谱**(1920×1200 约 30ms/帧)。于是代码在运行时检测 `isAppleGPU()`,在苹果机器上改用单采样 + SMAA 后处理抗锯齿 + 半分辨率 GTAO。
 
@@ -193,11 +193,11 @@ UE4 靠 DDC + 资产指纹自动处理这类缓存失效;INKWAVE 里这是**手�
 
 - **Lightmass**:离线烘焙全局光照(光在墙面间的多次反弹),产出 Lightmap——对应 INKWAVE 的 AO 烘焙,但信息量大得多;
 - **反射捕获(Reflection Capture)**:在场景各处放"相机"拍立方体贴图,供镜面反射采样——INKWAVE 没有对应物(湿墨反射直接采环境贴图近似);
-- **级联阴影贴图(CSM)**:大场景阴影的标配,把视野切成近/中/远几段各用一张高精度阴影图;INKWAVE 场景小,单张阴影图 + 一次手工优化就够([renderer.js:66](../src/core/renderer.js#L66) 把 three.js r186 默认的旋转 Vogel 盘 5-tap PCF 换成了 3×3 双线性 tap,消除阴影边缘的颗粒抖动)。
+- **级联阴影贴图(CSM)**:大场景阴影的标配,把视野切成近/中/远几段各用一张高精度阴影图;INKWAVE 场景小,单张阴影图 + 一次手工优化就够([renderer.js:90](../src/core/renderer.js#L90) 把 three.js r186 默认的旋转 Vogel 盘 5-tap PCF 换成了 3×3 双线性 tap,消除阴影边缘的颗粒抖动)。
 
 ### 3.5 后处理链:Volume 配置 vs 手工搭流水线
 
-**INKWAVE 的后处理是一行注释就讲完的架构**([renderer.js:1](../src/core/renderer.js#L1)):
+**INKWAVE 的后处理是一行注释就讲完的架构**([renderer.js:17](../src/core/renderer.js#L17)):
 
 ```
 MSAA HDR 半浮点目标 → (可选)GTAO 环境光遮蔽 → UnrealBloom 泛光
@@ -205,8 +205,8 @@ MSAA HDR 半浮点目标 → (可选)GTAO 环境光遮蔽 → UnrealBloom 泛光
 ```
 
 - **HDR 管线**:中间帧缓冲用 `HalfFloatType`(半浮点),允许像素亮度超过 1.0,泛光只提取高亮部分——和 UE4 的 HDR 管线思想一致,只是 UE4 是全引擎强制,这里是手动选择。
-- **GTAO**:屏幕空间环境光遮蔽(SSAO 的改进版),从深度图推算缝隙变暗。[renderer.js:134-135](../src/core/renderer.js#L134) 调参(radius 1.1m、12 采样、PD 降噪),苹果芯片上半分辨率跑。
-- **Grade shader**([renderer.js:17](../src/core/renderer.js#L17)):饱和度/vibrance、对数空间对比度、冷阴影暖高光分离色调、暗角、低血量去饱和。**这段 60 行 GLSL 就是 UE4 里 PostProcess Volume 一整个面板的手写等价物。**
+- **GTAO**:屏幕空间环境光遮蔽(SSAO 的改进版),从深度图推算缝隙变暗。[renderer.js:179-180](../src/core/renderer.js#L179) 调参(radius 1.1m、12 采样、PD 降噪),苹果芯片上半分辨率跑。
+- **Grade shader**([renderer.js:37](../src/core/renderer.js#L37)):饱和度/vibrance、对数空间对比度、冷阴影暖高光分离色调、暗角、低血量去饱和。**这段 60 行 GLSL 就是 UE4 里 PostProcess Volume 一整个面板的手写等价物。**
 
 **UE4 的对照**:后处理链用 C++ 结构体数组声明,每个 pass 声明自己的输入输出,引擎自动连线;调参在 PostProcess Volume 里做,还能按体积混合(走进洞穴自动换一套调色)。INKWAVE 想要"区域化调色"得自己写逻辑改 uniform——更笨,但每一行因果都清楚。
 
@@ -226,7 +226,7 @@ TAA 需要"运动向量缓冲"(记录每个像素上一帧在哪),这是延迟�
 
 **UE4**:材质保存 → 生成 HLSL → 按排列组合编译(基础 pass、阴影 pass、深度 pass × 各质量级 × 各平台)→ ShaderCompileWorker 多进程并行编译 → 存 DDC。运行时还有 **PSO(管线状态对象)预收集**,避免游戏过程中突然卡顿编译。**着色器编译卡顿在 UE4 里是工程级问题**,有专门的预热流程。
 
-**INKWAVE**([renderer.js:86-88](../src/core/renderer.js#L86)):
+**INKWAVE**([renderer.js:118-120](../src/core/renderer.js#L118)):
 
 ```js
 // 着色器状态检查会让每次编译都变成同步等待(CPU 干等 GPU 进程返回链接结果):

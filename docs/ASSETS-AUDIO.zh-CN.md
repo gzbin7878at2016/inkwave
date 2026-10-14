@@ -7,7 +7,7 @@
 
 ## 0. 一句话事实
 
-整个 `src/audio/` 目录只有 3 个 JS 文件、**没有任何 wav/ogg/mp3**。文件开头注释把话说死了([audio.js:1](../src/audio/audio.js#L1)):
+整个 `src/audio/` 目录只有 3 个 JS 文件、**没有任何 wav/ogg/mp3**。文件开头注释把话说死了([audio.js:30](../src/audio/audio.js#L30)):
 
 > "No audio files: every sound is synthesized per play." —— 每次播放都是现场合成。
 
@@ -39,7 +39,7 @@ INKWAVE:   配方代码 ──► 现场建振荡器/滤波器 ──► 出声
                               master → 25Hz 高通(DC 安全)→ glue 压缩 → 限制器 → 扬声器
 ```
 
-代码锚点:节点链搭建在 [audio.js:113-139](../src/audio/audio.js#L113);音乐内部链在 [music.js:1308-1313](../src/audio/music.js#L1308)。
+代码锚点:节点链搭建在 [audio.js:162-188](../src/audio/audio.js#L162);音乐内部链在 [music.js:1501-1506](../src/audio/music.js#L1501)。
 
 **新手要懂的三个元件**(后文反复出现):
 
@@ -51,7 +51,7 @@ INKWAVE:   配方代码 ──► 现场建振荡器/滤波器 ──► 出声
 
 ### 1.2 共享 DSP 核心
 
-SFX 和音乐**共用同一套合成原语**——`music.js` 导出的 `V`(voice 构建器)类([music.js:218-344](../src/audio/music.js#L218)):一条链式 API 把振荡器/噪声/增益/滤波/声像连成图。常用复合积木:
+SFX 和音乐**共用同一套合成原语**——`music.js` 导出的 `V`(voice 构建器)类([music.js:262-392](../src/audio/music.js#L262)):一条链式 API 把振荡器/噪声/增益/滤波/声像连成图。常用复合积木:
 
 ```js
 v.tone({ f: 440, f1: 880, a: 0.005, d: 0.12, peak: 0.5 })  // 带扫频的正弦音(音高滑动)
@@ -59,7 +59,7 @@ v.nz({ ft: 'bandpass', f: 1200, q: 1.2, d: 0.08 })          // 滤波噪声(打�
 v.bub()                                                      // Minnaert 气泡音("plip")
 ```
 
-包络(音量随时间的曲线)两种:打击式 `perc`、起-保持-释 `ahr`([music.js:174-204](../src/audio/music.js#L174))。
+包络(音量随时间的曲线)两种:打击式 `perc`、起-保持-释 `ahr`([music.js:215-245](../src/audio/music.js#L215))。
 
 ---
 
@@ -67,7 +67,7 @@ v.bub()                                                      // Minnaert 气泡�
 
 ### 2.1 定义:声明式配方 + 注册表
 
-全部音效挂在一张全局注册表 `SFX` 上([audio.js:399-400](../src/audio/audio.js#L399)),用 `def(name, {...})` 登记,共约 **150 个**(分组见 [audio.js:2479-2502](../src/audio/audio.js#L2479))。一条 SFX 的形状:
+全部音效挂在一张全局注册表 `SFX` 上([audio.js:482-483](../src/audio/audio.js#L482)),用 `def(name, {...})` 登记,共约 **150 个**(分组见 [audio.js:2585-2609](../src/audio/audio.js#L2585))。一条 SFX 的形状:
 
 ```js
 def('shoot_shooter', {            // 小绿枪开枪
@@ -80,12 +80,12 @@ def('shoot_shooter', {            // 小绿枪开枪
     v.tone({ f: 900*p, f1: 300*p, ... });   // "pew" 啾啾
     v.nz({ ft: 'bandpass', f: 2400, ... }); // 气动 "pshk"
     v.bub();                                // 气泡 plip
-    // …shoot_shooter 实际叠了 7 层:见 audio.js:472-487
+    // …shoot_shooter 实际叠了 7 层:见 audio.js:559-574
   },
 });
 ```
 
-**看真实配方**:[audio.js:472-487](../src/audio/audio.js#L472)——一枪是 7 层声音的叠加(snap 噪声 + 啾啾 + 气动 + 低频 thump + 湿 splort + 气泡 + 空气声),还用 `v.pick()` 在 3 套变体里随机选,连发时不至于像机关枪复读。
+**看真实配方**:[audio.js:559-574](../src/audio/audio.js#L559)——一枪是 7 层声音的叠加(snap 噪声 + 啾啾 + 气动 + 低频 thump + 湿 splort + 气泡 + 空气声),还用 `v.pick()` 在 3 套变体里随机选,连发时不至于像机关枪复读。
 
 ### 2.2 播放:调用链全景
 
@@ -93,7 +93,7 @@ def('shoot_shooter', {            // 小绿枪开枪
 玩家按鼠标
    │  actor 意图 fire
    ▼
-武器 kit(如 bow.js:110)──► G.audio.play('bow_loose', { pitch, pos? })
+武器 kit(如 bow.js:146)──► G.audio.play('bow_loose', { pitch, pos? })
    │                          ┌─ ① minGap 合并(几 ms 内同名只响一次)
    │                          ├─ ② 上限检查:每名字 max / 全局 48 voice,超了偷最老的
    │                          ├─ ③ 音高 = opts.pitch × (1 ± jitter)
@@ -104,16 +104,16 @@ def('shoot_shooter', {            // 小绿枪开枪
 扬声器
 ```
 
-代码锚点:播放入口 [audio.js:258-304](../src/audio/audio.js#L258);偷最老 voice 的 `_steal()` [audio.js:244-250](../src/audio/audio.js#L244);自动拆图 [music.js:322-343](../src/audio/music.js#L322)。
+代码锚点:播放入口 [audio.js:325-376](../src/audio/audio.js#L325);偷最老 voice 的 `_steal()` [audio.js:307-313](../src/audio/audio.js#L307);自动拆图 [music.js:369-391](../src/audio/music.js#L369)。
 
 **谁(play 的调用方)**:HUD 按钮音(main.js 注入)、主循环事件(命中/受伤/游泳/击杀,[main.js:571-647](../src/main.js#L571))、武器 kit 本体。判据惯用 `heard(a)` = `a.isLocal || a._nearCamera?.()`——远处的战斗不出声,省 voice。
 
 ### 2.3 3D 定位音:两层距离衰减
 
-`play(name, { pos })` 带坐标就是 3D 音([audio.js:195-204](../src/audio/audio.js#L195)):
+`play(name, { pos })` 带坐标就是 3D 音([audio.js:253-262](../src/audio/audio.js#L253)):
 
 1. **PannerNode 几何衰减**:`panningModel='HRTF'`(头相关传输函数,戴上耳机能听出前后),`distanceModel='inverse'`。
-2. **空气吸收模拟**:每 voice 串一个低通滤波器,截止频率随距离衰减 `22000 × 0.5^((d−10)/13)`([audio.js:30,230](../src/audio/audio.js#L30))——**远处爆炸听闷闷的,近处才脆**,这就是"空气感"的来源。混响发送量也随距离缩。
+2. **空气吸收模拟**:每 voice 串一个低通滤波器,截止频率随距离衰减 `22000 × 0.5^((d−10)/13)`([audio.js:62,230](../src/audio/audio.js#L62))——**远处爆炸听闷闷的,近处才脆**,这就是"空气感"的来源。混响发送量也随距离缩。
 
 听者位置每帧与相机同步([main.js:1289-1292](../src/main.js#L1289))。本地玩家刻意不传 pos(不做定位,直接糊脸)。
 
@@ -121,7 +121,7 @@ def('shoot_shooter', {            // 小绿枪开枪
 
 ## 3. 音乐:文本乐谱 → 编译 → 音序器实时合成
 
-音乐**不是随机游走**,是正经的"乐谱驱动"([music.js:818-1062](../src/audio/music.js#L818) `SONGS` 表):
+音乐**不是随机游走**,是正经的"乐谱驱动"([music.js:966-1219](../src/audio/music.js#L966) `SONGS` 表):
 
 ### 3.1 乐曲的"源代码"长什么样
 
@@ -138,7 +138,7 @@ battle: {                                    // 对战主题
 }
 ```
 
-四个巧妙设计([music.js:610-777](../src/audio/music.js#L610)):
+四个巧妙设计([music.js:719-910](../src/audio/music.js#L719)):
 
 | 机制 | 效果 |
 |---|---|
@@ -151,13 +151,13 @@ battle: {                                    // 对战主题
 
 ```
 SONGS 表(乐谱源码)
-   │  compileSong()  【music.js:650-777】
+   │  compileSong()  【music.js:772-910】
    ▼
 bars[小节].ev[16分音符] 事件表(编译期就把循环点/riser/跨小节对齐算好)
    │  MusicEngine:25ms tick 的 lookahead 音序器(0.16s 窗口)
-   │  【music.js:1150-1238, 1350-1363】tick 用 Web Worker 计时,后台标签页不漂移
+   │  【music.js:1325-1421, 1350-1363】tick 用 Web Worker 计时,后台标签页不漂移
    ▼
-窗口内事件 → 乐器函数(kick/snare/bass/guitar/pad/lead/brass…【music.js:350-569】)
+窗口内事件 → 乐器函数(kick/snare/bass/guitar/pad/lead/brass…【music.js:400-644】)
    → 每个事件现场建 V 合成出声
 ```
 
@@ -167,13 +167,13 @@ bars[小节].ev[16分音符] 事件表(编译期就把循环点/riser/跨小节�
 |---|---|---|
 | 进比赛加载世界时 | `preload('battle')` / `preload('battle_final')` 预缓冲(录音存在时无缝接管) | [main.js:776](../src/main.js#L776) |
 | 比赛开始 | `_playMusic('battle')`(淡入 1.2s) | [main.js:656](../src/main.js#L656) |
-| 最后一分钟 | 事件触发切 `battle_final`——同 bpm 时**对齐小节线 + riser 衔接**,不是硬切 | [music.js:1398-1409](../src/audio/music.js#L1398) |
-| 战况变化 | `setIntensity(0..1)` 按 smoothstep 权重表增减声部:平静只剩 hats,高潮全开 | [music.js:1077-1131](../src/audio/music.js#L1077) |
-| Boss 模式 | `bossAudio.js` 用 `music.remap` **劫持** battle 请求改路由——调用方零改动 | [bossAudio.js:55-61](../src/audio/bossAudio.js#L55) |
+| 最后一分钟 | 事件触发切 `battle_final`——同 bpm 时**对齐小节线 + riser 衔接**,不是硬切 | [music.js:1598-1609](../src/audio/music.js#L1598) |
+| 战况变化 | `setIntensity(0..1)` 按 smoothstep 权重表增减声部:平静只剩 hats,高潮全开 | [music.js:1242-1304](../src/audio/music.js#L1242) |
+| Boss 模式 | `bossAudio.js` 用 `music.remap` **劫持** battle 请求改路由——调用方零改动 | [bossAudio.js:99-105](../src/audio/bossAudio.js#L99) |
 
 ### 3.4 录音覆盖机制(可选)
 
-`songs/manifest.json` 可以用真实录音覆盖任意曲目 id([music.js:1248-1262](../src/audio/music.js#L1248)):有录音走 `<audio>` 元素进同一 music bus,没有就回落合成乐谱([music.js:1388-1395](../src/audio/music.js#L1388))。仓库默认无录音,全合成。
+`songs/manifest.json` 可以用真实录音覆盖任意曲目 id([music.js:1434-1450](../src/audio/music.js#L1434)):有录音走 `<audio>` 元素进同一 music bus,没有就回落合成乐谱([music.js:1588-1595](../src/audio/music.js#L1588))。仓库默认无录音,全合成。
 
 ---
 
@@ -192,10 +192,10 @@ def('bow_loose', { build(v, p) { … } });                          // 放箭:�
 
 ```
 main.js import './game/kits/index.js'
-   └─► kits/index.js import './bow.js'      【kits/index.js:3】
-        └─► bow.js import './bow-sfx.js'    【bow.js:22】
+   └─► kits/index.js import './bow.js'      【kits/index.js:16】
+        └─► bow.js import './bow-sfx.js'    【bow.js:58】
              └─► 模块求值 → 7 个 def() 写入全局 SFX 表
-kit 逻辑里 G.audio.play('bow_loose', …) 按名播放 【bow.js:110】
+kit 逻辑里 G.audio.play('bow_loose', …) 按名播放 【bow.js:146】
 ```
 
 拉弓是个**循环声**(`loop` 返回 `{pitch(q,now)}` 句柄):按住鼠标期间持续响,松手时实时把频率/增益往上推再释放([bow-sfx.js:15-39](../src/game/kits/bow-sfx.js#L15))。
@@ -206,12 +206,12 @@ kit 逻辑里 G.audio.play('bow_loose', …) 按名播放 【bow.js:110】
 
 | 问题 | 解法 | 锚点 |
 |---|---|---|
-| 首次访问自动播放被浏览器禁 | AudioContext 惰性创建,首个用户手势才 init(幂等) | [audio.js:103-110](../src/audio/audio.js#L103)、[main.js:536](../src/main.js#L536) |
-| 8 滴墨同时命中 → 音量爆炸 | `minGap` 同名合并 + glue 压缩 + 末端硬限制器 | [audio.js:266-267](../src/audio/audio.js#L266) |
-| 连续合成建节点怕泄漏 | voice 上限(全局 48/每名字 max)+ 偷最老 + `onended` 自动拆图 | [audio.js:26,271-279](../src/audio/audio.js#L26) |
-| 湿声循环(气泡/雨)逐帧合成太贵 | 离线把颗粒纹理渲成**无缝循环 Buffer** 缓存,空闲切片预热 | [audio.js:35-80,159-163](../src/audio/audio.js#L35) |
-| 音乐盖过音效 | duck(侧链闪避)+ 音乐总线固定 0.42 让位 | [audio.js:356-378](../src/audio/audio.js#L356)、[music.js:1312](../src/audio/music.js#L1312) |
-| 离线测试 | 构建器接受任意 `BaseAudioContext`,`tools/audio-test.mjs` 用 OfflineAudioContext 离屏渲染测电平 | [audio.js:87-93](../src/audio/audio.js#L87) |
+| 首次访问自动播放被浏览器禁 | AudioContext 惰性创建,首个用户手势才 init(幂等) | [audio.js:152-159](../src/audio/audio.js#L152)、[main.js:536](../src/main.js#L536) |
+| 8 滴墨同时命中 → 音量爆炸 | `minGap` 同名合并 + glue 压缩 + 末端硬限制器 | [audio.js:334-335](../src/audio/audio.js#L334) |
+| 连续合成建节点怕泄漏 | voice 上限(全局 48/每名字 max)+ 偷最老 + `onended` 自动拆图 | [audio.js:58,271-279](../src/audio/audio.js#L58) |
+| 湿声循环(气泡/雨)逐帧合成太贵 | 离线把颗粒纹理渲成**无缝循环 Buffer** 缓存,空闲切片预热 | [audio.js:69-119,159-163](../src/audio/audio.js#L69) |
+| 音乐盖过音效 | duck(侧链闪避)+ 音乐总线固定 0.42 让位 | [audio.js:434-456](../src/audio/audio.js#L434)、[music.js:1505](../src/audio/music.js#L1505) |
+| 离线测试 | 构建器接受任意 `BaseAudioContext`,`tools/audio-test.mjs` 用 OfflineAudioContext 离屏渲染测电平 | [audio.js:130-138](../src/audio/audio.js#L130) |
 
 ---
 

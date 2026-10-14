@@ -15,7 +15,7 @@
               意图状态 ──► 阻尼权重 ──┘
 ```
 
-[character.js:1-15](../src/game/character.js#L1) 的文件头注释自述了这套架构。动画不是"数据回放",而是**一个实时运行的物理-风格系统**:作者不是在"做动画",而是在"写一台会走路的机器的物理定律"。
+[character.js:29-43](../src/game/character.js#L29) 的文件头注释自述了这套架构。动画不是"数据回放",而是**一个实时运行的物理-风格系统**:作者不是在"做动画",而是在"写一台会走路的机器的物理定律"。
 
 类比:传统动画像**放电影**(剪辑拍好了逐帧播);这里的动画像**放风筝**——你只做两件事:拽一下线(事件)、调好风向(意图),姿态是绳子、风、重力实时平衡出来的。
 
@@ -25,29 +25,29 @@
 
 ```js
 // ① 姿态通道:一个 Float32Array(PN),就是"这一帧每根骨骼该怎么摆"的答案
-//    HIPS / SPINE / … / PUPIL 等通道偏移定义在 【character.js:165-191】
+//    HIPS / SPINE / … / PUPIL 等通道偏移定义在 【character.js:204-258】
 let P = new Float32Array(PN);
 poseNeutral(P);                       // 先归零到中立姿态 【:191】
 
 // ② 弹簧岸:所有弹簧的状态(x 位置/v 速度)平铺在另一个 Float32Array
-let sp = new Float32Array(SN);        // 【character.js:216】
+let sp = new Float32Array(SN);        // 【character.js:295】
 
 // ③ 触发计时器:每个一次性动作一个"距触发过了多少秒"
-let tr = new Float32Array(TN);        // 【character.js:222】
+let tr = new Float32Array(TN);        // 【character.js:308】
 ```
 
-为什么全用平铺数组?**零分配**:8 名角色的 update 全程不产生垃圾,GC 永不被动画触发([character.js:9](../src/game/character.js#L9))。
+为什么全用平铺数组?**零分配**:8 名角色的 update 全程不产生垃圾,GC 永不被动画触发([character.js:37](../src/game/character.js#L37))。
 
-弹簧有两个求解器([character.js:101,116](../src/game/character.js#L101)):`spr`(半隐式欧拉,子步)和 `sprA`(解析解——重阻尼的后坐力用数值积分会失形,解析解不会)。
+弹簧有两个求解器([character.js:140,116](../src/game/character.js#L140)):`spr`(半隐式欧拉,子步)和 `sprA`(解析解——重阻尼的后坐力用数值积分会失形,解析解不会)。
 
 ---
 
 ## 2. 每帧流水线:从意图到骨骼
 
 ```
-AnimState a(由 Actor 填写:form/charge/rolling/ink/hp…)   【actor.js:983-1013】
+AnimState a(由 Actor 填写:form/charge/rolling/ink/hp…)   【actor.js:1018-1048】
    │
-   ▼ character.update(dt, a)                                【character.js:1318】
+   ▼ character.update(dt, a)                                【character.js:1538】
 ① _trackRoot        从 root 实际运动测速度/加速度/转向率    【:1369】
 ② _updateStates     AnimState 阻尼成权重 wAim/wRoll/wAir…  【:1420】
 ③ _updateFormScales 人形⇄鱿鱼的 0.45s "pop" 缩放            【:1514】
@@ -64,7 +64,7 @@ AnimState a(由 Actor 填写:form/charge/rolling/ink/hp…)   【actor.js:983-10
 
 **"分层写"是核心思想**:每一层只做一件事,按权重往 P 里叠加,后面的层可以修正前面的层——就像 PS 的图层。没有"走路剪辑"和"瞄准剪辑"的混合树,只有"步态层输出 × 当前权重 + 瞄准层输出 × 当前权重"。
 
-**IK(逆向运动学)兜底一切**:[_solveLimb](../src/game/character.js#L3760) 通用双骨 IK 解腿、解右臂(让武器指向瞄准方向)。所以不管上面各层怎么叠,**手和脚最终都落在该在的地方**——这是"程序化动画不乱"的安全网。
+**IK(逆向运动学)兜底一切**:[_solveLimb](../src/game/character.js#L4161) 通用双骨 IK 解腿、解右臂(让武器指向瞄准方向)。所以不管上面各层怎么叠,**手和脚最终都落在该在的地方**——这是"程序化动画不乱"的安全网。
 
 ---
 
@@ -72,7 +72,7 @@ AnimState a(由 Actor 填写:form/charge/rolling/ink/hp…)   【actor.js:983-10
 
 ### 3.1 一个事件到底是什么
 
-[trigger(name, arg)](../src/game/character.js#L1140)(:1140-1223)的本质,说出来简单到意外:
+[trigger(name, arg)](../src/game/character.js#L1342)(:1140-1223)的本质,说出来简单到意外:
 
 ```js
 trigger('jump')  →  把 tr[T_JUMP] 清零(开始计时)
@@ -99,8 +99,8 @@ trigger('hit')   →  按受击方向给方向性冲量;累计 3 次进 stagger(
 
 ## 4. 人形 ⇄ 鱿鱼:一次对齐时间的"pop"
 
-- 由 `intent.squid` 决定(与开火竞争,最近按键赢,[actor.js:303-312](../src/game/actor.js#L303));
-- 切换是 0.45 秒的缩放动画:人形 scaleY/scaleXZ 走 Catmull-Rom 曲线缩没,鱿鱼反向出现,双方可见性阈值 0.001([character.js:1514](../src/game/character.js#L1514));
+- 由 `intent.squid` 决定(与开火竞争,最近按键赢,[actor.js:338-347](../src/game/actor.js#L338));
+- 切换是 0.45 秒的缩放动画:人形 scaleY/scaleXZ 走 Catmull-Rom 曲线缩没,鱿鱼反向出现,双方可见性阈值 0.001([character.js:1749](../src/game/character.js#L1749));
 - **中途反向不打断**:`_formEnter`(:1537)从当前缩放进度接续时间线,就像视频播放器拖进度条而不是重播;
 - 鱿鱼⇄游泳⇄爬墙之间不切(无 pop);鱿鱼自己的蠕动由 `_updateSquid`(:3917)程序化生成:干地小跳、海豚弧线、游动波动、爬墙扭动,连眨眼都有。
 
@@ -110,7 +110,7 @@ trigger('hit')   →  按受击方向给方向性冲量;累计 3 次进 stagger(
 
 ### 5.1 表情 = 预设向量线性混合
 
-9 个游戏状态(瞄准/开火/蓄力/受击/低墨/大招/出生/疲劳/胜利)各自阻尼成权重 `xw`,再乘到 8 组表情预设(X_FOCUS 等,:371 起:眉/嘴/眼通道)上叠加([_poseFace :3001](../src/game/character.js#L3001))。即:
+9 个游戏状态(瞄准/开火/蓄力/受击/低墨/大招/出生/疲劳/胜利)各自阻尼成权重 `xw`,再乘到 8 组表情预设(X_FOCUS 等,:371 起:眉/嘴/眼通道)上叠加([_poseFace :3001](../src/game/character.js#L3355))。即:
 
 ```
 表情(这一帧) = Σ 状态权重 × 表情预设
@@ -124,7 +124,7 @@ trigger('hit')   →  按受击方向给方向性冲量;累计 3 次进 stagger(
 
 ### 5.3 头发:32 条弹簧链,无碰撞解算
 
-每角色 8 缕 × 3 段 + 每缕 1 个发梢 = 32 条弹簧([character.js:3803-3915](../src/game/character.js#L3803))。物理输入很讲究:
+每角色 8 缕 × 3 段 + 每缕 1 个发梢 = 32 条弹簧([character.js:4212-4324](../src/game/character.js#L4212))。物理输入很讲究:
 
 ```
 等效重力 = 重力 − 头部加速度 + 速度×拖曳     【:3832,在头部惯性系里】
@@ -136,7 +136,7 @@ trigger('hit')   →  按受击方向给方向性冲量;累计 3 次进 stagger(
 
 ## 6. 零滑步:脚是"钉"在世界里的
 
-传统程序化步态最大的坑是滑步(脚在地面蹭)。这里的解法([character.js:1625-1630, 3345, 3367](../src/game/character.js#L3345)):
+传统程序化步态最大的坑是滑步(脚在地面蹭)。这里的解法([character.js:1877-1888, 3345, 3367](../src/game/character.js#L3724)):
 
 1. 落脚瞬间把脚目标**锁定在世界坐标**(状态机 M_GAIT/M_CATCH/M_SETTLE);
 2. IK 的目标 = 世界落点与姿态落点的混合;
@@ -148,13 +148,13 @@ trigger('hit')   →  按受击方向给方向性冲量;累计 3 次进 stagger(
 
 | 亮点 | 说明 | 锚点 |
 |---|---|---|
-| 全平铺 Float32Array | 姿态/弹簧/计时器三大岸,update 零分配 | [character.js:9,165-222](../src/game/character.js#L165) |
-| 解析弹簧解 | 重阻尼后坐力不失形 | [character.js:116](../src/game/character.js#L116) |
-| 关键帧曲线的少量保留 | `kf`/`kc` Catmull-Rom,只用于手工微调时序(如 pop 曲线) | [character.js:93,105](../src/game/character.js#L93) |
-| 分层姿态 | 每层一个职责,按权重叠加,IK 兜底 | [character.js:1756-1975](../src/game/character.js#L1756) |
-| 事件=物理冲量 | 幅度由冲击力决定,自动连续 | [character.js:1140-1223](../src/game/character.js#L1140) |
-| 注视系统 | 弹道式扫视(saccade)+固视微动,不是死盯 | [_poseLook :2737](../src/game/character.js#L2737) |
-| life level 分级 | far 档全关表情/眨眼/呼吸,头发半速 | [character.js:1358-1361](../src/game/character.js#L1358) |
+| 全平铺 Float32Array | 姿态/弹簧/计时器三大岸,update 零分配 | [character.js:37,165-222](../src/game/character.js#L204) |
+| 解析弹簧解 | 重阻尼后坐力不失形 | [character.js:155](../src/game/character.js#L155) |
+| 关键帧曲线的少量保留 | `kf`/`kc` Catmull-Rom,只用于手工微调时序(如 pop 曲线) | [character.js:132,105](../src/game/character.js#L132) |
+| 分层姿态 | 每层一个职责,按权重叠加,IK 兜底 | [character.js:2024-2252](../src/game/character.js#L2024) |
+| 事件=物理冲量 | 幅度由冲击力决定,自动连续 | [character.js:1342-1425](../src/game/character.js#L1342) |
+| 注视系统 | 弹道式扫视(saccade)+固视微动,不是死盯 | [_poseLook :2737](../src/game/character.js#L3062) |
+| life level 分级 | far 档全关表情/眨眼/呼吸,头发半速 | [character.js:1578-1581](../src/game/character.js#L1578) |
 
 ---
 
