@@ -12,6 +12,14 @@
 //     事件,供 FX、音频、HUD 各流消费(docs/EVENTS.md)。
 //   · 大招:specialActive 期间跳过常规 weaponRunner,由 _updateSpecial 或
 //     G.specials 接管身体。
+//   · 关键约定:世界 Y-up,朝向 yaw 为弧度且 0 = +Z(见 update 里 aimDir 的合
+//     成公式);时间单位秒、距离单位米;intent 由控制器每帧覆写,本文件只读它,
+//     唯一的"写"是 update 内用 _prevIntent 快照做的按下沿/松开沿检测。
+//     运动学控制器不是刚体:所有位移都由本文件算好再推给物理层做修正。
+//   · 配套阅读:docs/ASSETS-CHARACTER.zh-CN.md §4(AnimState 契约)、
+//     docs/ASSETS-RIG.zh-CN.md §3.2(trigger 事件)、docs/EVENTS.md(事件清单);
+//     兄弟文件 weapons.js(WeaponRunner:开火/副武器/回避全在它手里)、
+//     physics.js(碰撞体与地面探测)、kits/registry.js(改造武器接管跳跃等输入)。
 // ============================================================================
 // Actor: one squidkid (local player or bot). Owns movement physics, ink/health/special state and drives its
 // Character visual. Controllers (player input / bot AI) only write `intent` + aim; everything else lives here so
@@ -40,6 +48,7 @@ const _ZERO_MOVE = Object.freeze(new THREE.Vector3());   // move input while pla
 
 // 【手柄震动】本地玩家的手柄震动反馈(轻微,按 settings.rumble 缩放;无手柄时为空操作)。
 // 机器人和远端代理不震,只有 isLocal 的真实玩家才震。
+// Local-player gamepad rumble (subtle, scaled by settings.rumble, no-op without a pad).
 export function rumble(actor, strong, weak, ms) {
   if (!actor || !actor.isLocal || actor.isBot) return;
   G.input?.rumble?.(strong, weak, ms);
@@ -176,6 +185,9 @@ export class Actor {
     }
   }
 
+  // 【落位】把角色放到指定点与朝向:先 reset() 清状态,再同步 Character 的 root、
+  // 给出生无敌,最后向下探一次地面把脚"坐"到落脚面上。吸附要求高度差 < 0.3 m,
+  // 免得把出生点上方的高台/屋顶误判成地面。
   spawnAt(p, yaw) {
     this.reset();
     this.pos.copy(p);
@@ -192,6 +204,9 @@ export class Actor {
     if (gh.hit && Math.abs(gh.y - p.y) < 0.3) { this.pos.y = gh.y; this.grounded = true; this.groundN.copy(gh.normal); }
   }
 
+  // 【重生】从出生点上空 4.5 m 落下(同队按 slot 均分圆心角 1.1 m 偏移,避免叠在一起),
+  // 带下落初速与 'spawn' 触发。大招槽特意跨过 spawnAt → reset() 保留下来 ——
+  // 掉进墨里不该把已攒的充能清空(掉墨时的保留比例见 splat)。
   // Drop in from above the spawn pad (respawn), landing with a splash.
   respawn() {
     const pad = G.level.spawnPads[this.team];
@@ -210,7 +225,13 @@ export class Actor {
     emit('respawn', { actor: this });
   }
 
+  // 【伤害入口】所有来源(武器/敌墨/大招/环境)都走这里,顺序不可换:先判无敌与
+  // 合法性,再依次过大招的 filterDamage 与改造武器的 damageTaken 两道减免
+  // (任何一道返回 ≤ 0 即视为完全吸收),最后才扣血。
   // ------------------------------------------------------------------ damage
+  // 【受伤】扣血并反馈:受伤闪白、记下最后攻击者,非墨水伤害触发受击踉跄 ——
+  // 攻击者方向会换算到角色本地系(yaw 0 = +Z,本地 +x = 世界左)再交给
+  // character.trigger('hit');本地玩家附加手柄震动。返回值 = 是否被击杀。
   damage(amount, attacker, source = 'weapon') {
     if (!this.alive || amount <= 0) return false;
     if (this.invuln > 0) return false;
@@ -240,6 +261,9 @@ export class Actor {
     return false;
   }
 
+  // 【阵亡】清 alive、起重生计时、记死亡数;大招槽按 specialKeepOnSplat 保留一份 ——
+  // 中途被打断的大招从这份"已花掉"的额度重新起算(它的点数在发动时就用掉了)。
+  // 击杀者额外涂一片墨并记 splats。最后藏起外观、本地玩家重震一次、发 'splatted'。
   splat(attacker, cause = 'weapon') {
     if (!this.alive) return;
     this.alive = false;
@@ -268,9 +292,16 @@ export class Actor {
     emit('splatted', { victim: this, attacker, cause });
   }
 
+  // 【每帧主循环·总调度】顺序即优先级,提前 return 的分支会跳过后续一切:
+  //   ① 非法数值自愈 → ② 死亡等重生 → ③ 超级跳/大招接管身体(推进后直接出帧)
+  //   → ④ 形态判定 → ⑤ 脚下地表 → ⑥ 爬墙 → ⑦ 水平移动 → ⑧ 跳(缓冲+coyote)
+  //   → ⑨ 积分与碰撞 → ⑩ 落海 → ⑪ 墨水/生命/状态效果 → ⑫ 武器 → ⑬ 出帧。
   // ------------------------------------------------------------------ update
+  // 【每帧更新】dt 秒;玩家与机器人共用同一条路径,唯一输入是 this.intent。
   update(dt) {
     this.anim.time = G.time;
+    // 【NaN 自愈】位置/速度/朝向一旦出现非有限值,宁可丢一帧状态也不能让它污染相机与
+    // 物理(否则整个场景会消失);清掉大招与超级跳、归零平滑高度,活着的原地重生,死了直接放回出生点。
     // safety net: a non-finite position/velocity must never poison the camera or physics
     if (!Number.isFinite(this.pos.x + this.pos.y + this.pos.z + this.vel.x + this.vel.y + this.vel.z + this.yaw + this.smoothY)) {
       console.warn('[inkwave] non-finite actor state recovered', this.name);
@@ -285,6 +316,8 @@ export class Actor {
     const P = PLAYER;
     const intent = this.intent;
     const prev = this._prevIntent;
+    // 【按下沿/松开沿】intent 是每帧覆写的电平,这里用上一帧快照(prev)算出边沿:
+    // 跳/开火取"按下"沿(配合输入缓冲),副武器取"松开"沿(松手才投掷)。
     const firePressed = intent.fire && !prev.fire;
     const jumpPressed = intent.jump && !prev.jump;
     const subReleased = !intent.sub && prev.sub;
@@ -301,6 +334,7 @@ export class Actor {
     this.fireBuffer = firePressed ? P.fireBuffer : Math.max(0, this.fireBuffer - dt);
     this.hardLand = Math.max(0, this.hardLand - dt / P.hardLandTime);
 
+    // 【瞄准方向】由 yaw/pitch 合成单位向量(yaw 0 = +Z,正 pitch 抬头),武器与外观共用。
     // aim vector from yaw/pitch
     const cp = Math.cos(this.aimPitch);
     this.aimDir.set(Math.sin(this.aimYaw) * cp, Math.sin(this.aimPitch), Math.cos(this.aimYaw) * cp);
@@ -323,6 +357,8 @@ export class Actor {
     }
     const isSquid = this.form === 'squid';
 
+    // 【脚下地表】用上一帧的接地探测结果采一次墨水归属;探测发生在本帧移动之前,
+    // 位置尚未改变,所以直接复用、不必重探。
     // ---- surface under feet (from last frame's ground probe; position hasn't moved since)
     this._surface();
     this.submerged = isSquid && this.grounded && this.groundTeam === 1;
@@ -368,6 +404,8 @@ export class Actor {
     this._spawnBarrier();
 
     // ---- ink / hp
+    // 【敌墨持续伤害】按 dps 累计但有总量上限(enemyInkDamageCap),而且只扣到剩 1 点血
+    // 为止 —— 踩敌墨会受伤却不会直接致死,这是刻意的容错设计。
     if (onEnemy) {
       if (this.damageFromInk < P.enemyInkDamageCap && this.invuln <= 0 && !(this.status.shield > 0)) {
         const d = Math.min(P.enemyInkDps * dt, P.enemyInkDamageCap - this.damageFromInk);
@@ -382,6 +420,8 @@ export class Actor {
     if (this.lastDamage > P.regenDelay && this.hp < P.hp) {
       this.hp = Math.min(P.hp, this.hp + (this.submerged ? P.regenRateSwim : P.regenRate) * dt);
     }
+    // 【回墨规则】游/爬时快速回墨;陆地上要停火一小段(inkRefillDelay)才回;
+    // 中毒期间完全不回,游泳也只回一半 —— 让"减速 + 掉墨"的双重惩罚可感知。
     const wasFull = this.ink >= P.inkMax;
     const st = this.status;
     if (st.track > 0) st.track = Math.max(0, st.track - dt);
@@ -394,6 +434,9 @@ export class Actor {
     else if (isSquid) this.ink = Math.min(P.inkMax, this.ink + P.inkRefillKid * 0.5 * dt);
     if (!wasFull && this.ink >= P.inkMax && this.isLocal) G.audio?.play('refill_full', { volume: 0.5 });
 
+    // 【武器输入】鱿鱼→人形弹出的前 emergeDelay 秒不开火,但这段时间的按键会进
+    // fireBuffer、到期后补发第一枪 —— 所以"弹出即射"不会丢帧。大招可以整体接管开火口
+    // (G.specials.weapon 返回真即表示这一帧的开火归它)。
     // ---- weapons (a squid → kid pop-out holds the first shot for emergeDelay; a tap during it is buffered, not lost)
     let fire = false, pressed = false;
     if (!isSquid && this.kidT >= P.emergeDelay) {
@@ -411,6 +454,8 @@ export class Actor {
     if (this.specialActive) G.specials.tick(this, this.specialActive, dt);
     if (!this.alive) return;
 
+    // 【落海】低于水线且正下方既没有甲板也没有地面即判落海(船坞干槽低于海平面但算安全)。
+    // 4 秒内刚受过伤就算在最后攻击者头上,否则算自杀(死因 'water',供战绩/播报使用)。
     // ---- fall into the sea
     // the sea: below the waterline with no deck underneath (dry-dock trenches sit below sea level and are safe)
     if (this.pos.y < P.fallDeathY && G.level.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.6) === -Infinity) {
@@ -423,11 +468,15 @@ export class Actor {
     this._finishFrame(dt);
   }
 
+  // 【近处判断】距主游戏相机 30 m 以内(用平方距离比较,省一次开方)。机器人只在这
+  // 附近才出声与特效,远处角色只跑逻辑——这是"8 个角色 + 一堆机器人"的性能开关。
   _nearCamera() {
     const c = G.rig?.gameCam || G.camera; if (!c) return false;
     return c.position.distanceToSquared(this.pos) < 30 * 30;
   }
 
+  // 【地表归属】groundTeam:0 干地 / 1 自家墨 / 2 敌墨。画布采样返回的是"墨水归属者+1",
+  // 所以判自家 = 采样值 - 1 === this.team;离地一律算干地(空中没有"脚下墨水")。
   // Paint under the feet: 0 dry, 1 own ink, 2 enemy ink (only while grounded).
   _surface() {
     const g = this.ground;
@@ -437,6 +486,8 @@ export class Actor {
     } else this.groundTeam = 0;
   }
 
+  // 【原地补探测】给不走常规移动流程的调用方用(超级跳蓄力阶段、外部查询):
+  // 在当前点重探一次地面并同步地表归属。
   // Legacy probe (super jump charge / external callers): refresh ground + surface at the current position.
   _probeGround() {
     const gh = G.physics.groundProbe(this.pos.x, this.pos.y, this.pos.z, 0.4, 0.35, PLAYER.footRadius, this.ground, this.form === 'squid');
@@ -444,7 +495,12 @@ export class Actor {
     else this.groundTeam = 0;
   }
 
+  // 【水平运动】一切都在 XZ 平面上求解(垂直分量归 _integrate)。三套基础参数
+  // (游泳 / 鱿鱼干地 / 人形)给出目标速度与加速度,随后依次被大招、敌墨、中毒、
+  // 声呐等状态覆盖;空中走另一条"矢量转向、保留动量"的分支。
   // ------------------------------------------------------------------ horizontal movement model
+  // 【水平速度】处理顺序固定为:刹车 → 掉头 → 转向 → 加减速,每帧直接写 this.vel.xz。
+  // 开头那句 dodgeVel 返回真表示翻滚(及翻滚后的锁定)期间速度归武器执行器管,本函数据此让位。
   _horizontal(dt, isSquid, onEnemy) {
     const P = PLAYER;
     // while a dualies dodge roll runs, the weapon runner owns horizontal velocity; in the post-roll lock you're a
@@ -483,6 +539,7 @@ export class Actor {
     if (this.status.poison > 0) vt *= SUBS.mist.slow;
     if (this.status.reveal > 0) vt *= SPECIALS.sonar.slow;
     if (mh < 0.01) {
+      // 【刹车】速度高时减得狠,接近静止时越松 —— 避免最后几帧"贴上去再顿一下"的抽动
       // brake: strong at speed, easing into the stop
       if (sp < 1e-4) { this.vel.x = 0; this.vel.z = 0; return; }
       const d = D * (dMin + (1 - dMin) * smoothstep(0, dKnee, sp)) * dt;
@@ -496,12 +553,16 @@ export class Actor {
     const cosA = clamp(dx * tx + dz * tz, -1, 1);
     const ang = Math.acos(cosA);
     if (sp > 0.5 && ang > P.reverseAngle) {
+      // 【掉头】反向角度超过 reverseAngle 时先沿旧方向刹到零、再往新方向加速
+      // (plant-and-reverse),而不是原地硬转 —— "急停掉头"的手感就来自这里。
       // plant-and-reverse: brake through zero toward the new direction
       const tvx = tx * vts, tvz = tz * vts, ex = tvx - vx, ez = tvz - vz, el = Math.hypot(ex, ez);
       const r = Math.max(P.reverseDecel, D) * dt * (onEnemy ? 0.5 : 1);
       if (el <= r) { this.vel.x = tvx; this.vel.z = tvz; } else { this.vel.x += (ex / el) * r; this.vel.z += (ez / el) * r; }
       return;
     }
+    // 【转向】朝向按角速度上限向输入方向旋转,速度越慢转得越快(turnRateSlow 项),
+    // 于是全速跑动转弯是"划过弯"而不是掉速。
     // heading slews toward the input (faster when slow) — turns carve at full speed instead of dipping
     const wmax = W * (1 + P.turnRateSlow * (1 - smoothstep(0, vt, sp)));
     const rot = Math.min(ang, wmax * dt);
@@ -516,13 +577,19 @@ export class Actor {
       const a = A * (aIn + (1 - aIn) * smoothstep(0, inKnee, sp)) * clamp((vts - sp) / (outKnee * vt), P.runOutMin, 1);
       ns = Math.min(vts, sp + a * dt);
     } else {
+      // 【超速回收】出水面滑行、踩进敌墨、刚开始开火都会让实际速度高于目标速度:
+      // 按刹车速率回收而非瞬间截断,滑行感才连贯。
       // over speed (swim exit glide, entering enemy ink, starting to fire): shed it at the brake rate
       ns = Math.max(vts, sp - D * (dMin + (1 - dMin) * smoothstep(0, dKnee, sp - vts)) * dt);
     }
     this.vel.x = dx * ns; this.vel.z = dz * ns;
   }
 
+  // 【运动学角色控制器】脚 = 平面足迹接地探测(斜坡上精确,边缘要整个足迹离地才落下);
+  // 身体 = 抬到台阶高度之上的胶囊体,贴地时只做水平推离 —— 墙永远不会和脚抢垂直方向。
   // ------------------------------------------------------------------ character controller
+  // 【积分与碰撞】按优先级短路:爬墙 → 悬停(挂索 / 改造武器挂墙)→ 屋顶滑落 → 贴地或
+  // 自由落体,最后交 _resolve 统一做身体碰撞与落地判定。
   _integrate(dt, isSquid, jumped) {
     const P = PLAYER;
     if (this.climbing) {
@@ -547,10 +614,14 @@ export class Actor {
     // balancing on a railing: the feet settle onto its line (unless you're stepping off it)
     if (rb && rb.rail && !isSquid) this._railCentre(rb, dt);
     if (wasGrounded) {
+      // 【贴合地面】贴地时垂直速度由地面法线反解:vy 恰好抵消水平速度沿坡面的分量,
+      // 于是上坡不会产生小跳,站在斜面上也不会自己往下滑。
       // follow the ground plane: the vertical component keeps the feet on the surface at the current horizontal speed
       const n = this.groundN;
       this.vel.y = -(this.vel.x * n.x + this.vel.z * n.z) / Math.max(0.35, n.y);
     } else {
+      // 【自由落体】下落额外加重(fallGravityMul)、顶点附近再减轻(apexGravityMul),
+      // 得到"顶点略微停留、随后砸下去"的手感;末速由 maxFall 封顶。
       let g = P.gravity;
       if (this.vel.y < 0) g *= P.fallGravityMul;
       if (Math.abs(this.vel.y) < P.apexBand) g *= P.apexGravityMul;
@@ -561,6 +632,9 @@ export class Actor {
     this._resolve(isSquid, prevY, wasGrounded);
   }
 
+  // 【屋顶滑落】屋顶方块不许站立:朝最近边缘(斜面则朝下坡)持续加速直到掉下去。
+  // 方向一旦选定就锁定整段滑行 —— 否则相邻屋顶盒会在接缝处来回推挤;被墙卡住超过
+  // 0.25 s 就原地转 90° 另寻出口。滑行期间玩家输入仍可横向修正。
   // Standing on a roof block: pushed toward its nearest edge (a pitched top: downhill), picking up speed until you drop
   // off. The direction sticks for the whole slide (adjacent roof boxes would otherwise push back and forth at a seam);
   // blocked by a wall for a moment → turn 90° and try the next way out. Input still steers across the slide.
@@ -587,6 +661,9 @@ export class Actor {
     if (along < want) { this.vel.x += d.x * (want - along); this.vel.z += d.z * (want - along); }
   }
 
+  // 【碰撞与落地】先身体(墙/天花板)后脚(贴地吸附 / 落地)。参数 stick 表示"上一帧贴地
+  // 且本帧没跳",这一位很关键:它决定用"向 stepDown 之内吸附"还是"从本帧经过的最高点
+  // 向下落"来探地 —— 后者保证高速下落不会穿地(隧道效应)。竖直跳变都记进 smoothY 由视觉层消化。
   // Body (walls/ceilings) then feet (ground stick / landing). `stick` = we were grounded and did not jump.
   _resolve(isSquid, prevY, stick) {
     const P = PLAYER;
@@ -641,6 +718,9 @@ export class Actor {
   // feet are also held by any level rail top the flat footprint (a circle of footRadius) overlaps, within [lo, hi]:
   // hopping onto a railing lands wherever the feet cover it, and standing / walking along it holds. Squids fall through
   // rails (never called for them). Overwrites the probe result `gh` when the rail top is the higher support.
+  // 【栏杆站立】栏杆只有几厘米宽,足迹环的离散采样可能整个跨过去。这里对足迹圆(footRadius)
+  // 覆盖到的所有"水平栏杆顶面"再查一遍,取落在 [lo, hi] 区间内最高的那个覆盖探测结果 gh。
+  // 于是跳上栏杆时按脚实际盖住的位置落地,站着 / 沿栏杆走都能托住;鱿鱼不走这里(直接从栏杆间穿过)。
   _railFeet(gh, lo, hi) {
     const L = G.level;
     if (!L.hasRails) return;
@@ -663,6 +743,8 @@ export class Actor {
 
   // Standing on a railing with the feet off its line: ease onto it (≤ 1.1 m/s across) — reads as balancing on the rail
   // instead of hovering beside it. Pushing the stick further off the line steps off as usual.
+  // 【栏杆居中】脚踩在栏杆上但偏离栏杆线时,以 ≤1.1 m/s 横向平移把脚挪回顶上 ——
+  // 读起来像"走钢丝"而不是悬在旁边;若玩家继续往同一侧推杆,则照常走掉(不锁住)。
   _railCentre(b, dt) {
     const alongX = b.half.x >= b.half.z, ax = alongX ? b.axes[2] : b.axes[0], hw = alongX ? b.half.z : b.half.x;   // across the rail
     const off = (this.pos.x - b.center.x) * ax.x + (this.pos.z - b.center.z) * ax.z;
@@ -674,6 +756,9 @@ export class Actor {
     this.pos.x -= ax.x * s; this.pos.z -= ax.z * s;
   }
 
+  // 【落地】记录落地速度并清零落地计时;超过 hardLandSpeed 给一段减速恢复权重(落地僵直),
+  // 速度 > 3 m/s 才 trigger('land') / 出声 / 发 'actor:land'(轻微擦地不打扰);
+  // 越快落地声越响、晃动越重,> 7 m/s 额外震一次手柄。
   _onLand(isSquid) {
     const P = PLAYER;
     const speed = Math.max(0, -this.vel.y);
@@ -690,6 +775,8 @@ export class Actor {
     }
   }
 
+  // 【出生点屏障】把敌人从对方出生点的圆柱区内推出去(水平外推 + 反向速度加成 1.6),
+  // 防止被人堵出生点;仅在屏障高度以上生效,所以从上方跳过去的人不会被弹开。
   _spawnBarrier() {
     const pad = G.level.spawnPads[this.enemyTeam];
     const R = G.level.spawnBarrier;
@@ -703,7 +790,12 @@ export class Actor {
     }
   }
 
+  // 【爬墙】仅限鱿鱼形态、贴的是自家墨墙、且有持续朝向墙面的输入。整个状态机由
+  // "射线探墙 + 采样墙面上的墨水"驱动:墨没了就松手、往后推就跳下、到顶就走 _ledgePop。
   // ------------------------------------------------------------------ wall climb
+  // 【爬墙每帧】先算吸附条件(climbAttachDot),已吸附则处理三种脱离:到顶(翻上)、
+  // 墨尽(松手并弹开)、推离(向后跳)。爬速缓入缓出(不会 0 → 7.5 m/s 瞬变),
+  // 接近顶沿时提前收速,免得 _ledgePop 把垂直速度猛地一拽。
   _updateClimb(dt, isSquid) {
     const P = PLAYER;
     this.climbExit = Math.max(0, this.climbExit - dt);
@@ -758,6 +850,7 @@ export class Actor {
     this.anim.wallNormal.copy(n);
   }
 
+  // 【爬墙开关】状态有变化才发 'actor:climb'(FX / 音效 / HUD 靠它),离开爬墙时清掉爬升速度。
   _setClimb(on) {
     if (this.climbing === on) return;
     this.climbing = on;
@@ -765,6 +858,9 @@ export class Actor {
     emit('actor:climb', { actor: this, on });
   }
 
+  // 【翻上顶沿】探出墙顶后做一次受控小跳:上升速度按"够到顶面 + ledgePopClear"反解
+  // (√(2gh)),但不会低于保留的爬升速度(取 min(cv, 6.5) 与之的较大者);同时给一段
+  // 前冲(ledgePopCarry)把人送上平台。climbExit 短暂禁止立刻再次吸附。
   // Reached the top of the wall: a controlled hop that clears the ledge by ledgePopClear and carries onto it.
   _ledgePop(dir) {
     const P = PLAYER;
@@ -783,20 +879,29 @@ export class Actor {
     if (this.isLocal || this._nearCamera()) G.audio?.play('swim_splash', { pos: this.pos, volume: 0.45 });
   }
 
+  // 【超级跳】三段式:蓄力(原地发亮、锁定输入)→ 飞行(抛物线,全程无敌、位置直接
+  // 由曲线写死而非靠物理)→ 落地(涂墨 + 震屏 + 复用常规落地表现)。目标是角色时取其
+  // jumpAnchor(),所以"跳到正在开墨喷的人身上"会落到他起飞的位置。
   // ------------------------------------------------------------------ super jump
   // Where a teammate super jumping to this actor lands: here — or, mid Ink Jet / Zipline, the take-off point; or, while
   // this actor is itself in a super jump's flight, where that jump comes down (never a point up in the sky)
+  // 【落点锚】别人超级跳到我头上时该落在哪:通常就是我当前位置;但若我正在
+  // 墨喷/挂索上(jumpBack),或我自己正在飞行途中,则给"起飞点"或"我那趟的落点",
+  // 绝不给一个悬在空中的点。
   jumpAnchor() {
     const s = this.specialActive;
     if (s && s.jumpBack && s.origin) return s.origin;
     const j = this.superJumpState;
     return j && j.phase === 'flight' ? j.to : this.pos;
   }
+  // 【能否超级跳】活着、当前不在超级跳中、没有大招在跑、且比赛正在进行。
   canSuperJump() { return this.alive && !this.superJumpState && !this.specialActive && G.match?.playing(); }
 
   // Launch toward an ally (or a fixed point). Charge in place as a glowing squid, then arc through the sky.
   // opts.instant: skip the ~0.75 s crouch charge and launch on the next frame; opts.home: an Ink Jet / Zipline jump
   // back to its take-off beacon (the beacon itself marks the landing, so no separate landing marker)
+  // 【起跳】只做"进入蓄力阶段"这一件事:切鱿鱼形态、清爬墙与武器、播音效与事件。
+  // opts.instant 跳过 0.75 s 蓄力(回放式调用),opts.home 表示这是回自己信标的跳。
   superJump(target, opts) {
     if (!this.canSuperJump()) return false;
     this.superJumpState = { phase: 'charge', t: opts && opts.instant ? 0.75 : 0, target, from: new THREE.Vector3(), to: new THREE.Vector3(), marker: 0, home: !!(opts && opts.home) };
@@ -808,6 +913,10 @@ export class Actor {
     return true;
   }
 
+  // 【超级跳每帧】charge:原地蓄力 0.75 s 后结算落点 —— 目标是角色则落在他附近 1.1 m
+  // 靠我们这一侧,再向下补探一次确认落点可站(法线够平且不在方块内部);flight:水平
+  // ease-in-out、垂直叠加一条随距离变高的抛物弧,末段(> 82%)提前变回人形,落地
+  // 用 _resolve 复用常规落地表现(压扁、land 事件、音效)。
   _updateSuperJump(dt) {
     const s = this.superJumpState;
     s.t += dt;
@@ -868,7 +977,11 @@ export class Actor {
     }
   }
 
+  // 【大招】发动时清空充能槽、加满墨、强制人形并中断翻滚;身体控制权按 ID 分流:
+  // slam(巨大跳跃压杀)与 storm(墨雨)在本文件内联实现,其余统一交给 G.specials。
   // ------------------------------------------------------------------ specials
+  // 【发动大招】顺序有讲究:先清零 special 再发 'special:use' —— 大招期间涂墨不再充能
+  // (槽在发动时就花掉了),否则会自我续杯;specialActive.body 则告诉 update 把身体交出去。
   _startSpecial() {
     const id = SPECIALS[this.specialId] ? this.specialId : 'slam';
     this.special = 0;
@@ -893,6 +1006,9 @@ export class Actor {
     }
   }
 
+  // 【大招每帧·内联部分】storm 只有 0.35 s 的投掷动画,结束后立刻归还控制权;
+  // slam 走 rise → hang → fall 三阶段,落地(或超时 1.2 s 兜底)时结算 _slamImpact。
+  // 其余大招一律委托给 G.specials.body()。
   _updateSpecial(dt) {
     const s = this.specialActive;
     if (s.id !== 'slam' && s.id !== 'storm') { G.specials.body(this, s, dt); return; }
@@ -932,6 +1048,9 @@ export class Actor {
     }
   }
 
+  // 【砸地结算】中心一大块墨 + 周围 9 块随机小墨,伤害按距离从 damageMax 线性衰减到
+  // damageMin(击杀半径内满伤),且必须过视线检查 —— 被墙挡住不吃伤害。涂的墨走
+  // addTurfNoSpecial:计入涂地统计但不回充大招,避免自己给自己续杯。
   _slamImpact(sp) {
     const c = this.pos;
     let area = 0;
@@ -958,8 +1077,11 @@ export class Actor {
     }
   }
 
+  // 【只统计不充能】大招自身造成的涂墨走这里:统计与 'turf' 事件照发,但不加法大招槽。
   addTurfNoSpecial(area) { if (area > 0) { this.stats.turf += area; emit('turf', { actor: this, area }); } }
 
+  // 【朝向】全程序化动画的"转向率"源头:算出的 yawVel 既积分成 root 朝向,
+  // 又通过 anim.turnRate 喂给 Character(身体倾斜、头发甩动、转头眨眼都读它)。
   // ------------------------------------------------------------------ facing
   // Critically-damped angular spring with a rate cap: small corrections are quick, big turns sweep with a smooth
   // ease-in/out instead of an exponential snap. yawVel doubles as the animation's turnRate.
@@ -970,6 +1092,9 @@ export class Actor {
     const mh = Math.hypot(mv.x, mv.z);
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.fireFacing = Math.max(0, this.fireFacing - dt);
+    // 【目标朝向的优先级】大招指定朝向 > 超级跳/大招接管期间朝速度方向 > 开火/瞄准/举副武器
+    // 朝瞄点 > 爬墙朝墙内 > 移动或惯性方向。各分支用不同的弹簧刚度与角速度上限 ——
+    // "瞄准时转得慢而稳、跑动时转得利索"就是从这里调出来的。
     let target = null, omega = P.faceOmega, maxRate = P.faceMaxRate, maxAcc = P.faceMaxAcc;
     const spx = this.specialActive;
     if (spx && spx.faceYaw != null) {
@@ -1004,7 +1129,27 @@ export class Actor {
     a.turnRate = this.yawVel;
   }
 
+  // 【表现层总出口】把本帧状态打包成 AnimState 交给 Character,再回写 root 的位姿。
+  // 这里是"游戏状态 → 动画状态"唯一的翻译层:Character 不认识 hp / ink / 大招,
+  // 只认识下面这些字段。
+  // 【AnimState 字段表】(赋值顺序即此处代码顺序)
+  //   time       全局时间(G.time),动画侧取相位用
+  //   speed      水平速度大小(m/s)
+  //   localMove  移动方向换算到角色本地系(仅在 speed > 0.1 时给,前 +z / 左 +x)
+  //   grounded   是否贴地           · vy       垂直速度(正为上)
+  //   aimPitch   瞄准俯仰(弧度)      · firing   是否处于开火姿势
+  //   charge     蓄力进度 0..1       · rolling  是否在翻滚
+  //   subAim     副武器举起(炸弹上膛 / 投掷物举过头)
+  //   form       'kid' | 'squid' | 'swim' | 'climb'(大招接管身体时强制回 'kid')
+  //   specialId  进行中的大招 ID(无则 null)
+  //   ink        墨水 0..1           · lowInk   墨量告警   · hp 生命 0..1
+  //   invuln     是否无敌            · inEnemyInk 是否踩在敌墨上
+  //   surface    脚下地表 0 干 / 1 自家墨 / 2 敌墨(离地一律 0)
+  //   special    大招充能 0..1
+  //   turnRate   转向率(由 _face 或网络代理写入),供身体倾斜 / 头发使用
+  //   wallNormal 爬墙时的墙面法线(由 _updateClimb 写)
   // ------------------------------------------------------------------ visuals
+  // 【出帧】填 AnimState → 平滑视觉高度 → 同步 root 位姿 → 交给 ch.update → 发状态变化事件。
   _finishFrame(dt) {
     const a = this.anim;
     const isSquid = this.form === 'squid';
@@ -1025,6 +1170,8 @@ export class Actor {
     a.charge = this.weaponRunner.charge;
     a.rolling = this.weaponRunner.rolling;
     a.subAim = !!this.weaponRunner.aimingSub || !!(this.specialActive && this.specialActive.raise);      // bomb cocked / orb held up
+    // 【形态细分】外部只维护 kid / squid 两态,这里再细出 swim(水中游)与 climb(爬墙)
+    // 两个跟随状态;大招若要求身体保持站姿(body / noSquid)则强制回 kid。
     a.form = !isSquid ? 'kid' : this.climbing ? 'climb' : this.submerged ? 'swim' : 'squid';
     if (this.specialActive && (this.specialActive.body || this.specialActive.noSquid)) a.form = 'kid';
     a.specialId = this.specialActive ? this.specialActive.id : null;
@@ -1035,6 +1182,9 @@ export class Actor {
     a.hp = clamp(this.hp / PLAYER.hp, 0, 1);
     a.inEnemyInk = !!this.onEnemy;
     a.surface = this.grounded ? this.groundTeam : 0;
+    // 【视觉高度平滑】台阶、边缘助爬造成的竖直跳变(记在 smoothY)用临界阻尼(约 0.12 s)
+    // 抹平,避免相机跟着一顿一顿;钳到 ±0.7 m,足够小就归零(防抖振残留)。
+    // 网络代理直接用主人已经平滑过的值。
     // visual step smoothing (critically damped, ~0.12 s) — proxies already carry the owner's smoothed height
     if (this.remote) { this.smoothY = 0; this.smoothYV = 0; }
     const w = 24;
@@ -1046,9 +1196,13 @@ export class Actor {
     ch.root.position.copy(this.pos);
     ch.root.position.y += this.smoothY + (this.specialActive?.seat || 0);   // riding the crab tank
     ch.root.rotation.y = this.yaw;
+    // 【受伤染色】取"受击闪白"与"低血量常驻泛红"中的较大者;满血时整个乘 0 清零,
+    // 避免回血后残留一层红。
     ch.setHurt(Math.max(this.hurtFlash, 1 - this.hp / PLAYER.hp) * (this.hp < PLAYER.hp ? 1 : 0), G.teamColors[this.enemyTeam]);
     ch.update(dt, a);
     this._events(a);
+    // 【游泳尾迹】游泳且速度 > 2 m/s 时,按 20 Hz 节流在身后生成尾迹(交给 FX 流;
+    // 限频是因为每帧都发会让浅水区贴图瞬间刷满)。
     // swim wake
     if (a.form === 'swim' && hs > 2 && G.fx) {
       this._wakeT = (this._wakeT || 0) + dt;
@@ -1056,6 +1210,9 @@ export class Actor {
     }
   }
 
+  // 【状态变化事件】把"与上一帧相比变了什么"转成事件:人形/鱿鱼切换('actor:form')、
+  // 入水/出水('actor:dive' / 'actor:emerge')、进出敌墨('actor:enemyInk')。
+  // 都在变化沿发一次(用 _evXxx 快照对比),供 FX / HUD / 音频消费;清单见 docs/EVENTS.md。
   // state-change events for the FX / HUD / audio streams (docs/EVENTS.md)
   _events(a) {
     const kidForm = this.form === 'squid' ? 'squid' : 'kid';
@@ -1069,6 +1226,8 @@ export class Actor {
     if (!!this.onEnemy !== this._evEnemy) { this._evEnemy = !!this.onEnemy; emit('actor:enemyInk', { actor: this, on: this._evEnemy }); }
   }
 
+  // 【脚部的可视位置】= pos + smoothY:相机跟随与浮空名牌必须读这个而不是 pos,
+  // 否则台阶与边缘助爬的竖直跳变会被看见。
   // Visual (smoothed) world position of the feet — cameras and name tags should follow this, not the raw pos.
   visualPos(out) { return out.set(this.pos.x, this.pos.y + this.smoothY, this.pos.z); }
 }
