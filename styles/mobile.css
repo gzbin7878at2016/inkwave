@@ -18,7 +18,8 @@
 .mobile-stick small { position: absolute; bottom: 5px; width: 100%; text-align: center; color: #fff; pointer-events: none; }
 .mobile-actions { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom));
   display: grid; grid-template-columns: repeat(2, calc(64px * var(--touch-size))); gap: 10px; }
-.mobile-actions button { height: calc(52px * var(--touch-size)); }
+.mobile-actions button { height: calc(52px * var(--touch-size)); padding: 5px 4px !important; }
+.iw-mobile .iw-map:not(.is-expanded) { translate: env(safe-area-inset-left) env(safe-area-inset-top); }
 .mobile-actions [data-touch="fire"] { background: #ca4518bb !important; }
 .mobile-top { position: absolute; top: max(62px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); display: flex; gap: 8px; }
 .mobile-jumps { position: absolute; left: 20%; right: 23%; bottom: 12px; display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; }

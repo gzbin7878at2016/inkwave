@@ -1880,7 +1880,10 @@ export class HUD {
     const [w0, h0] = fit(14.5 * u), [w1, h1] = fit(Math.min(H * 0.78, W * 0.6));
     const mt = this._mapT;
     const bw = lerp(w0, w1, mt), bh = lerp(h0, h1, mt);
-    const x = lerp(2.2 * u, (W - w1) / 2, mt), y = lerp(H - 2.2 * u - h0, (H - h1) / 2 + u * 1.2, mt);
+    // 手机小地图放左上，给左下摇杆留出区域；展开/大招地图仍按原坐标计算。
+    const mobile = !!globalThis.inkwaveMobile;
+    const x = lerp(mobile ? 12 : 2.2 * u, (W - w1) / 2, mt);
+    const y = lerp(mobile ? 64 : H - 2.2 * u - h0, (H - h1) / 2 + u * 1.2, mt);
     const inside = (W - w1) / 2 < 22 * u;
     if (inside !== L.lgIn) { L.lgIn = inside; this.mapLegend.classList.toggle('is-inside', inside); }
     const box = `${x.toFixed(1)},${y.toFixed(1)},${bw.toFixed(1)},${bh.toFixed(1)}`;
