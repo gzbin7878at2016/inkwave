@@ -1,3 +1,7 @@
+// 【中文导读】纯 Node 的地图 AO 离线烘焙：构造 Level 和 Physics，对光照图各纹素发半球射线。
+// 参数 ppm/rays/dist 分别控制纹素密度、采样数和遮挡距离；atlas 放不下时逐步扩大尺寸。
+// 输出灰度 PNG 与布局 hash 元数据，加载器据此拒绝过期光照图。
+// 与 Electron 真实场景烘焙版本不同，这里按当前构造的 Level 采样，需确认是否包含需要的道具碰撞。
 // Offline ambient-occlusion bake for a map layout → assets/lightmaps/<id>.png (+ .json with the layout hash).
 // usage: node tools/bake-ao.mjs <layoutId> [--ppm 5] [--rays 48] [--dist 3.5]
 import { writeFileSync } from 'node:fs';

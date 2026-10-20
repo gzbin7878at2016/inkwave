@@ -1,3 +1,7 @@
+// 【中文导读】扫描用户放入 songs 的音乐，生成程序化音乐引擎可读取的 manifest。
+// in game、now or never、lobby 分别用于比赛、最后一分钟和菜单；支持的扩展名以脚本白名单为准。
+// 存在 ffmpeg 时估计响度并记录增益，没有时保留原始电平；不是离线改写音乐文件。
+// 清单与用户音乐按现有忽略规则保留在本地；运行会写 songs/manifest.json。
 // Scans songs/ and writes songs/manifest.json for the music engine (src/audio/music.js):
 //   songs/in game/*       → played during matches (shuffled)
 //   songs/now or never/*  → played once when one minute is left
@@ -15,6 +19,7 @@ const FOLDERS = { battle: 'in game', battle_final: 'now or never', menu: 'lobby'
 const AUDIO = /\.(mp3|m4a|aac|ogg|opus|wav|flac)$/i;
 const TARGET_LUFS = -14, MAX_PEAK_DB = -1;
 
+// 调用 ffmpeg 测量响度，缺工具或无法解析时按既有兜底返回，不中断整个音乐扫描。
 function loudness(file) {
   // ffmpeg prints the EBU R128 summary on stderr
   const r = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'ebur128=peak=true:framelog=quiet', '-f', 'null', '-'], { encoding: 'utf8' });

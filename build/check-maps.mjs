@@ -1,3 +1,7 @@
+// 【中文导读】地图静态结构检查：边界、重叠、坡度与出生台支撑，支持地图模式变体。
+// 半场先镜像成完整布局再检查；侧面或顶面重合会引起 z-fighting，不把所有体积重叠一概当错。
+// 默认只输出问题，--svg 额外写预览文件；检查失败使用非零退出码，供提交前或 CI 识别。
+// 本工具不等同完整导航/实机对战测试，静态通过后仍需实际走图验证。
 // Sanity checks for map layouts: bounds, overlapping pieces, ramp steepness, spawn pads.
 // Pieces may overlap only when one is buried: their tops must differ by ≥ 8 cm (paint marks cells 6 cm under another
 // block as dead, and equal tops z-fight). Run: node build/check-maps.mjs [layoutId...]

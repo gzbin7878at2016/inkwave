@@ -1,3 +1,7 @@
+// 【中文导读】在 Electron 真游戏场景内烘焙 AO 光照图，包含道具回传的碰撞体，布局 hash 与游戏一致。
+// 通过页面执行物理射线采样，输出 assets/lightmaps 下灰度 PNG 与配套元数据；不要把它当普通 Node 脚本运行。
+// PAGE_BAKE 是注入网页的源码字符串，其中相对 import 按网页入口解析，不按 build 目录解析。
+// 采样密度、射线数和距离决定离线成本与阴影细节；本脚本生成资产，不负责实时环境光遮蔽。
 // Bakes ambient-occlusion lightmaps (assets/lightmaps/<layout>.png + .json) for map layouts.
 //   npx electron build/bake-ao.cjs saltpan lockgate     (or `npm run bake -- saltpan`)
 // Runs inside the real game (props hand the level their colliders, so the layout hash matches what the game builds),
@@ -17,6 +21,7 @@ const layouts = process.argv.slice(2).filter((a) => /^[a-z0-9_-]+(\.[a-z]+)?$/i.
 require('./../electron/main.cjs');
 
 // 8-bit grayscale PNG (colour type 0), same format as the shipped bakes
+// 把灰度像素编码成 PNG；扫描行方向和图集UV方向必须与加载器一致。
 function grayPNG(size, pixels) {
   const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
   const crc = (buf) => { let c = 0xffffffff; for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };

@@ -1,7 +1,12 @@
+# 【中文导读】静态网页资源组装器：复制游戏源码、样式、资源和实际用到的 three.js 附加模块到 dist。
+# 从项目根目录运行；递归追踪 addon 的相对依赖，保留 import map 所需的 build 文件。
+# 注意：运行会清理 dist 的既有内容，仅保留 keep 指定的部署配置；本次注释维护不执行该清理。
+# 本脚本不是 JS 打包器，不会解析或打包任意 npm 裸导入，也不自动包含用户 songs 文件。
 # Assemble dist/: the game files plus only the three.js addons the game imports (and their deps).
 import re, os, shutil, glob
 root = 'vendor/three/jsm'
 keep = {'.vercel', 'vercel.json'}
+# 清理输出目录属于生成步骤，输入应保持在源码目录，不能把唯一资产手工存进 dist。
 if os.path.isdir('dist'):
     for n in os.listdir('dist'):
         if n in keep: continue
