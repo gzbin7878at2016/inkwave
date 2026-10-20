@@ -21,16 +21,20 @@ const TAU = Math.PI * 2;
 
 // ---------------------------------------------------------------------------------------------- helpers
 /** Bevelled slab from a 2D shape (XY plane), extruded along +Z by depth and centred on z = 0. */
+// 将 XY 轮廓挤出为带倒角薄片，并把厚度居中到 z=0，供鳍片等部件复用。
 function slab(shape, depth, bevel = 0.006, curveSegments = 6) {
   const g = new THREE.ExtrudeGeometry(shape, { depth: Math.max(1e-4, depth - 2 * bevel), bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments });
   g.translate(0, 0, -depth / 2 + bevel);
   return finalize(g);
 }
 /** Straight rod of radius r from a to b (lathe along +Y, oriented). */
+// 先沿 Y 轴生成指定长度的杆，再对齐 a 到 b 的方向并移到起点。
 function rod(a, b, r, seg = 8) { const len = a.distanceTo(b); return orient(lathe([[0, 0], [r, 0], [r, len], [0, len]], seg), b.clone().sub(a), a); }
 /** Horizontal ring on the XZ plane → ring around +Z at z (for things facing forward). */
+// 生成朝向 Z 轴的圆环并定位，用于正面扬声器或导弹环带。
 function zring(R, r, x, y, z, rs = 5, ts = 24) { return at(torus(R, r, rs, ts), x, y, z); }
 /** Sphere (superEllipsoid e = 1). */
+// 用球形超椭球生成关节或眼球，细分数由调用方控制。
 function ball(r, x, y, z, ws = 12, hs = 8) { return at(superEllipsoid(r, r, r, 1, 1, ws, hs), x, y, z); }
 /** Make a closed solid face outward (flip the winding if its signed volume is negative). */
 // 用带符号体积检查封闭几何的朝外方向，必要时翻三角绕序并重算法线。
@@ -42,6 +46,7 @@ function outward(g) {
 }
 const _rc = new THREE.Raycaster();
 /** First front-face hit of a ray on a (static, untransformed) mesh → { p, n } or null. */
+// 对静态且未变换的网格取首个正面射线交点，返回复制的位置和面法线。
 function hitOn(mesh, origin, dir) { _rc.set(origin, dir); const h = _rc.intersectObject(mesh, false)[0]; return h ? { p: h.point.clone(), n: h.face.normal.clone() } : null; }
 /** Drape a part placed on the tangent plane (p0, n) onto the mesh surface: every vertex keeps its height above that
  *  plane, measured from the surface point found straight below it (along −n). */
@@ -66,6 +71,7 @@ function buildKraken() {
   const ZS = 0.88, sq = (g) => { g.scale(1, 1, ZS); return g; };
   const prof = smoothProfile([[0, 0.34], [0.3, 0.37], [0.47, 0.47], [0.57, 0.66], [0.605, 0.9], [0.59, 1.12], [0.535, 1.34], [0.445, 1.56], [0.325, 1.77], [0.19, 1.94], [0.075, 2.055], [0, 2.1]], 34);
   I.add(sq(lathe(prof, 36)));
+  // 巨鱿的左右鳍片使用同一轮廓镜像构建，并向外缘逐渐减薄。
   // arrowhead fins: two big rounded triangular flaps from near the tip down the upper mantle (the squid silhouette),
   // thick at the root, thinning toward the outer edge
   for (const sx of [1, -1]) {
@@ -75,6 +81,7 @@ function buildKraken() {
     if (sx < 0) fin.rotateY(Math.PI);
     I.add(sq(fin));
   }
+  // 面罩先细分再包覆到旋转体表面，保持贴合身体的弧度。
   // mask: dark goggle band hugging the face, pointed down between the eyes (determined look)
   const y0 = 1.1;
   const maskPts = [[-0.52, 0.0], [-0.46, 0.13], [-0.31, 0.205], [-0.15, 0.175], [0, 0.095], [0.15, 0.175], [0.31, 0.205], [0.46, 0.13], [0.52, 0.0], [0.45, -0.125], [0.3, -0.185], [0.14, -0.155], [0, -0.1], [-0.14, -0.155], [-0.3, -0.185], [-0.45, -0.125]];
@@ -91,6 +98,7 @@ function buildKraken() {
     const hl2 = superEllipsoid(0.011, 0.011, 0.008, 1, 1, 8, 6); hl2.translate(sx * 0.185 - 0.03, -0.05, 0);
     P.add(sq(wrapLathe(hl2, prof, 0, y0, 0.068)), C.white, M.gloss);
   }
+  // 十条触手交替长短，沿扫掠曲线渐细并弯起；吸盘位置取曲线采样帧。
   // tentacle skirt: ten thick tapering arms, alternating long/short, tips curling up; pale suckers along the top
   for (let k = 0; k < 10; k++) {
     const az = (k + 0.5) * TAU / 10, s = k % 2 ? 0.86 : 1, d = new V3(Math.sin(az), 0, Math.cos(az) * ZS), tw = new V3(Math.cos(az), 0, -Math.sin(az)).multiplyScalar(0.05 * (k % 2 ? 1 : -1));
@@ -119,6 +127,7 @@ function buildKraken() {
  *  in prop space and concave BEHIND its rim plane: put it in a group at `coneAt` (rim centre) and pulse scale.z (< 1 pushes
  *  the cap out, > 1 sucks it in; the rim stays put). `mouth` = front of the dust cap (beam start). Tweeters, knobs and a
  *  lit level meter (`glow`) on the top strip. */
+// 构建音箱静态外壳和独立振膜；coneAt 是振膜缩放枢轴，mouth 是声束起点。
 function buildSpeaker() {
   const P = new Parts(), I = new Parts(), L = new Parts(), CN = new Parts(), CI = new Parts();
   const W = 1.1, H = 1.2, D = 0.8, y0 = 0.2, cy = y0 + H / 2, fz = D / 2;
@@ -133,6 +142,7 @@ function buildSpeaker() {
   for (let k = 0; k < 6; k++) P.add(at(rbox(0.5, 0.03, 0.02, 0.5, 10, 4), 0, 0.95 + k * 0.06, -fz - 0.01), C.darker, M.satin);
   P.add(at(latheZ([[0, -0.03], [0.05, -0.03], [0.055, -0.02], [0.055, 0.0], [0, 0.0]], 16), -0.3, 0.45, -fz - 0.004), C.metal, M.metal);
   led(P, new V3(0.3, 0.45, -fz - 0.012), new V3(0, 0, -1), C.red, 0.014);
+  // 两侧把手、标识与螺丝沿侧面坐标系放置，避免直接按正面坐标贴到侧面。
   // flanks: recessed carry grips + big squid emblems (team) + screws
   for (const sx of [1, -1]) {
     P.add(placeXY(rbox(0.28, 0.08, 0.03, 0.4, 12, 6), new V3(0, 0, -sx), new V3(0, 1, 0), new V3(sx * (W / 2 + 0.002), 1.2, 0)), C.dark, M.gloss);
@@ -159,6 +169,7 @@ function buildSpeaker() {
   for (let k = 0; k < 8; k++) { const a = (k + 0.5) * TAU / 8, n = new V3(Math.cos(a), Math.sin(a), 0.9).normalize(); screw(P, new V3(Math.cos(a) * (WR + 0.078), wy + Math.sin(a) * (WR + 0.078), bz + 0.108), n, 0.012); }
   const rimZ = bz + 0.108, depth = 0.094;
   P.add(zring(WR, 0.022, 0, wy, rimZ, 8, 48), C.rubber, M.rubber);
+  // 低音振膜凹在边缘之后，独立合并为 cone/coneInk；绕边缘中心缩放 Z 可模拟震动。
   // woofer (cone / coneInk): ribbed shallow dish, concave behind the rim plane; team dust cap; rings on the dish
   const dz = (r) => { const t = Math.min(1, Math.max(0, (WR - 0.004 - r) / (WR - 0.1))); return rimZ - depth * Math.pow(t, 1.3) + 0.0035 * Math.sin(t * Math.PI * 9) * (1 - t); };
   const dish = [[0, rimZ - depth - 0.012], [WR - 0.004, rimZ - depth - 0.012], [WR - 0.004, rimZ]];
@@ -168,6 +179,7 @@ function buildSpeaker() {
   CI.add(latheZ(smoothProfile([[0, rimZ - depth - 0.004], [0.08, rimZ - depth - 0.002], [0.104, rimZ - depth + 0.02], [0.094, rimZ - depth + 0.046], [0.056, rimZ - depth + 0.062], [0, rimZ - depth + 0.066]], 10), 30).translate(0, wy, 0));
   CI.add(zring(0.235, 0.011, 0, wy, dz(0.235) + 0.005, 6, 40));
   CN.add(zring(0.16, 0.006, 0, wy, dz(0.16) + 0.004, 4, 36), C.gunmetal, M.metal);
+  // 高音单元、旋钮及电平灯分开分配普通与发光几何，发光部分需配专用材质。
   // top strip: two horn tweeters, knobs, lit level meter, power LED
   for (const sx of [1, -1]) {
     const tx = sx * 0.38, ty = 1.245;
@@ -195,6 +207,7 @@ function buildSpeaker() {
 /** Vortex Strike missile: 1.32 m long, origin at its CENTRE, +Z = nose. Cream airframe (Ø 0.21), team-ink warhead with a
  *  metal tip, team bands + chevrons, hazard collar, four canards, four swept tail fins with team tips, dark boat-tail
  *  and a gunmetal nozzle whose throat glows (`glow`). Extras: tail (exhaust point), nose. */
+// 导弹以中心为原点、Z 正向为弹头；返回头尾锚点供轨迹和尾焰定位。
 function buildMissile() {
   const P = new Parts(), I = new Parts(), L = new Parts();
   const R = 0.105;
@@ -211,6 +224,7 @@ function buildMissile() {
     for (const g of chevrons(0.16, 0.05, 3)) { g.rotateZ(Math.PI); I.add(wrapZ(g, R + 0.0006, az + Math.PI / 2, 0.02, 0)); }
     const sqd = refine(decal(squidShape(0.11)), 0.012); if (az) sqd.rotateZ(Math.PI); P.add(wrapZ(sqd, R + 0.0006, az, -0.12, 0), C.dark, M.print);
   }
+  // 前方四片小翼围绕导弹轴对称排列，通过局部基变换保持一致的径向方向。
   // canards (small, at the front of the body)
   for (let k = 0; k < 4; k++) {
     const a = Math.PI / 4 + k * Math.PI / 2;
@@ -218,6 +232,7 @@ function buildMissile() {
     const g = slab(sh, 0.012, 0.004, 4); g.translate(-0.045, R - 0.01, 0);
     placeXY(g, new V3(0, 0, 1), new V3(Math.cos(a), Math.sin(a), 0), new V3(0, 0, 0.22)); P.add(g, C.dark, M.gloss);
   }
+  // 尾翼采用 X 形排列，队伍色翼尖独立加入墨色几何。
   // tail fins (swept, X pattern) with team tips
   for (let k = 0; k < 4; k++) {
     const a = Math.PI / 4 + k * Math.PI / 2, rd = new V3(Math.cos(a), Math.sin(a), 0);
@@ -228,6 +243,7 @@ function buildMissile() {
     I.add(placeXY(tip, new V3(0, 0, 1), rd, new V3(0, 0, -0.28)));
     screw(P, rd.clone().multiplyScalar(R + 0.001).add(new V3(0, 0, -0.33)), rd, 0.008);
   }
+  // 尾部由喷管、暗内衬和发光喉口构成，发光面有不透明结构作衬底。
   // boat-tail + nozzle (gunmetal bell, dark liner, glowing throat on a dark socket)
   P.add(latheZ(smoothProfile([[R - 0.012, -0.468], [R - 0.02, -0.5], [0.078, -0.56], [0.066, -0.6]], 8).concat([[0, -0.6]]), 30), C.dark, M.gloss);
   P.add(latheZ([[0, -0.6], [0.05, -0.595], [0.056, -0.605], [0.07, -0.64], [0.086, -0.665], [0.08, -0.672], [0.066, -0.655], [0.048, -0.625], [0.03, -0.612], [0, -0.61]], 24), C.gunmetal, M.metal);
@@ -245,6 +261,7 @@ function buildMissile() {
  *  cloth mesh and stay put) with a team ink window + squid decal on its back; two cream thruster pods with team bands,
  *  stubby fins and gunmetal nozzles pointing DOWN, lit throats (`glow`). Everything stays at z < 0.078 (clear of the
  *  back). `nozzles` = [left, right] exhaust points (tank frame; left = +X = the kid's left). ~0.39 wide, 0.46 tall. */
+// 喷气背包使用墨罐局部坐标；返回左右喷口位置供推进特效使用，不能当作地面中心。
 function buildJetpack() {
   const P = new Parts(), I = new Parts(), L = new Parts();
   const hz = -0.012;                                                     // housing centre z
@@ -262,6 +279,7 @@ function buildJetpack() {
   // top: valve cap + hazard lip
   P.add(at(lathe([[0, 0], [0.026, 0], [0.028, 0.012], [0.02, 0.022], [0, 0.024]], 14), 0, 0.172, hz), C.metal, M.metal);
   I.add(at(hring(0.03, 0.005, 0.174, 5, 16), 0, 0, hz));
+  // 左右推进器镜像构建，喷管朝下；每个喷口锚点存入 nozzles。
   // thruster pods (left/right): cream can, dark caps, team bands, fin, bracket, nozzle
   const px = 0.138, pz = -0.012, noz = [];
   for (const sx of [1, -1]) {
@@ -298,6 +316,7 @@ function buildJetpack() {
 function buildCrab() {
   const P = new Parts(), I = new Parts();
   const HC = new V3(0, 0.79, -0.02), RX = 0.64, RY = 0.34, RZ = 0.5;
+  // 机甲外壳额外保留射线采样网格，用来让队伍条纹、徽记和螺丝贴合曲面。
   // carapace (wider at the front, flatter on top), underbelly, dark skirt line; a raycast copy for draping decals
   const cara = at(superEllipsoid(RX, RY, RZ, 0.62, 0.72, 28, 16, (q) => {
     const fz = q.z / RZ; q.x *= 1 + 0.08 * fz; if (q.y > 0) q.y *= 1 - 0.18 * Math.max(0, fz) ** 2; else q.y *= 0.8;
@@ -325,6 +344,7 @@ function buildCrab() {
     P.add(orient(lathe(smoothProfile([[0, -0.03], [0.05, -0.02], [0.042, 0.03], [0.02, 0.07], [0, 0.085]], 6), 10), dir, h.p), C.cream, M.gloss);
     P.add(orient(lathe([[0, 0.05], [0.026, 0.05], [0.014, 0.075], [0, 0.088]], 8), dir, h.p), C.dark, M.gloss);
   }
+  // 舱口与舱盖属于固定壳体；驾驶员脚部位置由最终返回的 seatAt 对齐到舱口高度。
   // hatch: raised dark collar, rubber rim, metal lip, dark opening; open lid hinged on the left side
   const hz = -0.06, hr = 0.25, rimY = 1.16;
   P.add(lathe([[hr - 0.02, 1.02], [hr + 0.055, 1.02], [hr + 0.06, 1.1], [hr + 0.045, rimY - 0.012], [hr + 0.02, rimY], [hr - 0.02, rimY - 0.004], [hr - 0.022, 1.021]], 32).translate(0, 0, hz), C.dark, M.gloss);
@@ -350,6 +370,7 @@ function buildCrab() {
     P.add(orient(superEllipsoid(0.045, 0.02, 0.045, 1, 1, 14, 6), look, eye.clone().addScaledVector(look, 0.058)), C.lens, M.lens);
     P.add(orient(superEllipsoid(0.012, 0.006, 0.012, 1, 1, 8, 4), look, eye.clone().add(new V3(sx * 0.15 + 0.2, 0.35, 1).normalize().multiplyScalar(0.072))), C.white, M.gloss);
   }
+  // 蟹钳按肩、肘、腕和钳指逐段生成；曲线采样用于把钳尖及内侧齿定位到表面。
   // claws: shoulder joint, cream upper arm, elbow, cream forearm with a team band, wrist, team-ink pincer
   for (const sx of [1, -1]) {
     const sh = new V3(sx * 0.5, 0.66, 0.34), el = new V3(sx * 0.72, 0.69, 0.47), wr = new V3(sx * 0.64, 0.67, 0.66);
@@ -376,6 +397,7 @@ function buildCrab() {
   for (let k = 0; k < 5; k++) P.add(at(rbox(0.36, 0.022, 0.05, 0.5, 10, 4), 0, 0.72 + k * 0.045, -0.5), C.darker, M.satin);
   for (const sx of [1, -1]) led(P, new V3(sx * 0.36, 0.78, -0.47), new V3(sx * 0.3, 0, -1).normalize(), C.red, 0.025);
   for (const sx of [1, -1]) for (const z of [-0.2, 0.1]) { const h = hitOn(caraMesh, new V3(sx * 1.5, 0.84, z), new V3(-sx, 0, 0)); if (h) screw(P, h.p, h.n, 0.016); }
+  // 机枪固定外壳与可旋转枪管分别合并；枪管组应围绕 gunSpinAt 的 Z 轴旋转。
   // gatling: fixed housing (gun) + spinning barrel cluster (gunSpin, axis +Z through gunSpinAt)
   const gy = 0.66, gz0 = 0.48, gz1 = 0.64;
   const G = new Parts(), GI = new Parts(), S = new Parts(), SI = new Parts();
@@ -390,6 +412,7 @@ function buildCrab() {
   for (const [z, col] of [[0.06, C.dark], [0.22, C.cream]]) S.add(latheZ([[0, z - 0.014], [0.085, z - 0.014], [0.092, z - 0.006], [0.092, z + 0.006], [0.085, z + 0.014], [0, z + 0.014]], 28).translate(0, gy, gz1), col, M.gloss);
   SI.add(zring(0.093, 0.008, 0, gy, gz1 + 0.22, 5, 28));
   { const m = superEllipsoid(0.008, 0.014, 0.02, 0.6, 0.6, 6, 5), a = Math.PI / 6; m.rotateZ(a); S.add(at(m, Math.cos(a) * 0.092, gy + Math.sin(a) * 0.092, gz1 + 0.06), C.hazard, M.print); }
+  // 迫击炮保存炮塔枢轴、出膛点与发射方向；调用方需随炮塔变换同步这些局部锚点。
   // mortar on the back-right: turret drum, trunnion cheeks, stubby cream tube pitched up and forward
   const K = new Parts(), KI = new Parts();
   const cp = new V3(-0.4, 1.05, -0.24), cdir = new V3(0.0, 0.88, 0.47).normalize();
@@ -403,6 +426,7 @@ function buildCrab() {
   KI.add(orient(hring(0.118, 0.008, 0.27, 5, 24), cdir, tb));
   const trun = latheZ([[0, -0.13], [0.03, -0.13], [0.03, 0.13], [0, 0.13]], 10); trun.rotateY(Math.PI / 2); K.add(at(trun, tb.x, tb.y, tb.z), C.metal, M.metal);
   const cannonMuzzle = tb.clone().addScaledVector(cdir, 0.278);
+  // 六条腿各自返回独立几何和髋部枢轴，side/index 用于区分左右及前中后步态。
   // legs: 3 per side, stubby and chunky; hip pivots on the hull flanks; armoured femur up-out to a knee, tibia down to
   // a rubber-capped foot
   const legs = [];
@@ -423,6 +447,7 @@ function buildCrab() {
     for (const t of [0.3, 0.7]) screw(B, hip.clone().lerp(knee, t).add(new V3(0, 0.086, 0)), new V3(0, 1, 0), 0.012);
     legs.push({ body: B.build(), ink: BI.build(), at: hip.clone(), side: sx, index: idx });
   });
+  // 滚动形态另建半径 0.95 的装甲球；原点仍在球底，几何绕 X 轴组织环带。
   // armoured ball (rolling mode): latitude bands about the X axis (roll axis) over a dark seam sphere, team equator
   // with cream chevrons, rivets, dark hub caps with bolt circles and team squid emblems
   const BP = new Parts(), BI = new Parts(), BR = 0.95;
@@ -461,6 +486,7 @@ function buildCrab() {
 }
 
 // ---------------------------------------------------------------------------------------------- registry
+// 种类到构建函数的唯一注册表；新增模型需在这里登记后才能通过公共接口取得。
 const BUILDERS = { kraken: buildKraken, speaker: buildSpeaker, missile: buildMissile, jetpack: buildJetpack, crab: buildCrab };
 export const SPECIAL_PROP_KINDS = Object.keys(BUILDERS);
 const _cache = new Map();
@@ -468,6 +494,7 @@ const _cache = new Map();
 // 按种类获取模型配方；缓存策略与返回对象所有权以函数实现为准，调用方不要修改共享几何属性。
 export function getSpecialProp(kind) {
   if (!BUILDERS[kind]) return null;
+  // 首次按种类构建，后续直接复用同一套几何和锚点；调用方不得释放或原地改写共享数据。
   if (!_cache.has(kind)) _cache.set(kind, BUILDERS[kind]());
   return _cache.get(kind);
 }
