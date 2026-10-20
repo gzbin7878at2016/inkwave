@@ -40,6 +40,7 @@ export const HZ = {
 const SAFE_PAD = 0.6;      // squidkids standing on a spawn pad (+ this) are out of reach of every hazard
 const REACH_N = 96;        // headings for the floor-clipped extent of rings / danger zones
 
+// 从记录读取预警、生效、恢复时长并求结束时间，供玩法与表现共用。
 export function moveTimes(m) { const [tele, act, rec] = m.d; return { tele, act, rec, end: tele + act + rec }; }
 // 给定相对招式时间返回阶段；尚未开始或已结束返回 null，不能误当持续攻击。
 export function movePhaseAt(m, u) {
@@ -51,6 +52,7 @@ export function movePhaseAt(m, u) {
   return null;
 }
 // charge: distance along the lane at time u (accelerates over chargeRamp, then full speed), and when it arrives
+// 冲刺先匀加速后匀速，路程钳制在通道总长以内。
 export function chargeDist(p, u, tele) {
   const t = u - tele;
   if (t <= 0) return 0;
@@ -58,12 +60,15 @@ export function chargeDist(p, u, tele) {
   const s = t < r ? 0.5 * a * t * t : 0.5 * a * r * r + v * (t - r);
   return Math.min(p.L, s);
 }
+// 反解冲刺时长；短通道可能在加速阶段就到达。
 export function chargeTime(p) { const v = p.v, r = HZ.chargeRamp, s0 = 0.5 * v * r; return p.L <= s0 ? Math.sqrt((2 * p.L * r) / v) : r + (p.L - s0) / v; }
 // a lobbed barrel in flight (k 0..1 of its flight): a high arc from the shell to its circle
+// 起终点插值加抛物线高度，k 为整段飞行的归一化进度。
 export function barrelPos(p, b, k, out) {
   const peak = 5 + 0.35 * Math.hypot(b[0] - p.sx, b[2] - p.sz);
   return out.set(p.sx + (b[0] - p.sx) * k, p.sy + (b[1] - p.sy) * k + peak * 4 * k * (1 - k), p.sz + (b[2] - p.sz) * k);
 }
+// 生效阶段内平滑插值扫射角度，其他阶段钳制到起止角。
 export function beamAngle(m, u) { const p = m.p, k = clamp((u - m.d[0]) / m.d[1], 0, 1); return p.a0 + (p.a1 - p.a0) * smoothstep(0, 1, k); }
 const ringStart = (m, k) => m.d[0] + m.p.rings[k];
 const ringRadius = (m, k, u) => HZ.ringR0 + HZ.ringSpeed * (u - ringStart(m, k));
@@ -73,6 +78,7 @@ const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
 const _hit = new Hit(), _hit2 = new Hit();
 
 export class BossHazards {
+  // 分别保存招式、一次性受击去重键和局部几何缓存；缓存不写入网络记录。
   constructor(boss) {
     this.boss = boss;
     this.moves = [];            // active + recently finished records (hazards can outlive their move: barrels in flight)
@@ -90,8 +96,10 @@ export class BossHazards {
     this.boss.log.moves.push([m.t0, m.id]);
     return true;
   }
+  // 倒序找当前动作；动作结束后的残留危险另由 _live 判断。
   current(bt) { for (let i = this.moves.length - 1; i >= 0; i--) { const m = this.moves[i]; if (bt >= m.t0 && bt < m.t0 + moveTimes(m).end) return m; } return null; }
   // defeat / time's up: every pending hazard stops here; barrels still in the air burst harmlessly where they are
+  // 比赛结束或死亡时一次性停止危险；空中桶弹只播放无害消散。
   fizzle(bt) {
     if (this.dead >= 0) return;
     this.dead = bt;
@@ -105,12 +113,14 @@ export class BossHazards {
   }
 
   // hazards still able to hurt at boss time bt (a move stays listed until its last barrel / ring is spent)
+  // 动作结束后冲击波仍可存续，额外计入波环寿命；全局终止时间后失效。
   _live(m, bt) {
     const u = bt - m.t0, T = moveTimes(m);
     const extra = m.id === 'slam' ? (HZ.ringMax - HZ.ringR0) / HZ.ringSpeed + (m.p.rings.at(-1) || 0) : 0;
     return u >= 0 && u < T.end + extra + 0.2 && (this.dead < 0 || bt < this.dead);
   }
 
+  // 清理过期招式和受击去重键，再判定本机受击并更新预警。
   update(dt, bt, { live }) {
     for (let i = this.moves.length - 1; i >= 0; i--) {
       const m = this.moves[i];
@@ -133,6 +143,7 @@ export class BossHazards {
         if (!this._live(m, bt1)) continue;
         const u0 = bt0 - m.t0, u1 = bt1 - m.t0;
         const key = (kind, i) => `${m.t0}|${kind}|${i}|${a.nid ?? a.slot}`;
+        // 按招式、类型、序号和角色编号去重，同一次冲击不会跨帧重复扣血。
         const once = (kind, i, dmg) => { const k = key(kind, i); if (this.hits.has(k)) return; this.hits.add(k); this._damage(a, dmg * mul); };
         const p = m.p, [tele] = m.d;
         switch (m.id) {
@@ -143,6 +154,7 @@ export class BossHazards {
               const r0 = ringRadius(m, k, Math.max(u0, ringStart(m, k))), r1 = ringRadius(m, k, u1);
               if (r0 > HZ.ringMax) continue;
               const d = hDist(a.pos, p.x, p.z);
+              // 检查两帧间扫过的完整半径带，并限制波高与地形延伸范围。
               // swept band (no tunnelling at a low frame rate); the wave hugs the floor: a hop clears it
               if (d > r0 - HZ.ringW - 0.25 && d < r1 + HZ.ringW + 0.25 && a.pos.y < p.y + HZ.ringH && a.pos.y > p.y - 0.8 &&
                 d < this.reachAt(m, p.x, p.z, a.pos.x, a.pos.z, HZ.ringMax) + 0.3) once('ring', k, HZ.ringDmg);
@@ -156,6 +168,7 @@ export class BossHazards {
             });
             break;
           case 'sweep': {
+            // 潜入己方墨水可避开光束；持续伤害按 dt 积分并检查视线遮挡。
             if (u1 < tele || u1 > tele + m.d[1] || a.submerged) break;   // diving under your own ink ducks the beam
             const ang = beamAngle(m, u1), len = this.beamLen(m, ang);
             const sx = Math.sin(ang), sz = Math.cos(ang), dx = a.pos.x - p.ox, dz = a.pos.z - p.oz;
@@ -173,6 +186,7 @@ export class BossHazards {
                 const k = key('ram', 0);
                 if (!this.hits.has(k)) {
                   this.hits.add(k);
+                  // 冲撞除伤害外还向通道侧面击退并挑起角色，解除贴地。
                   // bowled aside, away from the lane, and popped up
                   const side = (a.pos.x - bx) * Math.cos(p.yaw) - (a.pos.z - bz) * Math.sin(p.yaw) >= 0 ? 1 : -1;
                   a.vel.x += Math.cos(p.yaw) * side * 9 + Math.sin(p.yaw) * 5; a.vel.z += -Math.sin(p.yaw) * side * 9 + Math.cos(p.yaw) * 5; a.vel.y = 7;
@@ -194,19 +208,24 @@ export class BossHazards {
     }
   }
   // a crablet burst (net: played on the host's timeline) — the owner of each squidkid nearby takes the hit
+  // 仅检查本机拥有的敌方角色，并排除出生台安全区。
   crabBurst(x, y, z, id) {
     for (const a of G.actors) {
       if (a.remote || !a.alive || a.team === 1 || this.boss.nav.inPad(a.pos.x, a.pos.z, SAFE_PAD)) continue;
       if (Math.hypot(a.pos.x - x, a.pos.z - z) < HZ.crabR && Math.abs(a.pos.y - y) < 1.6) this._damage(a, HZ.crabDmg * this.boss.dmgMul);
     }
   }
+  // 统一走角色伤害接口，保留角色自身无敌等规则。
   _damage(a, dmg) { if (dmg > 0) a.damage(dmg, this.boss.attacker, 'boss'); }
+  // 复用临时向量进行视线检测，降低重复分配。
   _los(x0, y0, z0, x1, y1, z1) { return G.physics.los(_v.set(x0, y0, z0), _v2.set(x1, y1, z1)); }
 
   // How far a ground hazard centred on (x, z) spreads along each of REACH_N headings before its floor ends — a wall, a
   // drop (sea, trench), a spawn pad. The shockwave stops there, and the drawn rings / danger zones are clipped to it,
   // so nothing floats over a gap or runs through a wall. Cached on the move (the stage doesn't change).
+  // 按招式弱引用缓存地面延伸与角度分桶射程，缓存生命周期跟随记录。
   _c(m) { let c = this.cache.get(m); if (!c) this.cache.set(m, (c = { beam: new Map(), reach: null })); return c; }
+  // 沿 96 个方向查连续地面，遇墙、落差或禁区截断；表现和受击共用结果。
   reach(m, x, z, R) {
     const C = this._c(m);
     if (C.reach) return C.reach;
@@ -219,12 +238,14 @@ export class BossHazards {
     }
     return (C.reach = out);
   }
+  // 将目标方位转为缓存索引，查询该方向有效地面半径。
   reachAt(m, x, z, px, pz, R) {
     const a = Math.atan2(px - x, pz - z), k = Math.floor(((a < 0 ? a + Math.PI * 2 : a) / (Math.PI * 2)) * REACH_N) % REACH_N;
     return this.reach(m, x, z, R)[k];
   }
 
   // the beam stops at the first wall along it (cached per move + angle bucket; walls don't move)
+  // 按角度分桶缓存首个墙体距离，减少扫射中的重复射线查询。
   beamLen(m, ang) {
     const c = this._c(m).beam, key = Math.round(ang * 90);
     let L = c.get(key);
@@ -248,6 +269,7 @@ export class BossHazards {
       if (!g.hit || g.point.y < PLAYER.waterY) return;
       P.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.08), r, 1, { seed: Math.random() });
     };
+    // 枚举本时间片跨过的固定时间格：低帧补齐落墨点，高帧不重复生成。
     const steps = (u0, u1, start, every, fn) => { const k0 = Math.floor((u0 - start) / every), k1 = Math.floor((u1 - start) / every); for (let k = Math.max(0, k0 + 1); k <= k1; k++) fn(k, start + k * every); };
     for (const m of this.moves) {
       if (!this._live(m, bt1)) continue;
@@ -304,6 +326,7 @@ export class BossHazards {
   threat(x, y, z, horizon = 1.2) {
     const bt = this.boss.bt, out = this._thr || (this._thr = {});
     out.level = 0; out.ax = 0; out.az = 0; out.ringIn = -1; out.cover = false; out.lane = false; out.beam = false;
+    // 逃离方向按强度累加、等级取最大值；最后将合成方向单位化。
     const push = (lvl, dx, dz) => {
       const l = Math.hypot(dx, dz) || 1;
       out.ax += (dx / l) * lvl; out.az += (dz / l) * lvl;
@@ -368,6 +391,7 @@ const hDist3 = (x0, z0, x1, z1) => Math.hypot(x0 - x1, z0 - z1);
 // Ground telegraphs and the hazards themselves, in the boss's ink. Everything that lies on the floor is clipped to the
 // floor it covers (reach()): a ring runs out at a wall or a drop instead of floating across the trench or the sea.
 // Pooled / per-move meshes; nothing is allocated per frame.
+// 以下 shader 仅绘制预警外观；伤害与涂地由上方 CPU 逻辑处理。
 const DECAL_VERT = /* glsl */`
 varying vec2 vUv;
 void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
@@ -418,6 +442,7 @@ void main() {
 }`;
 
 class HazardFX {
+  // 预建普通几何与共享波环模板；按类型池或招式缓存实例。
   constructor() {
     this.group = new THREE.Group(); this.group.name = 'BossHazards';
     G.scene?.add(this.group);
@@ -448,8 +473,11 @@ class HazardFX {
     this._per = new Map();    // per-move meshes (rings, fans), keyed `${t0}:${what}`
     this.t = 0;
   }
+  // 同步预警颜色与桶弹自发光；uniform 读取共用颜色对象。
   setColor(c) { this.color.copy(c); this.barrelMat.emissive.copy(c); }
+  // 各池保存实例列表及本帧取用数量，帧初复位后按顺序复用。
   _pool(name) { return this.pools[name] || (this.pools[name] = { list: [], n: 0 }); }
+  // 池容量不足才创建，闲置实例在绘制结束时统一隐藏。
   _take(name) {
     const P = this._pool(name);
     let m = P.list[P.n];
@@ -462,6 +490,7 @@ class HazardFX {
     P.n++; m.visible = true;
     return m;
   }
+  // 参数固定的波环和扇面按招式起始时间加类型缓存。
   _perMove(key, make) {
     let o = this._per.get(key);
     if (!o) { o = make(); o.frustumCulled = false; o.renderOrder = 7; this.group.add(o); this._per.set(key, o); }
@@ -469,6 +498,7 @@ class HazardFX {
     return o;
   }
   // a shockwave band sharing the template, with this move's reach per segment
+  // 共享模板角度与位置属性，本次招式单独附加各方向可延伸距离。
   _ring(key, reach) {
     return this._perMove(key, () => {
       const R = this.ringAttr, g = new THREE.BufferGeometry(), r4 = new Float32Array(REACH_N * 4);
@@ -479,6 +509,7 @@ class HazardFX {
     });
   }
   // a fan on the floor at (x, y, z) from heading a0 to a1 (full circle when a1 − a0 = 2π) out to radius(angle)
+  // 按角跨度细分扇面，各方向半径由地形裁剪函数提供。
   _fan(key, x, y, z, a0, a1, radius) {
     return this._perMove(key, () => {
       const n = Math.max(8, Math.ceil(Math.abs(a1 - a0) / (Math.PI * 2) * REACH_N));
@@ -585,6 +616,7 @@ class HazardFX {
       }
     }
     for (const k in this.pools) { const P = this.pools[k]; for (let i = P.n; i < P.list.length; i++) P.list[i].visible = false; }
+    // 记录回收后释放招式专属网格，普通对象池保留复用。
     // per-move meshes whose move has gone
     for (const [key, o] of this._per) {
       const t0 = +key.split(':')[0];
@@ -593,6 +625,7 @@ class HazardFX {
   }
 
   // compile everything once while the match loads (no hitch on the first slam)
+  // 加载时在地下生成各类预警实例，供渲染器提前编译以减少首招卡顿。
   warm() {
     for (const k of ['lane', 'beam', 'barrel']) { const m = this._take(k); m.position.set(0, -40, 0); }
     const z = new Float32Array(REACH_N).fill(1);
@@ -601,6 +634,7 @@ class HazardFX {
     return this.group;
   }
 
+  // 退出时释放本系统拥有的几何、专属材质和缓存；共用光束及桶弹材质统一释放。
   dispose() {
     this.group.removeFromParent();
     for (const k in this.geo) this.geo[k].dispose();

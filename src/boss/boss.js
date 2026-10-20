@@ -17,6 +17,7 @@ import { BossNav, FLOOR_BODY } from './bossNav.js';
 import { BossHazards, movePhaseAt, moveTimes, beamAngle, HZ } from './bossHazards.js';
 import { BossBrain } from './bossBrain.js';
 
+// 统一配置生命、伤害、节奏与武器倍率；阶段阈值按剩余生命比例解释。
 export const BOSS = {
   name: 'HULLBREAKER',
   hpPerUnit: 18000,                                     // × squad units (human 1.0, bot 0.6) × difficulty
@@ -33,6 +34,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _aim = new THREE.Vect
 const _hs = { t: 0, target: null, weak: false, point: new THREE.Vector3(), dist: 0 };
 
 export class Boss {
+  // 初始化可复制状态、导航、模型与危险区；sim 为真才创建本机决策器。
   constructor(match, { maxHp, difficulty = 'normal', sim = true }) {
     this.match = match;
     this.name = BOSS.name;
@@ -54,6 +56,7 @@ export class Boss {
     this._spawnPoint();
     // pseudo attacker for squidkid damage ('damage' / 'splatted' events, death cam, kill feed)
     const self = this;
+    // 兼容角色伤害接口的攻击者代理，供击倒统计、击杀信息与死亡镜头读取。
     this.attacker = { name: BOSS.name, team: 1, pos: this.pos, boss: true, isLocal: false, isBot: true, stats: { splats: 0, turf: 0, deaths: 0 }, addTurf() {}, get color() { return G.teamColors[1]; }, _nearCamera: () => true, get vel() { return self.vel; } };
     this.hz = new BossHazards(this);
     this.hz.fx.setColor(G.teamColors[1]);
@@ -61,6 +64,7 @@ export class Boss {
     this.model.root.visible = false;
     this.model.root.position.copy(this.pos); this.model.root.rotation.y = this.yaw;
     G.scene.add(this.model.root);
+    // 模型报告脚步与冲击事件，由事件系统驱动音效和震屏，不在模型内结算伤害。
     this.model.onFoot = (i, pos, s) => { emit('boss:foot', { pos: pos.clone(), strength: s, leg: i }); if (s > 0.5) emit('shake', { amount: 0.12 * s, pos: pos.clone() }); };
     this.model.onImpact = (socket, pos, s) => { emit('boss:impact', { socket, pos: pos.clone(), strength: s }); emit('shake', { amount: 0.5 * s, pos: pos.clone() }); };
     this.model.onEvent = (name, data) => emit('boss:fx', { name, data });
@@ -77,6 +81,7 @@ export class Boss {
   }
 
   // spawn: the roomiest floor near the middle of its home ground, facing down the stage toward the squad
+  // 选择靠近区域中心且空间宽裕的出生点，再寻找能容纳本体的朝向。
   _spawnPoint() {
     const nav = this.nav;
     let sx = 0, sz = 0;
@@ -97,6 +102,7 @@ export class Boss {
     this.home = { x, z };
   }
 
+  // 供规则与界面读取血量比例、当前表现阶段及是否仍在有效战斗中。
   hpFrac() { return this.maxHp > 0 ? this.hp / this.maxHp : 0; }
   get movePhase() { return this.st.movePhase; }   // the displayed move's phase ('tele' | 'act' | 'rec' | null)
   live() { return this.match.state === 'playing' && !this.dead; }
@@ -111,6 +117,7 @@ export class Boss {
     const live = this.live() && this.visible;
     if (!live && this.hz.dead < 0 && (this.dead || this.match.state === 'finish' || this.match.state === 'judge' || this.match.state === 'results')) this.hz.fizzle(this.bt);
     // host: paint the slice of boss time just simulated
+    // 仅权威端补涂刚推进的 Boss 时间区间；_paintBt 防止同一区间重复处理。
     if (this.sim && live && this.bt > bt0) this.hz.paint(Math.max(bt0, this._paintBt), this.bt);
     this._paintBt = this.bt;
     this.hz.update(dt, this.bt, { live });
@@ -122,6 +129,7 @@ export class Boss {
   }
 
   // what the model plays: the current move and its phase (or a set piece), from state alone — identical everywhere
+  // 将同步状态转换为动画输入，招式时间换算为当前预警、生效或恢复阶段内的时间。
   _modelUpdate(dt) {
     const st = this.st, m = this.move, root = this.model.root;
     root.visible = this.visible;
@@ -145,6 +153,7 @@ export class Boss {
     this.model.update(dt, st);
   }
 
+  // 由招式记录计算视线目标，保持各端炮口朝向与实际攻击一致。
   _moveAim(m, u, out) {
     const p = m.p;
     switch (m.id) {
@@ -156,9 +165,11 @@ export class Boss {
     }
   }
 
+  // 按网络编号找存活目标；离线无 nid 时退回 slot。
   targetActor() { return this.target >= 0 ? G.actors.find((a) => (a.nid ?? a.slot) === this.target && a.alive) || null : null; }
 
   // UI / audio events, raised from the displayed state on every client (the host's sim and the guests' replay alike)
+  // 与上次显示状态比较后广播，让各端播放本地 UI 和音效而不逐帧重复触发。
   _events() {
     const E = this._ev;
     if (this.anim !== E.anim) {
@@ -190,6 +201,7 @@ export class Boss {
   }
 
   // squidkids can't walk through the boss: owned ones are pushed out of its body (remote ones by their owners)
+  // 按本体地面近似形状推出本机角色并消除向内速度；远程角色由其所属端处理。
   _pushActors() {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     for (const a of G.actors) {
@@ -208,6 +220,7 @@ export class Boss {
 
   // ---------------------------------------------------------------------------------------------- damage intake
   // Nearest hit shape (or crablet) along the segment a→b, within `pad` of its surface → _hs or null.
+  // 线段检查启用的命中球，选择最前命中；结果对象会复用，调用方需立即使用。
   segHit(a, b, pad = 0) {
     if (!this.visible || this.dead) return this._segCrabs(a, b, pad, null);
     let best = null;
@@ -223,6 +236,7 @@ export class Boss {
       // entry point along the segment (back off from the closest point)
       const back = Math.sqrt(Math.max(0, R * R - d2) / L2);
       const te = Math.max(0, t - back);
+      // 外壳与弱点接近重叠时给弱点少量优先偏移，但仍保留前方遮挡关系。
       // weak spheres sit on the shell: when both are hit, the weak one wins only if it is (nearly) in front
       const key = te - (h.weak ? 0.02 : 0);
       if (!best || key < best.key) best = { key, t: te, target: h, weak: h.weak };
@@ -235,6 +249,7 @@ export class Boss {
     _hs.dist = Math.sqrt(L2) * best.t;
     return _hs;
   }
+  // 小蟹独立做线段距离检测，再与本体候选比较参数，选择更靠前目标。
   _segCrabs(a, b, pad, best) {
     let hit = null;
     const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z, L2 = abx * abx + aby * aby + abz * abz || 1e-9;
@@ -255,6 +270,7 @@ export class Boss {
     return _hs;
   }
   // a roller's drum (pos + forward): the lowest shapes it can reach — claws, belly — or a crablet → { target, point, boss }
+  // 滚筒仅接触低处部件或同高度小蟹，不能直接命中高悬弱点。
   rollHit(pos, fx, fz, width) {
     const cx = pos.x + fx * 0.8, cz = pos.z + fz * 0.8, cy = pos.y + 0.45, R = width / 2 + 0.35;
     const out = this._roll || (this._roll = { target: null, point: new THREE.Vector3(), boss: false });
@@ -275,6 +291,7 @@ export class Boss {
   }
 
   // exact ray vs the hit spheres (the local player's crosshair) → distance or -1
+  // 准星用精确射线求最近命中球距离；无命中返回 -1。
   rayDist(o, d, max) {
     if (!this.visible || this.dead) return -1;
     let best = -1;
@@ -296,9 +313,11 @@ export class Boss {
     if (!attacker || attacker.remote || dmg <= 0 || this.dead) return;
     if (target && target.hp !== undefined && target.id !== undefined) { this._hitCrab(attacker, target, dmg); return; }
     const weak = !!(target && target.weak);
+    // 先乘弱点、眩晕与武器倍率再交权威入口；小蟹有独立血量路径。
     const d = dmg * (weak ? BOSS.weak : 1) * (this.stunned ? BOSS.stunned : 1) * (BOSS.weapon[wid] ?? 1);
     if (point) G.fx?.burst(point, _v2.copy(point).sub(this.pos).setY(0.4).normalize(), attacker.color, { count: weak ? 10 : 5, speed: weak ? 5 : 3, size: 0.08 });
     if (this.invuln || !this.visible) { if (attacker.isLocal) emit('boss:hit', { damage: 0, weak, attacker, local: true, blocked: true, pos: point || null }); return; }
+    // 客机发送命中并显示预测反馈，不直接改写权威血量。
     if (G.netm && !G.netm.isHost) {
       G.netm.sendBossHit(attacker, d, weak, wid, -1);
       this.model.flash(clamp(d / 90, 0.25, 1), weak);
@@ -308,6 +327,7 @@ export class Boss {
     this.applyDamage(attacker, d, weak, point);
   }
   // splash damage (blaster burst, slosh splash, bombs, Tidal Slam): falloff from the nearest body sphere, cover blocks
+  // 范围伤害按最近非弱点球表面距离衰减并检查遮挡；小蟹单独检查。
   splash(attacker, c, R, dmax, dmin, wid) {
     if (!attacker || attacker.remote || this.dead) return;
     for (const cr of this.crabs.values()) {
@@ -327,11 +347,13 @@ export class Boss {
     this.hit(attacker, dmax + (dmin - dmax) * clamp(bd / R, 0, 1), best, wid, null);
   }
   // Ink Tempest rain: small per-frame amounts, batched so a guest sends a few messages a second, not sixty
+  // 按拥有者累计持续雨伤，减少客机逐帧发送命中消息。
   rain(owner, cx, cz, R, dmg) {
     if (!owner || owner.remote || this.dead || !this.visible) return;
     if (Math.hypot(this.pos.x - cx, this.pos.z - cz) > R + 2.4) return;
     this._rain.set(owner, (this._rain.get(owner) || 0) + dmg);
   }
+  // 每 0.3 秒将累计雨伤送入统一命中入口，再清空累计。
   _flushRain(dt) {
     this._rainT = (this._rainT || 0) - dt;
     if (this._rainT > 0 || !this._rain.size) return;
@@ -357,6 +379,7 @@ export class Boss {
     return d;
   }
   // host: a guest's hit arrived ({k:'bhit'})
+  // 主机按攻击者编号受理客机命中；本体请求设单次上限，小蟹按独立编号路由。
   remoteHit(d) {
     if (!this.sim) return;
     const atk = G.netm?.byNid.get(d.a);
@@ -366,6 +389,7 @@ export class Boss {
     this.applyDamage(atk, Math.min(+d.d || 0, 2000), !!d.weak, null);
   }
 
+  // 死亡转换只执行一次：记录击杀者、停止残留危险并通知比赛规则。
   _defeat(attacker) {
     if (this.dead) return;
     this.dead = true; this.stunned = false; this.anim = 0;
@@ -376,6 +400,7 @@ export class Boss {
   }
 
   // ---------------------------------------------------------------------------------------------- crablets
+  // 小蟹由主机扣血，客机仅报告与预测；不将其伤害记到本体上。
   _hitCrab(attacker, c, dmg, fromNet = false) {
     if (c.dead) return;
     if (G.netm && !G.netm.isHost && !fromNet) {
@@ -388,6 +413,7 @@ export class Boss {
     if (c.hp <= 0) { if (attacker.stats) attacker.stats.splats++; this.crabPop(c, true); }
   }
   // host: a crablet bursts (killed: harmless, into the squad's ink · otherwise: a boss-ink burst that hurts)
+  // 主机广播爆裂；killed 区分玩家击杀的无害爆裂与主动伤人爆裂。
   crabPop(c, killed) {
     if (c.dead) return;
     c.dead = true;
@@ -395,6 +421,7 @@ export class Boss {
     this._crabBurst(c.id, c.x, c.y, c.z, killed);
   }
   // everyone: the burst itself (guests get it on the host's timeline)
+  // 各端复现爆裂及本机受击，地面涂色只由主机执行一次。
   _crabBurst(id, x, y, z, killed) {
     const c = this.crabs.get(id);
     if (c) { c.dead = true; this._crabPopFx(c, killed); }
@@ -408,10 +435,12 @@ export class Boss {
       if (g > -5 && !this.nav.inPad(x, z, 0.3)) G.paint?.splat(_v.set(x, g + 0.1, z), killed ? 1.3 : 1.7, killed ? 0 : 1, { seed: Math.random() });
     }
   }
+  // popped 保证爆裂动画仅启动一次，后续视觉更新负责计时回收。
   _crabPopFx(c, killed) {
     if (c.model && !c.popped) { c.popped = true; c.model.pop?.(); c.popT = 0; }
   }
   // crablet model per live crablet; guests position them from the snapshots
+  // 首次创建小蟹模型，后续更新姿态；死亡动画结束后释放并移出集合。
   _crabVisuals(dt) {
     for (const [id, c] of this.crabs) {
       if (!c.model) {
@@ -438,13 +467,16 @@ export class Boss {
     if (full && this.move) s.push(this.move);
     return s;
   }
+  // 与 pack 固定数组顺序对应；网络采样时间 ts 与 Boss 玩法时钟 bt 分开保存。
   static unpack(s, ts) {
     return { t: ts, bt: s[0], x: s[1], y: s[2], z: s[3], yaw: s[4], vx: s[5], vz: s[6], hp: s[7], phase: s[8], f: s[9], mv: s[10], anim: s[11], turn: s[12], fl: s[13], wk: s[14], killer: s[15], crabs: s[16], maxHp: s[17], move: s[18] || null };
   }
   // a move record from the host's timeline (or a snapshot's copy): idempotent by t0
+  // 招式按起始时间去重，允许快照补发和事件回放重复到达。
   onMove(m) { if (m && typeof m.t0 === 'number') this.hz.add(m); }
 
   // guest: apply this frame's sample (netmatch._sampleBoss fills this.net.cur)
+  // 读取网络采样并叠加迁移校正偏移；显示时钟只前进，防止攻击时间线倒退。
   _follow(dt) {
     const n = this.net, S = n.cur;
     if (!S) return;
@@ -465,6 +497,7 @@ export class Boss {
     if (n.wk !== undefined && S.wk > n.wk) this.model.flash(0.8, true);
     n.fl = S.fl; n.wk = S.wk;
     this.flashN = S.fl; this.weakN = S.wk;
+    // 按编号更新小蟹；连续缺失超过宽限时间才回收，避免短暂漏包导致闪烁。
     // crablets: the sampled set (interpolated per id); ones gone from the snapshots without a burst event are dropped
     const seen = n.crabSeen || (n.crabSeen = new Set());
     seen.clear();
@@ -489,8 +522,10 @@ export class Boss {
     this.brain = new BossBrain(this, { adopt: true });
   }
   // a new host took over: its path starts where it adopted us — keep drawing from here, settle the offset
+  // 新主机接管时清空旧快照缓冲，并标记需要平滑衔接。
   handoff() { this.net.buf.length = 0; this.net.handoff = true; }
 
+  // 返回模型与预警节点，供加载阶段提前编译材质。
   warm() { return [this.model.root, this.hz.fx.warm()]; }
 
   // 退出对局时撤下模型和危险区并清理事件绑定，避免下一局仍收到旧 Boss 的回调。
