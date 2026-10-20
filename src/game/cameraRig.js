@@ -1,3 +1,8 @@
+// 【中文导读】第三人称镜头控制器：把玩家瞄准与视觉跟随分开，统一管理跟随、死亡观察、过场和判分镜头。
+// 世界坐标使用米；yaw/pitch 是朝向，dt 是秒。跟随点采用角色 visualPos，避免物理接触的小抖动传到画面。
+// 镜头臂经过场景碰撞探测，遇墙缩短、离墙缓慢伸出；不要只改相机位置而绕过探测。
+// gameCam 保存地图展开前的战斗镜头，立体地图只改变展示视角，避免地图切换污染瞄准。
+// 本模块只负责相机表现，不判定伤害；瞄准射线仍由玩家控制器根据约定的镜头计算。
 // Camera rig: third-person follow, death spectate, cinematic paths, orbit, judge overview (stream 4).
 //
 // Follow: the pivot rides critically-damped springs toward the character's *visual* position with velocity
@@ -24,6 +29,7 @@ const _hit = new Hit();
 class Spring {
   constructor(x = 0) { this.x = x; this.v = 0; }
   reset(x) { this.x = x; this.v = 0; }
+  // 弹簧以目标值和角频率推进；位置与速度共同保留，切镜时需一起重置。
   step(target, omega, dt) {
     const d = this.x - target, e = Math.exp(-omega * dt), k = (this.v + omega * d) * dt;
     this.x = target + (d + k) * e;
@@ -110,6 +116,7 @@ export class CameraRig {
     this._traumaIn = Math.min(1 - this.trauma, this._traumaIn + a * 0.75);
   }
 
+  // 跟随新的角色；snap 用于重生或传送，重置全部跟随弹簧，避免从旧出生点飞过来。
   follow(actor, snap = false) {
     this.mode = 'follow';
     this.target = actor;
@@ -164,6 +171,7 @@ export class CameraRig {
     if (dur > 0) this._startBlend(dur);
   }
 
+  // 每帧按模式算出基准镜头，再叠加过渡与震动；非有限状态会复位，防止一次坏值污染后续帧。
   update(dt) {
     this.time += dt;
     if (!Number.isFinite(this.pivot.x + this.pivot.y + this.pivot.z + this.pivotY + this.curDist + this.sx.x + this.sy.x + this.sz.x + this.boom.x + this.dipS.x + this.kickS.x + this.trauma)) {
@@ -243,6 +251,7 @@ export class CameraRig {
   }
 
   // ---- map diorama pose ---------------------------------------------------------------------------------------------
+  // 展开地图时拟合整个关卡的边界；地图镜头与战斗镜头分别保留，收起后平滑回到游戏。
   _diorama(dt) {
     const D = this._dio, L = G.level;
     if (!L) return;
@@ -298,6 +307,7 @@ export class CameraRig {
     return out.set(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp);
   }
 
+  // 速度前馈减少持续追赶的滞后；竖直弹簧区分站立、跳跃和落地，后段再限制镜头臂穿墙。
   _follow(dt) {
     const a = this.target, cam = this.camera;
     const squid = a.form === 'squid';
@@ -411,6 +421,7 @@ export class CameraRig {
     if (Math.abs(this.kick) > 1e-6) cam.rotateX(this.kick);
   }
 
+  // 死亡观察使用独立模式与平滑过渡，不把已经死亡的本地角色继续当作正常跟随目标。
   _spectate(dt) {
     const s = this.spectate, cam = this.camera;
     this.spectateT += dt;

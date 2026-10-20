@@ -1,3 +1,8 @@
+// 【中文导读】大招的程序化道具工厂：巨鱿、音箱、导弹、喷气背包和蟹形机甲。
+// 只生成几何、材质分组与可动零件枢轴，不在这里推进大招伤害、寿命或联网规则。
+// 坐标使用米、Y 向上、Z 向前；通常原点为底部中心，导弹和背包等例外由各模型注明。
+// body 使用塑料材质，ink 使用队伍墨色，glow 使用发光材质；顶点 aMat 决定表面类别。
+// 可动零件必须按返回的 pivot 装配，不能直接绕世界原点旋转。
 // INKWAVE — procedural world props for the specials: Kraken, Howl Box speaker, Vortex Strike missile, Ink Jet pack
 // and the Crab Rig. Same toy-plastic language as the held weapons (character-weapons.js): every geometry carries vertex
 // colours + the `aMat` surface class, so `body` renders with getPlasticMaterial(), `ink` (and other *Ink parts) with
@@ -28,6 +33,7 @@ function zring(R, r, x, y, z, rs = 5, ts = 24) { return at(torus(R, r, rs, ts), 
 /** Sphere (superEllipsoid e = 1). */
 function ball(r, x, y, z, ws = 12, hs = 8) { return at(superEllipsoid(r, r, r, 1, 1, ws, hs), x, y, z); }
 /** Make a closed solid face outward (flip the winding if its signed volume is negative). */
+// 用带符号体积检查封闭几何的朝外方向，必要时翻三角绕序并重算法线。
 function outward(g) {
   const p = g.attributes.position, ix = g.index.array, a = new V3(), b = new V3(), c = new V3(); let vol = 0;
   for (let i = 0; i < ix.length; i += 3) { a.fromBufferAttribute(p, ix[i]); b.fromBufferAttribute(p, ix[i + 1]); c.fromBufferAttribute(p, ix[i + 2]); vol += a.dot(b.cross(c)); }
@@ -39,6 +45,7 @@ const _rc = new THREE.Raycaster();
 function hitOn(mesh, origin, dir) { _rc.set(origin, dir); const h = _rc.intersectObject(mesh, false)[0]; return h ? { p: h.point.clone(), n: h.face.normal.clone() } : null; }
 /** Drape a part placed on the tangent plane (p0, n) onto the mesh surface: every vertex keeps its height above that
  *  plane, measured from the surface point found straight below it (along −n). */
+// 沿表面法线把装饰贴到目标网格，保留原离面高度，防止标识穿模或悬空。
 function drape(g, mesh, p0, n, lift = 0.002) {
   const d = new V3(), dn = n.clone().negate();
   return deformG(g, (v) => {
@@ -53,6 +60,7 @@ function drape(g, mesh, p0, n, lift = 0.002) {
  *  on top and a ridge band, a dark goggle mask with big white eyes (glossy dark pupils, highlights), a skirt of ten
  *  short thick tentacles (curled tips, pale suckers) touching the ground. Squid in `ink`; mask, eyes, suckers in `body`.
  *  Extras: eyesAt (centre between the eyes, on the face), mouthAt (under the mask, for a shout/ink spit FX). */
+// 构建巨鱿的身体及表现部件；形态与行动由大招系统驱动。
 function buildKraken() {
   const P = new Parts(), I = new Parts();
   const ZS = 0.88, sq = (g) => { g.scale(1, 1, ZS); return g; };
@@ -286,6 +294,7 @@ function buildJetpack() {
  *  `gunSpinAt`; `gunMuzzle`. `cannon` { body, ink, at } stubby mortar on the back-right (at = its turret pivot);
  *  `cannonMuzzle`, `cannonDir`. `seatAt` = where to put the kid's ROOT (feet) so the hatch rim meets the waist.
  *  `ballBody`/`ballInk`: the armoured ball for the rolling mode, radius 0.95, origin at its bottom. */
+// 机甲含独立可动零件；调用方使用返回的零件信息驱动腿、炮口等动作。
 function buildCrab() {
   const P = new Parts(), I = new Parts();
   const HC = new V3(0, 0.79, -0.02), RX = 0.64, RY = 0.34, RZ = 0.5;
@@ -456,6 +465,7 @@ const BUILDERS = { kraken: buildKraken, speaker: buildSpeaker, missile: buildMis
 export const SPECIAL_PROP_KINDS = Object.keys(BUILDERS);
 const _cache = new Map();
 /** Geometry set for a special's world prop (cached per kind; shared — do not dispose). Unknown kinds → null. */
+// 按种类获取模型配方；缓存策略与返回对象所有权以函数实现为准，调用方不要修改共享几何属性。
 export function getSpecialProp(kind) {
   if (!BUILDERS[kind]) return null;
   if (!_cache.has(kind)) _cache.set(kind, BUILDERS[kind]());

@@ -1,3 +1,8 @@
+// 【中文导读】二维战场图：把关卡底图、CPU 墨水格和动态标记合成 Canvas，供 HUD 与地图界面使用。
+// 地图颜色读取 CPU 网格，不从 GPU 图集读回；因此低成本、不会阻塞 GPU，但不是逐像素墨迹截图。
+// 世界 x/z 到画布坐标的投影及队伍翻转集中处理，标记、点击和超级跳跃必须使用同一套变换。
+// 底图与墨迹有独立缓存；临时特效列表有长度上限，换布局时清空，避免跨地图残留。
+// 本模块提供跳跃可视化信息，不直接传送角色；实际合法性和飞行仍归 Actor。
 // Top-down turf map (stream 6). The HUD frames `canvas` (corner + TAB-expanded) and draws player dots / super-jump
 // beacons on top in normalised canvas space, so `w/h` === canvas size and `toCanvas` is the only projection.
 //
@@ -31,6 +36,7 @@ on('respawn', ({ actor }) => { const p = G.level?.spawnPads?.[actor.team]; if (p
 // progress 0..1, flight only), home } and returns out — or null when the actor isn't super jumping. No allocation.
 export const SJ_CHARGE = 0.75;
 export const sjEase = (k) => (k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2);
+// 把蓄力或飞行中的跳跃状态写入复用对象；飞行水平进度与起落弧线分开，避免逐帧分配。
 export function superJumpInfo(a, from, to, out) {
   const s = a && a.superJumpState;
   if (!s) return null;
@@ -87,6 +93,7 @@ export class Minimap {
     idle(() => { if (!this._built && CURRENT === this) this._build(); });
   }
 
+  // 观察队伍改变时同步地图翻转，让己方出生点与队友标记保持一致。
   setViewerTeam(team) {
     this.viewerTeam = team;
     const f = team === 1;
@@ -109,6 +116,7 @@ export class Minimap {
   _worldZ(py) { const B = this.level.bounds; const c = this.flip ? this.h - py : py; return B.maxZ - c / this.s; }
 
   // ------------------------------------------------------------------------------------------ static layers
+  // 按当前布局预建投影和底图；地图不变时复用，避免每帧重新扫描全部几何。
   _build() {
     const W = this.w, H = this.h, N = W * H, lvl = this.level, s = this.s;
     const hgt = (this.hgt = new Float32Array(N).fill(-99));
@@ -287,6 +295,7 @@ export class Minimap {
 
   // Ink refresh for rows [y0, y1). The full map is refreshed over INK_BANDS consecutive frames so no single frame
   // pays for the whole bilinear field + emboss (≈ 1/3 of the work per frame).
+  // 按行更新 CPU 墨水颜色；分段刷新让大地图的像素写入成本摊开。
   _drawInk(y0 = 0, y1 = this.h) {
     const W = this.w, H = this.h, N = W * H;
     const grid = this.paint.grid, cell = this.pixCell, fxA = this.pixFx, fyA = this.pixFy, sxA = this.pixSx, syA = this.pixSy;
@@ -338,6 +347,7 @@ export class Minimap {
   }
 
   // ------------------------------------------------------------------------------------------ per frame
+  // 分别推进墨迹更新与动态合成；force 用于需要立即刷新的场景，不应常开抵消节流。
   update(dt, force = false) {
     if (!this._built) this._build();
     this.time += dt;
@@ -363,6 +373,7 @@ export class Minimap {
     this._compose(dt);
   }
 
+  // 叠加玩家、区域与临时事件；敌我可见性和队伍过滤在这里遵守地图信息规则。
   _compose(dt) {
     const c = this.ctx, W = this.w, H = this.h, s = this.s;
     c.globalAlpha = 1;

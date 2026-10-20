@@ -1,3 +1,8 @@
+// 【中文导读】副武器运行系统：管理投掷、落地、放置、持续区域和可摧毁装置。
+// SUB_KITS 中已注册的种类委托给 kit；其余种类由本文件的状态机推进，配置数值来自共享 config。
+// items 同时包含本机权威对象和联机 ghost；ghost 只复现表现，不重复记墨水、伤害或大招充能。
+// 副武器世界模型与手持模型共享造型语言，SUB_SCALE 只控制表现尺度，不能当作碰撞判定倍率。
+// clear 用于换局，逐对象释放临时资源并清理各 kit；销毁、爆炸和普通过期并不是同一个状态转换。
 // Sub weapons (every kind except the Splat Bomb, which lives in weapons.js): thrown and placed devices, clouds,
 // curtains, mines and jump beacons, plus the status effects they put on players (tracking, poison).
 //
@@ -68,6 +73,7 @@ export class SubSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- deploy
+  // 按 kind 分发：kit 优先，再区分放置和投掷；记录初始位置与速度供远端按相同参数复现。
   use(a, sub) {
     if (SUB_KITS[sub.kind]) return SUB_KITS[sub.kind].use(this, a, sub);   // kit subs (kits/*.js)
     if (sub.placed) return this._place(a, sub);
@@ -152,6 +158,7 @@ export class SubSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- per frame
+  // 推进副武器状态并清理死亡对象；逻辑使用秒制 dt，不依赖显示器帧率。
   update(dt) {
     for (const k in SUB_KITS) SUB_KITS[k].tick?.(dt);   // kit subs' own objects
     const items = this.items, nm = G.netm;
@@ -189,6 +196,7 @@ export class SubSystem {
   // kid back), sprinklers, beacons (a teammate can jump to one) — with paint muted and hits dropped (the owner's arrive
   // apart). A ghost mine never goes off by itself: its owner decides (the end record). Damage the local player does to
   // a ghost device goes to its owner (netHurt); the owner's end record ends a ghost still standing.
+  // 解码远端副武器事件；复现对象的 gid 必须稳定，以便后续伤害和销毁事件找到同一实体。
   netGhost(a, d) {
     if (!Array.isArray(d)) return;
     const [op, gid] = d;
@@ -216,6 +224,7 @@ export class SubSystem {
     if (it) this._hurt(it, dmg);
   }
 
+  // 飞行阶段处理重力与场景碰撞，随后按种类进入黏附、奔跑或爆炸等状态。
   _fly(it, dt) {
     const s = it.sub;
     it.vel.y -= GRAV * dt;
@@ -547,6 +556,7 @@ export class SubSystem {
   }
 
   // paint + damage enemies (with line of sight) around a blast, like the splat bomb
+  // 集中处理爆炸效果、伤害与涂地；保留 ghost 和特殊技期间的计分边界，避免重复结算。
   _blast(it, c, radius, dmgMax, dmgMin, paintRadius, n) {
     const center = c.clone();
     this._paint(it, _v2.copy(center).addScaledVector(n || UP, 0.2), paintRadius);
@@ -681,6 +691,7 @@ export class SubSystem {
     emit('sub:destroyed', { kind: it.kind, pos: c.clone(), team: it.team });
     it.state = 'dead';
   }
+  // 只释放该实例持有的临时对象；共享几何和材质由其所属系统管理，不能随单个实例误删。
   _dispose(it) {
     this.scene.remove(it.mesh);
     if (it.cloud) {
