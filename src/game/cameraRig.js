@@ -26,6 +26,8 @@ const _probe = { hard: 0, soft: 0, floor: false };
 const _hit = new Hit();
 
 // Critically-damped spring (exact integration — stable and frame-rate independent).
+// 【解析弹簧】x为当前位置、v为速度；临界阻尼的指数解不需要按显示帧率手调系数。
+// reset用于传送/重生，将速度清零，避免旧动量把新镜头拉回去。
 class Spring {
   constructor(x = 0) { this.x = x; this.v = 0; }
   reset(x) { this.x = x; this.v = 0; }
@@ -40,6 +42,8 @@ class Spring {
 
 // Damped spring for zeta < 1, sub-stepped so each explicit step stays tiny: stable and frame-rate independent at any dt.
 // (A single explicit step per frame diverged below ~27 fps into a frame-alternating jitter that read as flicker.)
+// 【欠阻尼弹簧】落地回弹允许轻微过冲，不能套用临界阻尼公式。
+// 按omega*dt拆成小步，限制显式积分每步跨度，防止低帧率出现交替抖动。
 function stepDamped(o, target, omega, zeta, dt) {
   const n = Math.max(1, Math.ceil((omega * dt) / 0.12)), h = dt / n;
   for (let i = 0; i < n; i++) { o.v += (-omega * omega * (o.x - target) - 2 * zeta * omega * o.v) * h; o.x += o.v * h; }
@@ -47,10 +51,13 @@ function stepDamped(o, target, omega, zeta, dt) {
 }
 
 // smooth pseudo-noise in [-1, 1]: two low incommensurate sines, no high partials (those alias into flicker at 30-60 fps)
+// 连续低频伪噪声使用固定相位，不在每帧重新随机；重播震动时不会产生突然换方向的跳帧。
 const nz = (t, p) => Math.sin(t + p) * 0.62 + Math.sin(t * 1.87 + p * 1.7) * 0.38;
 const easeInOut = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
 
 export class CameraRig {
+  // 【持久状态】位置跟随、镜头臂、形态高度、落地与后坐力各有独立弹簧。
+  // this.camera用于最终显示，gameCam保存展开地图前的战斗视角；两者不能互相覆盖。
   constructor(camera) {
     this.camera = camera;
     this.mode = 'orbit';
@@ -98,17 +105,20 @@ export class CameraRig {
     this._dio = { layout: null, aspect: 0, d: 150, zShift: 0, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), target: new THREE.Vector3(), yaw: 0, pitch: 0 };
   }
 
+  // 只记录地图开关意图，实际展开/收起进度由update推进；中途松手可以反向过渡。
   setMap(open) { this.mapOpen = !!open; }
 
   // Visual recoil: a pitch impulse on a critically-damped spring (smooth ~45 ms rise, ~0.15 s settle) — only the heavy
   // single shots send it. No sideways pattern: yaw kicks read as the camera shaking. The aim is taken from the rendered
   // camera, so this is real (tiny) recoil.
+  // 给俯仰弹簧施加速度冲量而非瞬间改角度，并限制上限；持续射击不会无限累积。
   recoil(amount) {
     this.kickS.v = Math.min(this.kickS.v + amount * 55, 3);
   }
 
   // Trauma shake. The noise runs on continuous time (no reseeding mid-shake, which jumped the view on one frame) and
   // new trauma is fed in over ~2-3 frames instead of being added in one step.
+  // 爆炸点越远，传入震动越弱；先记入待释放能量，再分几帧进入trauma，避免单帧突跳。
   addShake(amount, pos) {
     let a = amount;
     if (pos) { const d = pos.distanceTo(this.camera.position); a *= clamp(1 - (d - 4) / 22, 0, 1); }
@@ -135,21 +145,25 @@ export class CameraRig {
   }
 
   // Cinematic: move along a smooth arc from->to while looking from lookFrom->lookTo.
+  // 保存位置和注视目标的两端并切换path模式；克隆输入向量，避免调用者后续改动篡改过场。
   cinematic(from, to, lookFrom, lookTo, dur, onDone) {
     this.mode = 'path';
     this.path = { from: from.clone(), to: to.clone(), lookFrom: lookFrom.clone(), lookTo: lookTo.clone(), t: 0, dur, onDone };
   }
 
+  // 记录绕行中心、半径、高度、角速度和初始相位；镜头按内部连续时间计算轨道。
   orbit(center, radius, height, speed = 0.05, phase = 0) {
     this.mode = 'orbit';
     this.orbitP = { center: center.clone(), radius, height, speed, phase };
   }
 
+  // 请求判分全景模式，具体位置与视野缓动仍交给下一帧处理，不在事件回调直接跳相机。
   overview() {
     this.mode = 'overview';
   }
 
   // Pose blend from the current rendered camera into whatever the new mode computes (ease in-out).
+  // 保存切换开始时真正显示的位姿和FOV；后续对位置插值、四元数球面插值，不混用欧拉角。
   _startBlend(dur) {
     const cam = this.camera;
     if (!this.blend) this.blend = { t: 0, dur, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), fov: 0 };
@@ -158,6 +172,8 @@ export class CameraRig {
     this.blend.active = true;
   }
 
+  // 不同模式采用不同过渡时长：死亡观察、复生、开场和判分分别调手感。
+  // 菜单吸引模式允许硬切，因此attract分支不套普通比赛的平滑逻辑。
   _modeChanged(prev, next) {
     this.spectateT = 0;
     if (next === 'overview') this._ovFresh = true;
@@ -193,6 +209,8 @@ export class CameraRig {
     else if (this.mode === 'overview') this._overview(dt);
     // settings.fov is the HORIZONTAL field of view at a 16:9 reference (Hor+: wider screens see more, never a stretched
     // fisheye); kicks/zoom are in vertical degrees
+    // 设置项FOV是16:9参照下的水平角，这里换算为three.js透视相机所需的垂直角。
+    // 后坐/缩放量以垂直角叠加；宽屏显示更多内容，而不是把画面横向拉伸。
     const vBase = 2 * Math.atan(Math.tan((this.baseFov * Math.PI) / 360) / (16 / 9)) * (180 / Math.PI);
     let fov = vBase + (this.fovKick - this.zoom) * 0.8;
     // pose blend (mode transitions)
@@ -224,6 +242,7 @@ export class CameraRig {
     gc.fov = fov; gc.aspect = cam.aspect; gc.near = cam.near; gc.far = cam.far;
     gc.updateMatrixWorld();
     // map diorama (eased both ways; reverses smoothly if the key is released mid-swoop)
+    // 地图只在跟随或死亡观察模式展开；根据目标开关推进mapK，避免用当前大小比较造成来回抖动。
     const inPlay = this.mode === 'follow' || this.mode === 'spectate';
     const want = this.mapOpen && inPlay ? 1 : 0;
     // (branch on the target, not on want > mapK: that compare turned a fully open map back down every few frames)
@@ -234,6 +253,7 @@ export class CameraRig {
       const D = this._dio;
       // crane: rise a little ahead of the travel so nothing clips on the way up, and keep the subject framed the whole
       // way — the look point slides from what you were looking at to the stage centre while the lens climbs
+      // 地图镜头先略抬高再横向移动，注视点也从准星前方滑向地图中心，以减少穿建筑和丢失主体。
       const up = e + 0.35 * e * (1 - e);
       _gF.set(0, 0, -1).applyQuaternion(gc.quaternion);
       _gpT.copy(gc.position).addScaledVector(_gF, 12);
@@ -265,6 +285,7 @@ export class CameraRig {
     D.target.copy(_dT);
   }
 
+  // 根据距离、纵向偏移和朝向生成地图镜头位姿，写入复用输出对象；_dT是本次拟合的注视中心。
   _dioPose(d, zShift, B, yaw, pitch, outPos, outQuat) {
     _dT.set((B.minX + B.maxX) / 2, 0, (B.minZ + B.maxZ) / 2 + zShift);
     const cp = Math.cos(pitch);
@@ -274,6 +295,8 @@ export class CameraRig {
   }
 
   // distance + look offset that fit the whole stage (bounds box, floor to rooftops) into the free screen area
+  // 【全图拟合】把边界盒8个角投影到临时相机，二分求能装入可用屏幕区域的最小距离。
+  // 外层多次修正纵向中心偏移，给HUD留上下边距；只在布局或宽高比变化时重算。
   _fitDiorama(B, aspect) {
     const D = this._dio;
     const c = this._fitCam || (this._fitCam = new THREE.PerspectiveCamera());
@@ -302,6 +325,7 @@ export class CameraRig {
     D.d = d; D.zShift = zShift;
   }
 
+  // 把yaw/pitch转成世界单位方向，写入调用方的向量；避免逐帧创建临时Vector3。
   forward(out) {
     const cp = Math.cos(this.pitch);
     return out.set(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp);
@@ -321,10 +345,12 @@ export class CameraRig {
     const hT = swim ? 1.15 : squid ? 1.3 : 1.85;
     const h = this.hgt.step(hT, 11, dt);
     // ---- horizontal: critically-damped with 72 % velocity feed-forward (fluid, no persistent lag)
+    // 水平跟随加入速度前馈，抵消弹簧持续追赶的滞后；超级跳跃时另用更适合飞行的响应。
     const omegaH = flying ? 20 : 30, lead = 0.72 * 2 / omegaH;
     const fwd = this.forward(_fwd);
     _right.set(-Math.cos(this.yaw), 0, Math.sin(this.yaw));   // camera right on the ground plane
     // strafe look-ahead: a hair more view where you're heading sideways
+    // 取速度在相机右向量上的分量，向横移方向略微留出视野；该偏移不改变玩家瞄准角。
     const lat = a.vel.x * _right.x + a.vel.z * _right.z;
     const sideT = clamp(lat * 0.045, -0.32, 0.32) * (flying ? 0 : 1);
     const so = this.side.step(sideT, 3.2, dt);
@@ -338,6 +364,7 @@ export class CameraRig {
     // ---- vertical: firm on the ground (ramps, steps), soft through ordinary jumps, firm again for falls/super jumps
     // vertical velocity for the feed-forward, low-passed: a raw per-frame difference turned tiny contact wobbles and
     // uneven frame times into a vertical buzz
+    // 竖直速度由高度差估计，但先限幅和低通；否则台阶接触误差会被除以小dt放大成镜头震动。
     const fresh = this._lastTY === null || dt <= 0;
     const vyRaw = fresh ? 0 : clamp((ty - this._lastTY) / dt, -30, 30);
     this._lastTY = ty;
@@ -356,6 +383,7 @@ export class CameraRig {
       if (a.landT < this._landSeen - 1e-6 && a.landSpeed > 4) this.dipS.v -= clamp((a.landSpeed - 4) * 0.045, 0, 0.45);
       this._landSeen = a.landT;
     }
+    // 落地速度转成欠阻尼冲量，位移再夹紧；只影响相机表现，不反推角色物理高度。
     const dip = clamp(stepDamped(this.dipS, 0, 13, 0.82, dt), -0.3, 0.12);
     this.pivot.set(this.sx.x, this.sy.x + dip, this.sz.x);
     this.pivotY = this.pivot.y;
@@ -370,6 +398,7 @@ export class CameraRig {
     } else if (this._sjWasFlight) { this._sjWasFlight = false; this._sjLandT = 0; }
     if (this._sjLandT < 0.45) { this._sjLandT += dt; if (this.pitch < -0.2) this.pitch = damp(this.pitch, -0.16, 7, dt); }
     // ---- FOV: swim speed, super jump, a touch on takeoff; charger zoom
+    // 游泳/飞行适当增大视野，蓄力武器收窄视野；两个量分别缓动后统一换算到相机FOV。
     let fk = 0;
     if (swim) fk = clamp((hs - 6) * 1.1, 0, 7);
     else if (flying) fk = 6;
@@ -383,10 +412,13 @@ export class CameraRig {
     if (flying) want += 1.2;
     this.wantDist = damp(this.wantDist, want, 6, dt);
     _back.copy(fwd).negate();
+    // 沿镜头臂做带半径的软探测：soft提前感知遮挡，hard提供不可越过太多的可见性边界。
     G.physics.cameraProbe(this.pivot, _back, this.wantDist, 0.62, _probe);
     const tgt = _probe.soft;
     // fast in / slow out. The lens may trail a fast-closing obstacle for a few frames (bounded to 1.2 m past the line of
     // sight — back faces cull and the level's see-through dither covers the brief occlusion) instead of popping.
+    // 墙越深入镜头臂，缩臂越快；离开墙时缓慢伸回。
+    // 硬上限和地板分支阻止镜头在缓动期间严重穿墙或钻到地面下。
     const deep = clamp((this.boom.x - _probe.hard) / 1.0, 0, 1);   // the further past the line of sight, the faster in
     this.boom.step(tgt, tgt < this.boom.x ? 22 + 26 * deep : 3.6, dt);
     if (this.boom.x > _probe.hard + 1.6) { this.boom.x = _probe.hard + 1.6; this.boom.v = Math.min(this.boom.v, 0); }
@@ -396,12 +428,14 @@ export class CameraRig {
     cam.position.copy(this.pivot).addScaledVector(fwd, -this.curDist);
     cam.position.y += 0.15;
     // keep the lens off the floor under it (only real floors well below the pivot — not wall tops at head height)
+    // 只让明显低于跟随枢轴的真实地面抬升镜头，不把头顶墙面误认成脚下地板。
     const gy = G.level?.groundHeight(cam.position.x, cam.position.z, cam.position.y + 0.2) ?? -Infinity;
     const liftT = gy > -Infinity && gy < this.pivot.y - 0.6 ? Math.max(0, gy + 0.24 - cam.position.y) : 0;
     this.lensLift.step(liftT, liftT > this.lensLift.x ? 34 : 7, dt);
     cam.position.y += this.lensLift.x;
     // ---- over-the-shoulder when the boom is forced short (wall right behind you): ease the lens to the right so your
     // head never sits on the crosshair; never slide it into a wall on that side
+    // 贴背墙时将镜头平行偏向肩侧，避免角色头部挡准星；偏移前仍射线检测侧墙。
     const closeK = clamp((2.8 - this.curDist) / 1.8, 0, 1);
     let shT = 0.55 * closeK * closeK * (3 - 2 * closeK);
     if (shT > 0.01 && G.physics) {
@@ -413,6 +447,7 @@ export class CameraRig {
     // ---- visual recoil (pitch kick up), exact critically-damped spring
     this.kick = clamp(this.kickS.step(0, 22, dt), -0.01, 0.035);
     // ---- orientation = the aim, exactly
+    // 相机与注视点施加相同肩部平移，保持视线方向不因侧移改变；最后再叠加很小的视觉后坐。
     _v2.copy(this.pivot).addScaledVector(fwd, 10);
     _v2.y += 0.15;
     if (this.shoulder > 1e-3) _v2.addScaledVector(_right, this.shoulder);   // parallel shift: aim direction unchanged
@@ -447,6 +482,7 @@ export class CameraRig {
     this.zoom = damp(this.zoom, 0, 6, dt);
   }
 
+  // 位置按缓入缓出曲线并额外抬成小弧线；结束回调先置空，保证不会每帧重复触发。
   _path(dt) {
     const p = this.path, cam = this.camera;
     p.t += dt;
@@ -461,6 +497,7 @@ export class CameraRig {
     if (k >= 1 && p.onDone) { const cb = p.onDone; p.onDone = null; cb(); }
   }
 
+  // 按时间绕中心旋转并加入慢速高度起伏，位置指数追随；该模式清除战斗缩放与FOV冲量。
   _orbit(dt) {
     const o = this.orbitP, cam = this.camera;
     const a = o.phase + this.time * o.speed;
@@ -471,6 +508,7 @@ export class CameraRig {
     this.fovKick = 0; this.zoom = 0;
   }
 
+  // 判分时从当前位姿创建三个独立弹簧，逐步升到俯瞰点；重新进入时重建初值避免继承旧速度。
   _overview(dt) {
     const cam = this.camera;
     // crane up to the judge view on critically-damped springs (starts from rest — no lurch)
