@@ -38,8 +38,10 @@ const D2R = Math.PI / 180;
 // ---------------------------------------------------------------------------------------------------------------
 export const SQ = -0.2;                                             // the square's paving; pavements stand at 0
 // the promenade crescent (Alpha's, on -X): an 8 m raised walk round a circle, sea edge at rOut
+// 滨海步道弧线参数同时供碰撞布局与装饰使用，避免两套曲线错位。
 export const PROM = { c: [19, -4], rIn: 38, rOut: 46, a0: 180, a1: 228, n: 13 };
 // the round Jubilee terrace at mid: a ring of turned slabs (top 1.0) round a square dais (1.1) carrying the tower
+// 中央圆露台的内外半径、分段数与台面高度统一定义，钟塔基座另有高度。
 export const TERR = { rIn: 5.8, rOut: 8.5, n: 36, a0: 5, top: 1.0, dais: 5.8, daisTop: 1.1 };
 // the Crescent (Alpha's colonnade, on +X): the shop-front line (bends between three buildings), the covered walk /
 // terrace walk depth in front of it, the shops' depth behind it, and the terrace walk slab
@@ -58,6 +60,7 @@ export function arcBand(c, rIn, rOut, a0, a1, n, y0, y1, o, fill = null, ends = 
     const a = (a0 + da * (i + 0.5)) * D2R;
     out.push(O(c[0] + rm * Math.cos(a), c[1] + rm * Math.sin(a), t, len, Array.isArray(y0) ? y0[i % 2] : y0, y1, -a / D2R, o));
   }
+  // fill 用低层补块填外侧楔缝；ends=true 含两端，closed 用于整环且不重复端点。
   // ends: true = fillers at both chain ends too, 'closed' = a full ring (one filler per joint)
   if (fill) for (let i = ends ? 0 : 1; i <= (ends === 'closed' ? n - 1 : ends ? n : n - 1); i++) {
     const a = (a0 + da * i) * D2R, r0 = rIn / Math.cos(h), rmf = (r0 + rOut) / 2, gap = 2 * (rOut - rIn) * Math.tan(h) + 0.14;
@@ -68,6 +71,7 @@ export function arcBand(c, rIn, rOut, a0, a1, n, y0, y1, o, fill = null, ends = 
 // the sea-wall plinth under a band: the same segments down in the water, but meeting at their OUTER corners (so the
 // outer face runs on unbroken and there are no wedges to fill: one slab per facet keeps the environment's deck-rect
 // count low); the overlapping inner corners take alternate tops (tops = [even, odd])
+// 海墙底座让分段外角相接，外轮廓连续；交叠内角的顶高交替以避免重合闪烁。
 export function arcSub(c, rIn, rOut, a0, a1, n, y0, tops, o) {
   const out = [], da = (a1 - a0) / n, t = rOut - rIn, rm = (rIn + rOut) / 2, h = Math.abs(da) * D2R / 2, len = 2 * rOut * Math.tan(h);
   for (let i = 0; i < n; i++) {
@@ -78,11 +82,13 @@ export function arcSub(c, rIn, rOut, a0, a1, n, y0, tops, o) {
 }
 // sections along a polyline P (travelling so the outward side is on the right: n = (dz, -dx)), spanning offsets
 // dIn…dOut from the line (negative = inward); pieces meet at their inner corners, fill covers the outer wedges
+// 返回折线段单位方向及长度，输入端点不可重合。
 function unit(a, b) { const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz); return [dx / l, dz / l, l]; }
 // 计算折线路径各段的局部方向及内侧连接，供走道、栏边等多个构建器复用。
 export function chainSections(P, dIn) {
   const S = [];
   for (let i = 0; i < P.length - 1; i++) { const [dx, dz, l] = unit(P[i], P[i + 1]); S.push({ p: P[i], d: [dx, dz], n: [dz, -dx], l, h: Math.atan2(dx, dz) / D2R }); }
+  // 相邻偏移直线求交得到内侧连接点；折线方向同时确定外侧法线。
   // inner-line corner points Q (intersections of consecutive inward offset lines)
   const Q = [];
   for (let i = 0; i <= S.length; i++) {
@@ -94,6 +100,7 @@ export function chainSections(P, dIn) {
   }
   return S.map((s, i) => ({ ...s, q0: Q[i], q1: Q[i + 1], len: Math.hypot(Q[i + 1][0] - Q[i][0], Q[i + 1][1] - Q[i][1]) }));
 }
+// 按内线连接点布置走道盒，可筛指定段，并用角平分线补外侧缝隙。
 export function chainBand(P, dIn, dOut, y0, y1, o, fill = null, only = null) {
   const out = [], S = chainSections(P, dIn);
   S.forEach((s, i) => {
@@ -111,6 +118,7 @@ export function chainBand(P, dIn, dOut, y0, y1, o, fill = null, only = null) {
 }
 
 // chainBand's plinth: sections meeting at their outer corners (offset dOut), alternate tops
+// 底座改用外侧偏移线接角，再向内退半宽，使海墙外轮廓不断裂。
 export function chainSub(P, dIn, dOut, y0, tops, o) {
   const w = dOut - dIn;
   return chainSections(P, dOut).map((s, i) => O((s.q0[0] + s.q1[0]) / 2 - s.n[0] * w / 2, (s.q0[1] + s.q1[1]) / 2 - s.n[1] * w / 2, w, s.len, y0, tops[i % 2], s.h, o));
@@ -120,6 +128,7 @@ const P = PROM, T = TERR, C = COLO, F = COLO.front;
 // deck construction (the environment reads every box whose top is between -2.5 and 0 and whose bottom is below -1 as a
 // deck rect: sea masking, foam, pilings, waterline): the walking surfaces stop at -0.9 / -0.99 and the few slabs that
 // reach the sea are a plinth under them (PLINTH tops alternate between neighbours), 22 per half
+// 行走层底高与海墙底座分开，交替顶高；环境据此识别海面遮罩、泡沫和桩基。
 const PL = [-0.9, -0.99], PLINTH = stucco(M.seawall, { tag: 'sea-wall-plinth' });
 const JOINT = { y0: -0.99, y1: -0.1, o: stucco(M.joint, { tag: 'paving-joint' }) };
 

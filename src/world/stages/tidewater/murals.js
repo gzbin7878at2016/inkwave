@@ -25,9 +25,11 @@
 const NAVY = '#27304d', CREAM = '#f3ead6', CORAL = '#d9735f', TEAL = '#3f8f86', SEA = '#4f8fa0', GOLD = '#c9a453',
   MUST = '#e3b54c', INK = '#1f2533', ROSE = '#e98aa6', STONE = '#d8d0c0';
 
+// 固定种子随机序列保证马赛克和风化分布每次载入一致。
 function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 // text set round an arc (centre cx, cy, radius r, starting angle a0 going clockwise), letters upright to the centre
+// 文字沿圆弧逐字排放，字符朝向中心，角度与间距由调用方控制。
 function arcText(g, str, cx, cy, r, a0, spread, font, fill) {
   g.save(); g.font = font; g.fillStyle = fill; g.textAlign = 'center'; g.textBaseline = 'middle';
   const n = str.length;
@@ -38,6 +40,7 @@ function arcText(g, str, cx, cy, r, a0, spread, font, fill) {
   g.restore();
 }
 // mosaic tesserae: a fine grid of darker grout lines + per-tile tone jitter, clipped to what is already drawn
+// 在已画形状内叠加细砖缝与单砖色差，模拟马赛克镶嵌。
 function tesserae(g, x, y, w, h, step, seed) {
   const R = rng(seed);
   g.save();
@@ -55,6 +58,7 @@ function tesserae(g, x, y, w, h, step, seed) {
   g.restore();
 }
 // Greek wave ("running dog") band round a circle between r0 and r1
+// 在指定内外半径之间绘连续希腊波纹环带。
 function waveRing(g, cx, cy, r0, r1, n, col, bg) {
   g.fillStyle = bg; g.beginPath(); g.arc(cx, cy, r1, 0, Math.PI * 2); g.arc(cx, cy, r0, 0, Math.PI * 2, true); g.fill();
   g.fillStyle = col;
@@ -72,6 +76,7 @@ function waveRing(g, cx, cy, r0, r1, n, col, bg) {
     g.closePath(); g.fill();
   }
 }
+// 交替两种填色生成多芒星，内外半径控制尖角深度。
 function star(g, cx, cy, n, rOut, rIn, a0, fillA, fillB) {
   for (let i = 0; i < n; i++) {
     const a = a0 + (i / n) * Math.PI * 2, da = Math.PI / n;
@@ -81,6 +86,7 @@ function star(g, cx, cy, n, rOut, rIn, a0, fillA, fillB) {
   }
 }
 // soft weathering: erase flecks + a few fade blotches (destination-out inside a rect)
+// 矩形区域内以 destination-out 擦斑点和淡块，保留原底图透出。
 function weather(g, x, y, w, h, n, seed, amt = 0.5) {
   const R = rng(seed);
   g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip();
@@ -89,19 +95,23 @@ function weather(g, x, y, w, h, n, seed, amt = 0.5) {
   for (let i = 0; i < 8; i++) { const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); gr.addColorStop(0, `rgba(0,0,0,${0.25 * amt})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.save(); g.translate(x + R() * w, y + R() * h); g.scale(20 + R() * 60, 12 + R() * 40); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); }
   g.restore();
 }
+// 建立带圆角和边框的招牌底板，文字由后续步骤绘制。
 function sign(g, x, y, w, h, fill, stroke, lw, r = 10) {
   g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
   if (fill) { g.fillStyle = fill; g.fill(); }
   if (stroke) { g.lineWidth = lw; g.strokeStyle = stroke; g.stroke(); }
 }
+// 按可用宽度缩字至下限，避免较长招牌文字越出边框。
 function fitFont(g, str, maxW, px, fontFn) { let p = px; g.font = fontFn(p); while (g.measureText(str).width > maxW && p > 8) { p -= 2; g.font = fontFn(p); } return p; }
 
 // 绘制各图案并返回图集矩形/世界放置参数，保持与布局中 mural id 的对应关系。
+// 在当前地图图集区域生成 4～11 号图案，返回世界贴面范围，切勿把像素尺寸当米数。
 export function drawMurals(g, R, kit) {
   const { font, fontB } = kit;
   const X = R.x, Y = R.y;
   const out = [];
 
+  // 市徽马赛克用于广场大地面，采用顶面 u=-x、v=+z 的坐标约定。
   // ---------------------------------------------------------------- 4: borough crest mosaic (512 px = 10 m)
   {
     const r = { x: X, y: Y, w: 512, h: 512 }, cx = r.x + 256, cy = r.y + 256, s = 256 / 5;   // px per metre ≈ 51
@@ -129,6 +139,7 @@ export function drawMurals(g, R, kit) {
     out.push({ id: 4, ...r, place: [10, 10, 1, 10], fx: [0.55, 0.25] });
   }
 
+  // 钟塔周围的环纹独立占图集区，世界直径与露台尺寸对应。
   // ---------------------------------------------------------------- 5: Jubilee ring round the clock tower (384 px = 8 m)
   {
     const r = { x: X + 512, y: Y, w: 384, h: 384 }, cx = r.x + 192, cy = r.y + 192, s = 192 / 4;
@@ -228,6 +239,7 @@ export function drawMurals(g, R, kit) {
     out.push({ id: 9, ...r, m: [3, 3.5], fx: [0.9, 1] });
   }
 
+  // 露台路缘字样沿侧墙展开，贴面方向与顶部图案不同。
   // ---------------------------------------------------------------- 10: TIDEWATER cut into the terrace kerb sides (1024 × 116 = 7 × 0.8 m)
   {
     const r = { x: X, y: Y + 520, w: 1024, h: 116 };
@@ -240,6 +252,7 @@ export function drawMurals(g, R, kit) {
     out.push({ id: 10, ...r, place: [5.5, 7, 0.2, 0.8], fx: [0.7, 0.5] });
   }
 
+  // 码头收费亭牌面使用独立编号，避免与广场铭文共享不同比例的裁切。
   // ---------------------------------------------------------------- 11: pier toll boards on the booths (300 × 260 = 3 × 2.6 m)
   {
     const r = { x: X + 1024, y: Y + 520, w: 300, h: 260 };

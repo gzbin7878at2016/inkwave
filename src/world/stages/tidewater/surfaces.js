@@ -22,6 +22,7 @@
 // All three are paint masks (albedo.a = the block colour's coverage), so one surface serves every pastel.
 export const SURF = { herringbone: 28, terrazzo: 29, stucco: 30 };
 
+// 人字砖按 120 毫米格组合 2:1 砖，2.4 米周期保持首尾可平铺。
 const herringbone = {
   detail: 0.6, scale: 2.4, tint: true, mask: true, alpha: false, mode: 0, sym: 0, hr: [-0.012, 0.0014], ao: 0.5,
   prep: `f[0] = FB(uv, ivec2(4), 4, 0.5, 2801u); f[1] = FB(uv, ivec2(40), 3, 0.5, 2803u); f[2] = FB(uv, ivec2(160), 2, 0.5, 2807u);
@@ -62,6 +63,7 @@ const herringbone = {
   s.cav = mix(1.0, 0.55, inJ) * (1.0 - 0.3 * pit);`,
 };
 
+// 磨石地坪采用 1.2 米双色面板、黄铜分隔和自带色石屑，主体基质接受底色染色。
 const terrazzo = {
   detail: 0.3, scale: 2.4, tint: true, mask: true, alpha: false, mode: 1, sym: 4, hr: [-0.0016, 0.0006], ao: 0.3,
   prep: `f[0] = FB(uv, ivec2(4), 4, 0.5, 2901u); f[1] = FB(uv, ivec2(64), 2, 0.5, 2903u); f[2] = FB(uv, ivec2(12), 3, 0.5, 2907u);
@@ -104,6 +106,7 @@ const terrazzo = {
   s.cav = 1.0 - 0.2 * dirt;`,
 };
 
+// 抹灰墙按方石线脚分格，凹缝、雨痕和剥落只改变材质细节。
 const stucco = {
   detail: 0.6, scale: 2.4, tint: true, mask: true, alpha: false, mode: 1, sym: 1, hr: [-0.008, 0.0012], ao: 0.5,
   prep: `f[0] = FB(uv, ivec2(4), 4, 0.55, 3001u); f[1] = FB(uv, ivec2(24), 3, 0.5, 3003u); f[2] = FB(uv, ivec2(28, 3), 3, 0.5, 3007u);
@@ -142,6 +145,7 @@ const stucco = {
 };
 
 // 按统一纹理库契约声明材质，不在这里改变墨水判分、碰撞或地图镜像。
+// 三种表面绑定保留槽；onWall/onTop 决定竖面与顶面的替代关系。
 export const SURFACES = [
   { slot: 28, name: 'herringbone', mat: herringbone, onWall: 30 },   // slab edges / sea wall: ashlar
   { slot: 29, name: 'terrazzo', mat: terrazzo, onWall: 30 },
