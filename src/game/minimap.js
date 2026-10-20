@@ -21,10 +21,12 @@ const TAU = Math.PI * 2;
 let CURRENT = null;          // the live Minimap (a new one is built per stage layout)
 const fxList = [];           // transient map effects (shared; cleared when the layout changes)
 const live = () => { const m = G.match; return !!(m && !m.attract); };
+// 仅为当前正式对局收集短时标记；列表过长时淘汰最早事件，避免历史特效持续积累。
 function pushFx(fx) { if (!CURRENT || !live()) return; if (fxList.length > 40) fxList.shift(); fxList.push(fx); }
 on('special:slam', ({ actor, pos, radius }) => pushFx({ kind: 'slam', x: pos.x, z: pos.z, team: actor ? actor.team : 0, r: radius || SPECIALS.slam.radius, t: 0, life: 0.9 }));
 on('bomb:explode', ({ pos, team, radius }) => pushFx({ kind: 'boom', x: pos.x, z: pos.z, team: team | 0, r: radius || SUB.bomb.radius, t: 0, life: 0.7 }));
 on('superjump', ({ actor, phase, to, home }) => { if (phase === 'flight' && to && !home) pushFx({ kind: 'jump', x: to.x, z: to.z, team: actor.team, actor, t: 0, life: 3 }); });
+// 落地后缩短关联标记的剩余寿命，让落点提示自然消退。
 on('superjump:land', ({ actor }) => { for (const f of fxList) if (f.kind === 'jump' && f.actor === actor) f.life = Math.min(f.life, f.t + 0.35); });
 on('respawn', ({ actor }) => { const p = G.level?.spawnPads?.[actor.team]; if (p) pushFx({ kind: 'spawn', x: p.x, z: p.z, team: actor.team, t: 0, life: 0.8 }); });
 // (splats: the HUD draws the death markers over this canvas — a squid-skull in the victim's ink, main.js deathMarks)
@@ -41,12 +43,14 @@ export function superJumpInfo(a, from, to, out) {
   const s = a && a.superJumpState;
   if (!s) return null;
   let f, d;
+  // 飞行阶段固定起终点；蓄力阶段仍跟随队友的实时跳跃锚点。
   if (s.phase === 'flight') { f = s.from; d = s.to; }
   else {
     const tg = s.target;
     d = tg && tg.pos && tg.pos.isVector3 ? (tg.jumpAnchor ? tg.jumpAnchor() : tg.pos) : tg;
     f = a.pos;
   }
+  // 目标可能在蓄力中失效；无有效坐标时不绘制连线，避免污染画布坐标。
   if (!f || !d || !Number.isFinite(d.x + d.z)) return null;
   from.x = f.x; from.y = f.y; from.z = f.z; to.x = d.x; to.y = d.y; to.z = d.z;
   const flight = s.phase === 'flight';
@@ -59,11 +63,13 @@ export function superJumpInfo(a, from, to, out) {
 const _jf = { x: 0, y: 0, z: 0 }, _jt = { x: 0, y: 0, z: 0 }, _ji = { phase: '', k: 0, e: 0, home: false }, _ja = { x: 0, y: 0 }, _jb = { x: 0, y: 0 };
 
 // linear → sRGB 0..255
+// Three.js 颜色按线性空间存储，Canvas 像素需转换成 sRGB 的 0～255 通道。
 function lin2s(c) { return Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055)); }
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 const _a = { x: 0, y: 0 }, _b = { x: 0, y: 0 };
 export class Minimap {
+  // 初始化四张同尺寸画布：最终输出、静态底图、墨迹层和易主闪光层。
   constructor(level, paint, pxPerM = 7) {
     this.level = level; this.paint = paint;
     const B = level.bounds;
@@ -84,11 +90,13 @@ export class Minimap {
     this.time = 0;
     this.flashT = 9;
     this._team = [null, null];
+    // 切换关卡时替换活动实例并清空事件；旧实例的延迟任务不能再接管当前地图。
     CURRENT = this;
     fxList.length = 0;
     this._built = false;
     this._band = 0;
     // the raster + shading pass (~0.1–0.3 s) runs when the browser is idle after loading; a match forces it early
+    // 优先等浏览器空闲再做昂贵的预计算；不支持空闲回调时用定时器延后执行。
     const idle = typeof requestIdleCallback === 'function' ? (fn) => requestIdleCallback(fn, { timeout: 1500 }) : (fn) => setTimeout(fn, 60);
     idle(() => { if (!this._built && CURRENT === this) this._build(); });
   }
@@ -102,9 +110,11 @@ export class Minimap {
     this._build();
     this.version = -1;
   }
+  // 比赛或界面需要立即显示时同步补建，保证延迟初始化尚未执行也能使用。
   ensure() { if (!this._built) this._build(); }
 
   // world → canvas px (float)
+  // 统一世界 x/z 到画布的投影；传入 out 可复用对象，队伍 1 同时反转两个轴。
   toCanvas(x, z, out = { x: 0, y: 0 }) {
     const B = this.level.bounds;
     let cx = (B.maxX - x) * this.s, cy = (B.maxZ - z) * this.s;
@@ -112,6 +122,7 @@ export class Minimap {
     out.x = cx; out.y = cy;
     return out;
   }
+  // 像素反投影与 toCanvas 成对使用，栅格化采样时必须遵守同一翻转方向。
   _worldX(px) { const B = this.level.bounds; const c = this.flip ? this.w - px : px; return B.maxX - c / this.s; }
   _worldZ(py) { const B = this.level.bounds; const c = this.flip ? this.h - py : py; return B.maxZ - c / this.s; }
 
@@ -123,6 +134,7 @@ export class Minimap {
     const top = (this.topBlock = new Int32Array(N).fill(-1));
     const nrm = (this.nrm = new Float32Array(N * 2));
     const tc = { x: 0, y: 0 };
+    // 先保存每个像素上最高实体表面的高度、块编号和法线；排除不应遮住地面的高空隐藏结构。
     // 1) rasterise every solid block's top surface (ramps included) → height + owning block + normal
     for (const b of lvl.blocks) {
       if (!b.solid) continue;
@@ -140,6 +152,7 @@ export class Minimap {
         const z = this._worldZ(py + 0.5);
         for (let px = px0; px <= px1; px++) {
           const x = this._worldX(px + 0.5);
+          // 用顶面平面方程求该像素的高度，再投到块的局部轴检查是否落在实际表面内。
           const y = ty - (n.x * (x - tx) + n.z * (z - tz)) / n.y;
           const dx = x - b.center.x, dy = y - 0.01 - b.center.y, dz = z - b.center.z;
           if (Math.abs(dx * a0.x + dy * a0.y + dz * a0.z) > b.half.x || Math.abs(dx * a2.x + dy * a2.y + dz * a2.z) > b.half.z) continue;
@@ -148,6 +161,7 @@ export class Minimap {
         }
       }
     }
+    // 再建立画布像素到 CPU 涂色网格的索引；高处面后写入，覆盖低处的映射。
     // 2) turf pixels → paint cells (bilinear field: base cell + fractions + neighbour steps)
     const P = this.paint;
     const faces = P.paintFaces.filter((f) => f.turf).sort((a, b) => a.origin.y - b.origin.y);
@@ -171,11 +185,13 @@ export class Minimap {
         const z = this._worldZ(py + 0.5);
         for (let px = px0; px <= px1; px++) {
           const i = py * W + px;
+          // 有更高实体遮挡的涂色面不参与俯视显示，防止屋面透出下层墨迹。
           if (hgt[i] > faceTop + 0.05) continue;             // something taller covers this face here
           const x = this._worldX(px + 0.5);
           const dx = x - f.origin.x, dz = z - f.origin.z;
           const a = (dx * ux + dz * uz) / uh, c = (dx * vx + dz * vz) / vh;   // metres along u / v
           if (a < 0 || c < 0 || a >= f.su || c >= f.sv) continue;
+          // 以网格中心为采样基准，预存双线性插值的小数权重及相邻格步长。
           const cu = a / f.cu - 0.5, cv = c / f.cv - 0.5;
           let iu = Math.floor(cu), iv = Math.floor(cv);
           let tu = cu - iu, tv = cv - iv;
@@ -184,6 +200,7 @@ export class Minimap {
           const k = f.grid + iv * f.nu + iu;
           if (P.dead[k]) continue;
           cell[i] = k; fx[i] = Math.round(tu * 255); fy[i] = Math.round(tv * 255);
+          // 边界或不可涂格的邻居步长退回零，避免插值跨出合法网格。
           sx[i] = iu < f.nu - 1 && !P.dead[k + 1] ? 1 : 0;
           sy[i] = iv < f.nv - 1 && !P.dead[k + f.nu] ? f.nu : 0;
         }
@@ -194,6 +211,7 @@ export class Minimap {
     this._built = true;
   }
 
+  // 由高度缓存生成静态底图；只在布局、朝向或主题变化时重画。
   _drawBase() {
     const W = this.w, H = this.h, N = W * H, hgt = this.hgt, top = this.topBlock, nrm = this.nrm, lvl = this.level, s = this.s;
     const img = this.bctx.createImageData(W, H), d = img.data;
@@ -203,6 +221,7 @@ export class Minimap {
     const Lx = -0.62, Ly = -0.78;
     const shadowSlope = 0.11;           // metres of height per pixel of shadow length
     const blockCol = new Map();
+    // 按块缓存提亮后的颜色，让墨迹在地形底色上保持可辨识度。
     const colOf = (id) => {
       let c = blockCol.get(id);
       if (c) return c;
@@ -222,6 +241,7 @@ export class Minimap {
       for (let px = 0; px < W; px++) {
         const i = py * W + px, o = i * 4, h = hgt[i];
         if (top[i] < 0) {
+          // 未命中实体的像素画成海面；检查附近实体，生成沿岸泡沫亮边。
           // sea: gradient + soft swell bands + foam hugging the dock
           const wave = 0.5 + 0.5 * Math.sin((px * 0.9 + py * 0.55) * 0.13) * Math.sin(py * 0.05 + px * 0.012);
           let near = 0;
@@ -242,6 +262,7 @@ export class Minimap {
         // hillshade for tilted surfaces (ramps)
         const nx = nrm[i * 2], ny = nrm[i * 2 + 1];
         if (nx * nx + ny * ny > 0.002) lum *= 1 + (nx * Lx + ny * Ly) * 1.6;
+        // 沿光照方向采样高度差，近似高处投影；再用邻域高度差补墙脚暗部和落差边缘。
         // soft cast shadow from taller geometry toward the light
         let sh = 0;
         for (let k = 3; k <= 27; k += 3) {
@@ -274,6 +295,7 @@ export class Minimap {
       }
     }
     this.bctx.putImageData(img, 0, 0);
+    // 五米网格提供距离参照；使用透明叠加，避免压过地图主体。
     // subtle map grid (5 m) over the deck for scale
     const c = this.bctx;
     c.save();
@@ -287,6 +309,7 @@ export class Minimap {
   }
 
   // ------------------------------------------------------------------------------------------ ink
+  // 读取当前队伍配色并转换为像素颜色；主题颜色未就绪时采用默认双色。
   _teamRGB() {
     const ca = G.teamColors?.[0], cb = G.teamColors?.[1];
     if (!ca || !cb) return [[255, 138, 20], [47, 91, 255]];
@@ -305,18 +328,21 @@ export class Minimap {
     const al = this._alpha || (this._alpha = new Float32Array(N));
     const tm = this._tm || (this._tm = new Uint8Array(N));
     const tt = this._tt || (this._tt = new Uint8Array(N));
+    // 每段额外计算上下各一行，供墨迹边缘的明暗采样使用，减少分段接缝。
     const a0 = Math.max(0, y0 - 1) * W, a1 = Math.min(H, y1 + 1) * W;
     for (let i = a0; i < a1; i++) {
       const k = cell[i];
       if (k < 0) { al[i] = 0; continue; }
       const sx = sxA[i], sy = syA[i];
       const g00 = grid[k], g10 = grid[k + sx], g01 = grid[k + sy], g11 = grid[k + sx + sy];
+      // 四个采样格归属相同时直接返回整块透明度，跳过边缘插值计算。
       if (g00 === g10 && g00 === g01 && g00 === g11) {           // uniform cell block: no edge here (fast path)
         al[i] = g00 ? 1 : 0; tm[i] = g00; tt[i] = g00 || 1;
         continue;
       }
       const tx = fxA[i] * (1 / 255), ty = fyA[i] * (1 / 255);
       const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty;
+      // 网格值 0 表示空白、1/2 表示两队；分别累加权重，选占优队伍并平滑透明度。
       const fa = (g00 === 1 ? w00 : 0) + (g10 === 1 ? w10 : 0) + (g01 === 1 ? w01 : 0) + (g11 === 1 ? w11 : 0);
       const fb = (g00 === 2 ? w00 : 0) + (g10 === 2 ? w10 : 0) + (g01 === 2 ? w01 : 0) + (g11 === 2 ? w11 : 0);
       const t = fa >= fb ? 1 : 2, f = t === 1 ? fa : fb;
@@ -335,12 +361,14 @@ export class Minimap {
         const k = 0.94 - dark * 0.32, add = lit * 150;
         d[o] = c[0] * k + add; d[o + 1] = c[1] * k + add; d[o + 2] = c[2] * k + add;   // Uint8Clamped clamps
         d[o + 3] = a * 255;
+        // 仅在像素新归属某队时写入白色闪光；owner 保留上次归属用于下次比较。
         const now = tm[i];
         if (now && own[i] !== now) { fd[o] = 255; fd[o + 1] = 255; fd[o + 2] = 255; fd[o + 3] = 170; flashes++; }
         else fd[o + 3] = 0;
         own[i] = now;
       }
     }
+    // 只上传本次更新的行区间，减少 Canvas 像素写入量。
     this.ictx.putImageData(this.inkImg, 0, 0, 0, y0, W, y1 - y0);
     this.fctx.putImageData(this.flashImg, 0, 0, 0, y0, W, y1 - y0);
     if (flashes && !this._quiet) this.flashT = 0;
@@ -353,10 +381,12 @@ export class Minimap {
     this.time += dt;
     this.timer -= dt;
     const teamKey = G.teamHex ? G.teamHex[0] + G.teamHex[1] : '';
+    // 队伍配色变化使墨迹缓存失效；主题变化只要求重画地形底图。
     if (teamKey !== this._teamKey) { this._teamKey = teamKey; this.version = -1; }
     const theme = G.game?.theme || G.game?.mapDef?.theme || 'day';
     if (theme !== this._theme) { const had = this._theme; this._theme = theme; if (had) this._drawBase(); }
     const BANDS = 3;
+    // 已开始的三段刷新优先逐帧完成；一轮未完成时不会重新开启另一轮。
     if (this._band > 0) {
       const b = this._band;
       this._drawInk(Math.floor((this.h * b) / BANDS), Math.floor((this.h * (b + 1)) / BANDS));
@@ -366,6 +396,7 @@ export class Minimap {
       this.timer = 0.15;
       const first = this.version === -1;
       this.version = this.paint.version;
+      // 首次或强制刷新整图；首次抑制易主闪光，避免整张地图白闪。
       if (first || force) { this._quiet = first; this._drawInk(0, this.h); this._quiet = false; if (first) this.flashT = 9; }
       else { this._drawInk(0, Math.floor(this.h / BANDS)); this._band = 1; }
     }
@@ -400,6 +431,7 @@ export class Minimap {
       c.beginPath(); c.arc(tc.x, tc.y, r * 0.45, 0, TAU); c.fillStyle = hex[team]; c.fill();
       c.lineWidth = 2.5; c.strokeStyle = '#15121c'; c.stroke();
     }
+    // 临时事件按 dt 推进寿命并倒序删除；同队飞行落点交给跳跃连线绘制，避免重复标记。
     // transient effects
     for (let i = fxList.length - 1; i >= 0; i--) {
       const f = fxList[i];
@@ -426,6 +458,7 @@ export class Minimap {
         c.globalAlpha = 1 - k; c.lineWidth = 3; c.strokeStyle = '#ffffff'; c.beginPath(); c.arc(tc.x, tc.y, r, 0, TAU); c.stroke(); c.globalAlpha = 1;
       }
     }
+    // 暴雨云显示作用半径与剩余寿命圆弧；位置取实际投射物的场景节点。
     // ink tempest clouds
     const P = G.projectiles;
     if (P && P.clouds) for (const cl of P.clouds) {
@@ -439,6 +472,7 @@ export class Minimap {
       c.lineWidth = 3; c.strokeStyle = '#ffffff'; c.beginPath(); c.arc(tc.x, tc.y, r + 3, -Math.PI / 2, -Math.PI / 2 + left * TAU); c.stroke();
       this._cloud(c, tc.x, tc.y - 1, s * 1.1, col);
     }
+    // 炸弹引信进入倒计时后逐渐加快闪烁；尚未启动的炸弹只绘制主体标记。
     // bombs: team orb; armed ones blink faster as the fuse runs out
     if (P && P.bombs) for (const b of P.bombs) {
       this.toCanvas(b.pos.x, b.pos.z, tc);
@@ -457,6 +491,7 @@ export class Minimap {
     }
     // sub devices: your team's beacons + mines (mines stay secret from the other side), everyone's sprinklers,
     // curtains and clouds
+    // 已消失或飞行中的装置不显示；信标和地雷仅对所属队伍可见，保持隐蔽信息规则。
     const S = G.subs, me = this.viewerTeam ?? 0;
     if (S) for (const it of S.items) {
       const st = it.state;
@@ -485,6 +520,7 @@ export class Minimap {
       if (st === 'spray') { c.lineWidth = 1.5; c.strokeStyle = col; c.globalAlpha = 0.5; c.beginPath(); c.arc(tc.x, tc.y, it.sub.sprayRadius * s * 0.8, 0, TAU); c.stroke(); c.globalAlpha = 1; }
     }
     // specials: vortex targets + funnels, sound beams, bubbles, cheer orbs, the local strike cursor
+    // 特殊技能由各自模块绘制地图标记，此处负责统一提供投影与队伍配色。
     G.specials?.drawMap(c, this, tc, s, hex, t);
     c.globalAlpha = 1;
     this._jumpLines(c, s, hex, t, me);
@@ -495,6 +531,7 @@ export class Minimap {
   // reaches out to the landing (the target ring closing in on it); in flight ink dots stream toward the landing ahead
   // of the jumper and the flown part fades to a thin trail (your own dot rides the line). Yours bold, teammates' thin.
   // Widths are in metres (× s): the corner map shows this canvas at roughly ⅓ scale.
+  // 只绘制存活队友的跳跃；复用坐标缓存，本人连线更粗，队友连线更细。
   _jumpLines(c, s, hex, t, team) {
     const acts = G.match && !G.match.attract ? G.match.actors : null;
     if (!acts) return;
@@ -508,6 +545,7 @@ export class Minimap {
       // landing target: a crosshair ring sized to show round the destination teammate's dot (≈ 9 px on the corner
       // map), closing in on the landing while the jump charges; the line stops at its rim
       const pulse = 0.5 + 0.5 * Math.sin(t * 10);
+      // 蓄力时落点环收拢、连线逐渐伸长；飞行时用缓动进度分隔已走轨迹与前方引导。
       const lock = flight ? 0 : Math.pow(1 - J.k, 2);
       const r = J.home ? 0 : s * (self ? 4.6 + 0.6 * pulse : 4.4 + 0.3 * pulse) * (1 + lock * 1.3);
       const done = flight ? J.e : 0;
@@ -524,6 +562,7 @@ export class Minimap {
           c.globalAlpha = self ? 0.62 : 0.4; c.lineWidth = 2.7 * s * w; c.strokeStyle = '#15121c';
           c.beginPath(); c.moveTo(px, py); c.lineTo(rx, ry); c.stroke();
           // dots anchored to the line (not to its moving start), streaming toward the landing
+          // 虚线相位绑定整条起终点连线，避免移动起点时圆点跳动。
           const gap = 3.1 * s * w;
           c.setLineDash([0.001, gap]); c.lineDashOffset = ((len * done - t * 5.5 * s) % gap + gap) % gap;
           c.globalAlpha = 1; c.lineWidth = 1.55 * s * w; c.strokeStyle = self ? '#ffffff' : col;
@@ -550,6 +589,7 @@ export class Minimap {
     }
   }
 
+  // 区域路径按控制器实例和地图朝向缓存；非当前目标画虚线，当前目标按归属着色。
   _drawZones(c, Z, hex, t) {
     if (this._zFor !== Z || this._zFlip !== this.flip) {
       this._zFor = Z; this._zFlip = this.flip;
@@ -581,12 +621,15 @@ export class Minimap {
       c.globalAlpha = (held ? 0.36 : 0.3) + 0.1 * pulse; c.fillStyle = col; c.fill(path);
       c.globalAlpha = 1; c.lineWidth = 1.15 * s; c.strokeStyle = '#15121c'; c.stroke(path);
       c.lineWidth = 0.6 * s; c.strokeStyle = col; c.stroke(path);
+      // 中立目标叠加滚动虚线；队伍持有时使用该队实色边框。
       if (!held) { c.setLineDash([0.9 * s, 0.9 * s]); c.lineDashOffset = -t * 2 * s; c.strokeStyle = '#bdb6cc'; c.stroke(path); c.setLineDash([]); }
     }
     c.restore();
   }
 
+  // 绘制通用叉号；只创建路径与描边，不改变调用方的样式设置。
   _cross(c, x, y, r) { c.beginPath(); c.moveTo(x - r, y - r); c.lineTo(x + r, y + r); c.moveTo(x + r, y - r); c.lineTo(x - r, y + r); c.stroke(); }
+  // 用圆弧组合云朵图标，并叠加描边和高光，供暴雨及相关装置复用。
   _cloud(c, x, y, r, col) {
     c.beginPath();
     c.arc(x - r * 0.55, y + r * 0.1, r * 0.55, 0, TAU); c.arc(x + r * 0.55, y + r * 0.1, r * 0.5, 0, TAU); c.arc(x, y - r * 0.25, r * 0.7, 0, TAU);
