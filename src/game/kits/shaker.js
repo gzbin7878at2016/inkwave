@@ -45,6 +45,7 @@ const RAD = 0.19;                  // world contact radius (the centre rests thi
 // fizz vent, and a knurled grip knob that the left fist holds, as with the Splat Bomb.
 const LAMP_Y = [0.0665, 0.081, 0.0955], LAMP_R = 0.0547;
 const NOZ = { p: new V3(), n: new V3() };                      // fizz vent tip + direction (set by the builder)
+// 构建罐体、墨窗、握柄与灯座；三盏可变亮度灯由实例单独装配。
 function buildShaker() {
   const P = new Parts(), I = new Parts();
   // rubber foot, cream lower shell with a hazard pinstripe
@@ -78,9 +79,11 @@ function buildShaker() {
 }
 registerSubModel('shaker', buildShaker);
 const LAMP_GEO = superEllipsoid(0.0057, 0.0057, 0.0034, 1, 1, 12, 6);   // a lamp dome facing +Z
+// 每盏灯用独立材质保存发光强度，避免不同罐体充能状态互相影响。
 function lampMat(color) { return new THREE.MeshStandardMaterial({ color: 0x141418, emissive: color.clone(), emissiveIntensity: 0.05, roughness: 0.3 }); }
 
 // the thrown can: outer (world position = the can's middle) → inner (tumble) → model (scaled prop, lifted by CY)
+// 把罐体姿态与局部抖动分层，并保存三盏灯材质供充能和剩余爆炸次数更新。
 function makeMesh(team) {
   const d = getSubDef('shaker'), col = G.teamColors[team];
   const outer = new THREE.Group(), inner = new THREE.Group(), model = new THREE.Group();
@@ -169,6 +172,7 @@ SFX.shaker_fizzle = {
 };
 
 // ================================================================================================= charging (hold)
+// 初始化手持充能历史，包括跳跃上升沿、摇动方向和速率预算。
 function newState(a) {
   return { meter: 0, level: 1, t0: G.time, t1: G.time, budget: 0.1, jumps: 0, shakes: 0, kick: 0, fizz: 0,
     jumpPrev: !!a.intent?.jump, yawPrev: a.aimYaw, lookSign: 0, axis: [0, 0], lastWag: -9, loop: null, botLevel: null, botMax: 0 };
@@ -177,6 +181,7 @@ const isBot = (a) => !!a.bot;   // bot brains drive the intent (a human local pl
 
 // Waggles this frame, for the local player: fast reversals of the aim's turn direction (mouse / right stick) and the left
 // stick thrown from one side to the other.
+// 检测快速转向反转及手柄轴跨侧，按最小间隔计有效摇动，过滤微小输入抖动。
 function waggles(st, a, dt) {
   let n = 0;
   const dy = angleDiff(st.yawPrev, a.aimYaw); st.yawPrev = a.aimYaw;
@@ -209,6 +214,7 @@ function hold(runner, dt, inp, sub) {
     let add = (dt / sub.chargeTime) * (1 + sub.moveBoost * move);
     if (jp) { add += sub.jumpBoost; st.jumps++; }
     if (wag) { add += wag * sub.shakeBoost; st.shakes += wag; }
+    // 充能增量受随时间恢复的预算限制，密集跳跃或摇动不能突破最大充能速率。
     st.budget = Math.min(0.3, st.budget + sub.maxRate * dt);   // bursts of presses can't beat the cap
     add = Math.min(add, st.budget); st.budget -= add;
     st.meter = Math.min(1, st.meter + add);
@@ -224,6 +230,7 @@ function hold(runner, dt, inp, sub) {
   handFx(a, st, dt);
 }
 
+// 跨充能档位时播放一次音效、粒子和震动，区分满档与普通档。
 function clink(a, lv) {
   const near = a.isLocal || a._nearCamera();
   if (!near) return;
@@ -238,6 +245,7 @@ function clink(a, lv) {
 }
 
 // Bots can't mash: they press once, then hold here until the charge they planned (by the fight's range), or ~3 s.
+// Bot 按交战距离选目标等级并设最长等待，避免一直按住副武器不释放。
 function botHold(a, st, inp) {
   const b = a.bot;
   if (st.botLevel == null) {
@@ -253,6 +261,7 @@ function botHold(a, st, inp) {
 }
 
 // ---- the can in the fist: rattles harder as it charges (jolts on each clink), its lamps count the charges, the vent fizzes
+// 从角色手持模型取当前罐体及其锚点，供充能外观使用。
 function handProp(a) {
   const b = a.character?.bomb;
   if (!b || b.kind !== 'shaker') return null;
@@ -266,18 +275,21 @@ function handProp(a) {
   }
   return hp;
 }
+// 将手持排气口锚点换到世界空间，避免特效跟随时偏离模型。
 function nozzleWorld(hp, out) {
   hp.group.updateWorldMatrix(true, false);
   out.copy(NOZ.p).applyMatrix4(hp.group.matrixWorld);
   hp.nDir.copy(NOZ.n).transformDirection(hp.group.matrixWorld);
   return out;
 }
+// 恢复被充能表现修改的手持姿态及材质状态，供投掷或取消共用。
 function restoreHand(a) {
   const hp = a.character?.bomb?.group?.userData?.shaker;
   if (!hp) return;
   hp.group.position.copy(hp.pb); hp.group.quaternion.copy(hp.qb);
   for (const m of hp.mats) m.emissiveIntensity = 0.05;
 }
+// 根据充能进度更新握罐抖动、三档灯光、排气粒子与本地循环音。
 function handFx(a, st, dt) {
   const hp = handProp(a);
   if (!hp) return;
@@ -322,6 +334,7 @@ function handFx(a, st, dt) {
 const _c = new THREE.Color(), _white = new THREE.Color(1, 1, 1);
 
 // a charge that's dropped (splatted, dived into ink, loadout swap …): no throw, no ink; the fizz stops
+// 取消充能时清除 runner 状态、停止循环音并恢复手持模型；fizzle 决定是否播放取消表现。
 function drop(a, fizzle) {
   const r = a.weaponRunner, st = r?.shaker;
   if (!st) return;
@@ -341,6 +354,7 @@ on('splatted', ({ victim }) => { if (victim?.weaponRunner?.shaker) drop(victim, 
 // ================================================================================================= thrown can
 // Bots lob it at their foe: the aim pitch that lands a throw (throwVelocity: pitch + 0.28 rad, +1.5 m/s up, released
 // 1.35 m up, gravity 24) d m out and dy above the thrower's feet; null if it can't reach (as bots.js lobPitch).
+// 枚举可用瞄准仰角估计抛物线落点，误差过大返回 null。
 function lobPitch(d, dy, speed) {
   let best = null, be = Infinity;
   for (let p = -0.5; p <= 0.75; p += 0.025) {
@@ -351,6 +365,7 @@ function lobPitch(d, dy, speed) {
   }
   return be < 1.2 ? best : null;
 }
+// 预判敌人半秒后的水平位置，并略缩短落点以补首次落地滑行。
 function botLob(a, sub, short) {
   const b = a.bot, t = b?.target;
   if (!t || !t.alive || b.mode !== 'fight') return;
@@ -376,6 +391,7 @@ function use(subs, a, sub) {
 }
 // the can in flight (ghost: a remote player's, online — it flies and hops the same, but blasts only when its owner's
 // did: records [1, gid, x, y, z]; [2, gid] ends one that sank without going off)
+// 保存充能等级和剩余爆炸次数；等级只在投掷时确定，落地后不再充能。
 function spawn(a, sub, pos, vel, level, ghost, gid) {
   const dir = new V3(vel.x, 0, vel.z);
   if (dir.lengthSq() < 1e-6) dir.set(Math.sin(a.aimYaw), 0, Math.cos(a.aimYaw));
@@ -407,11 +423,13 @@ function ghost(a, d) {
   else if (op === 2) it.state = 'dead';
 }
 
+// 用剩余爆炸次数控制灯数，已消耗次数对应的灯熄灭。
 function lamps(it) {
   const col = G.teamColors[it.team];
   for (let i = 0; i < 3; i++) { it.m.mats[i].emissive.copy(col); it.m.mats[i].emissiveIntensity = i < it.left ? 2.3 : 0.05; }
 }
 
+// 依次推进运动、空中墨滴、引信与弹跳间隔，再更新罐体和预警外观。
 function update(it, dt) {
   const s = it.sub;
   it.age += dt;
@@ -444,6 +462,7 @@ function update(it, dt) {
     it.trail += hs * dt;
     while (it.trail >= s.trailEvery) { it.trail -= s.trailEvery; if (!it.ghost) drip(it); }   // (a ghost's: its owner's drops arrive)
   }
+  // 首次着地启动引信，爆炸后启动弹跳间隔；远端到时等待拥有者记录，不自行决定爆炸。
   // ---- fuse (first landing) → blast → hop → blast …
   // (a ghost holds at the brink until its owner's blast record arrives)
   if (it.fuse >= 0) { it.fuse -= dt; if (it.fuse <= 0) { if (it.ghost) it.fuse = 1e-3; else { it.fuse = -1; blast(it); } } }
@@ -472,6 +491,7 @@ function update(it, dt) {
     for (let i = 0; i < 3; i++) it.m.mats[i].emissiveIntensity = i < it.left ? lit : 0.05;
   }
 }
+// 较快落地时钝弹并衰减，低速时摩擦停下；首次接地启动引信。
 function contactFloor(it, n, dt) {
   const vn = it.vel.dot(n);
   if (vn < -2.2) { it.vel.addScaledVector(n, -vn).multiplyScalar(0.45).addScaledVector(n, -vn * 0.3); }   // a dull bounce: it lands near where it hits
@@ -479,20 +499,24 @@ function contactFloor(it, n, dt) {
   if (!it.armed) arm(it);
   return true;
 }
+// 设置首次引信并采样下方地面，广播预警给音效与 HUD。
 function arm(it) {
   it.armed = true; it.fuse = it.sub.fuse;
   groundUnder(it);
   if (near(it.pos, 30)) G.audio?.play('bomb_beep', { pos: it.pos, volume: 0.55, pitch: 1.25 });
   emit('bomb:arm', { actor: it.owner, pos: it.pos.clone(), team: it.team, radius: it.sub.radius, kind: 'shaker' });
 }
+// 缓存罐体下方命中点及法线，危险圈应贴地而非跟着罐体悬空。
 function groundUnder(it) {
   const g = G.physics.raycast(_v2.copy(it.pos).setY(it.pos.y + 0.1), DOWN, 2.5, _hit2, true);
   it.gOk = g.hit;
   if (g.hit) { it.gp.copy(g.point); it.gn.copy(g.normal); }
 }
 function near(p, r) { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; }
+// 大招连投期间产生的涂地不回充大招槽，普通投掷正常累计贡献。
 function credit(it, area) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
 
+// 空中按移动距离掉落墨滴；远端副本不重复生成拥有者同步的墨滴。
 function drip(it) {
   _v.copy(it.pos); _v.y -= 0.1;
   G.projectiles.spawnDrop(it.owner, _v, it.vel.x * 0.2 + (Math.random() - 0.5) * 0.5, -2.2 - Math.random(), it.vel.z * 0.2 + (Math.random() - 0.5) * 0.5,
@@ -500,6 +524,7 @@ function drip(it) {
 }
 
 // 每段爆炸推进剩余次数与后续弹跳，区分伤害、涂墨和纯表现，防止重复充能统计。
+// 每次爆炸扣一次剩余次数，结算遮挡伤害与涂墨；有余次则向前上方弹跳。
 function blast(it) {
   const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team];
   const c = it.pos.clone();
@@ -550,6 +575,7 @@ function dispose(it) {
 
 // ================================================================================================= HUD: three pips by the sub chip
 let pipEl = null, pipL = null;
+// 延迟创建 HUD 的三档充能提示，界面更新复用同一组节点。
 function pips() {
   const a = G.local, r = a?.weaponRunner, st = r?.shaker;
   const show = !!(a && a.alive && r.aimingSub && st && G.time - st.t1 < 0.15 && a.sub?.kind === 'shaker');
@@ -590,6 +616,7 @@ SUB_KITS.shaker = {
   use,
   hold,
   ghost,
+  // 统一更新投出罐体与手持充能残留；按住被打断且未投掷时及时取消。
   tick(dt) {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -603,6 +630,7 @@ SUB_KITS.shaker = {
     for (const a of G.actors) { const st = a.weaponRunner?.shaker; if (st && G.time - st.t1 > 0.15) drop(a, false); }
     pips();
   },
+  // 换局释放所有罐体、停止未完成充能并清理提示状态。
   clear() {
     for (const it of items) dispose(it);
     items.length = 0;
