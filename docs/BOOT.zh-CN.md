@@ -42,9 +42,9 @@ boot():一段 async 函数,一边干活一边推进度条              【main.j
 
 ## 1. 第 0 步:Electron 与 index.html —— 一切从一个网页开始
 
-你双击的 [play.bat](../play.bat) 只干了一件事:启动 Electron(一个"自带 Chrome 的桌面程序壳")。Electron 注册了一个自定义 `app://` 协议来伺服游戏文件([main.cjs:31-33](../electron/main.cjs#L31-L33)),然后加载 [index.html](../index.html)。
+运行 `npm start` 会启动 Electron(一个"自带 Chrome 的桌面程序壳";若本机另有 `play.bat`,它是启动快捷脚本)。Electron 注册了一个自定义 `app://` 协议来伺服游戏文件([main.cjs:73-75](../electron/main.cjs#L73-L75)),然后加载 [index.html](../index.html)。
 
-打开 index.html,你会看到它**小得惊人**(35 行),但对理解启动至关重要:
+打开 index.html,你会看到它**很短**,但对理解启动至关重要:
 
 ```html
 <div id="app"></div>        <!-- 游戏画布(Canvas)挂这里 -->
@@ -55,11 +55,11 @@ boot():一段 async 函数,一边干活一边推进度条              【main.j
 
 三个新手必看细节:
 
-1. **import map**([index.html:20-22](../index.html#L20)):`"three": "./vendor/three/build/three.module.js"` —— 这是"零构建"的魔法。代码里写 `import * as THREE from 'three'`,浏览器按这张表翻译成真实的文件路径,**不需要 webpack/vite**。
-2. **预加载字体**([index.html:9-10](../index.html#L9)):加载条上的艺术字是 woff2 字体,提前 `preload` 防止闪烁——这是全项目仅有的几个"真实资产"之一。
-3. **module 脚本**([index.html:33](../index.html#L33)):`<script type="module" src="./src/main.js">` —— 浏览器从这里开始下载 main.js **以及它 import 的所有依赖**(递归地、一个文件一个 HTTP 请求)。**main.js 顶上那 40 来行 import,就是启动阶段的"第一梯队下载"**。
+1. **import map**([index.html:28-30](../index.html#L28-L30)):`"three": "./vendor/three/build/three.module.js"` —— 这是"零构建"的魔法。代码里写 `import * as THREE from 'three'`,浏览器按这张表翻译成真实的文件路径,**不需要 webpack/vite**。
+2. **预加载字体**([index.html:17-18](../index.html#L17-L18)):加载条上的艺术字是 woff2 字体,提前 `preload` 防止闪烁——这是全项目仅有的几个"真实资产"之一。
+3. **module 脚本**([index.html:41](../index.html#L41)):`<script type="module" src="./src/main.js">` —— 浏览器从这里开始下载 main.js **以及它 import 的所有依赖**(递归地、一个文件一个 HTTP 请求)。**main.js 顶上那 40 来行 import,就是启动阶段的"第一梯队下载"**。
 
-> 💡 小知识:`#fade` 是页面打开时的全屏黑层,60ms 后淡出([index.html:31](../index.html#L31))——这样你不会看到"白屏 → 黑屏 → 加载条"的闪烁,而是柔和地淡入。
+> 💡 小知识:`#fade` 是页面打开时的全屏黑层,60ms 后淡出([index.html:37-40](../index.html#L37-L40))——这样你不会看到"白屏 → 黑屏 → 加载条"的闪烁,而是柔和地淡入。
 
 ---
 

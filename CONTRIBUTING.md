@@ -7,11 +7,11 @@ Thanks for your interest! INKWAVE is a plain ES-module three.js project with no 
 ```bash
 git clone https://github.com/jaydendavisnc/inkwave.git
 cd inkwave
-npm install          # only needed for the headless tools (puppeteer-core)
-npm start            # serves http://localhost:8490 (and your LAN address)
+npm install          # installs Electron, the headless tools and relay tooling
+npm run serve        # serves http://localhost:8490 (and your LAN address; requires python3)
 ```
 
-Open the URL in Chrome, Edge or Firefox. Everything reloads on refresh; there is no bundler.
+Open the URL in Chrome, Edge or Firefox. For the Electron desktop app, run `npm start` instead. On Windows, if `python3` is unavailable, use `py -3 tools/serve.py 8490` or `python tools/serve.py 8490`. Everything reloads on refresh; there is no bundler.
 
 ## Before opening a pull request
 
