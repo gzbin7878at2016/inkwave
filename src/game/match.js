@@ -31,6 +31,7 @@ import { BossMode, BOSS_MODE } from '../boss/bossMode.js';
 const _v = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 
 export class Match {
+  // 保存对局配置并初始化状态机；展示与练习模式统一使用涂地规则。
   constructor(opts) {
     this.opts = opts;          // { duration, difficulty, attract, practice, playerName, weapon, CharacterClass, input, rig, mode }
     this.attract = !!opts.attract;
@@ -51,14 +52,17 @@ export class Match {
     this.events = [];
   }
 
+  // playing 同时考虑暂停；canRespawn 只判断比赛阶段，两者的调用用途不同。
   playing() { return this.state === 'playing' && !this.paused; }
   canRespawn() { return this.state === 'playing'; }
 
+  // 离线按配置创建阵容；提供联机名单时完全交给名单流程，避免重复创建角色。
   setup() {
     const o = this.opts;
     const CharacterClass = o.CharacterClass;
     if (o.roster) { this._setupRoster(o, CharacterClass); return; }
     // weapons: each team gets a balanced mix
+    // 优先保留玩家选定武器，再从剩余池随机抽取；池耗尽后补满以支持更大队伍。
     const pickTeam = (first) => {
       const pool = [...WEAPON_ORDER];
       const out = [];
@@ -74,6 +78,7 @@ export class Match {
     const boss = this.mode === 'boss';
     // humans-only stage (config noBots) offline: a match is just you (the ?devstage walk), the attract backdrop nobody
     // (o.mannequins: idle, brainless kids for the render audits)
+    // 开发用无 Bot 模式只保留本地角色；展示模式可额外保留不受 AI 驱动的模型。
     const noBots = !!o.noBots;
     for (let team = 0; team < (boss || this.practice ? 1 : 2); team++) {
       const weapons = pickTeam(team === 0 && !this.attract ? o.weapon : null);
@@ -82,6 +87,7 @@ export class Match {
         const isLocal = team === 0 && s === 0 && !this.attract;
         if (noBots && !isLocal && !(this.attract && o.mannequins)) continue;
         // subs: yours from the loadout; bots carry a random one (about half keep their weapon's default)
+        // 本地角色沿用装备配置；Bot 随机保留武器默认配置或改用其他副武器、大招。
         const sub = isLocal ? o.sub : Math.random() < 0.5 ? null : SUB_ORDER[(Math.random() * SUB_ORDER.length) | 0];
         const special = isLocal ? o.special : Math.random() < 0.5 ? null : SPECIAL_ORDER[(Math.random() * SPECIAL_ORDER.length) | 0];
         const a = new Actor({
@@ -100,6 +106,7 @@ export class Match {
     this.local = this.actors.find((a) => a.isLocal) || null;
     G.local = this.local;
     if (this.local && !o.autopilot) this.controller = new PlayerController(this.local, o.rig, o.input);
+    // 围绕所属出生台分散摆放角色，并将 Bot 的初始瞄准同步到角色朝向。
     // initial placement on the spawn decks (standing, no drop)
     for (const a of this.actors) {
       const pad = G.level.spawnPads[a.team];
@@ -109,6 +116,7 @@ export class Match {
       a.invuln = 0;
       if (a.bot) { a.bot.aimYaw = a.yaw; a.bot.aimPitch = 0; }
     }
+    // 保存事件取消订阅函数，销毁对局时释放，避免下局重复统计击倒事件。
     this.unsubs = [
       on('splatted', (e) => this._onSplatted(e)),
     ];
@@ -120,10 +128,12 @@ export class Match {
   }
 
   // Online: the host's roster — who owns which squidkid (players their own, the host the bots).
+  // 按主机名单还原所有角色；owner 决定本机模拟权限，客机标记 follower 禁止自行结算。
   _setupRoster(o, CharacterClass) {
     const me = o.myId;
     this.follower = !o.host;
     for (const r of o.roster) {
+      // 本机仅给自己拥有的 Bot 配 AI；远程角色后续从网络状态更新。
       const mine = r.owner === me;
       const a = new Actor({ team: r.team, slot: r.slot, weapon: r.weapon, sub: r.sub || null, special: r.special || null, isLocal: mine && !r.bot, isBot: r.bot, name: r.name, style: r.style || undefined, CharacterClass });
       a.nid = r.nid; a.owner = r.owner; a.remote = !mine;
@@ -152,6 +162,7 @@ export class Match {
   }
 
   // Zone Control: ink laid while standing on (or aiming into) the live zone counts as objective play (results / XP)
+  // 有效涂色发生在目标区域内，或瞄准点落入区域时，累计目标贡献统计。
   _zoneTurf({ actor, area }) {
     const Z = this.zones;
     if (!Z || this.state !== 'playing' || !actor || !(area > 0)) return;
@@ -160,20 +171,24 @@ export class Match {
   }
 
   // Zone Control decided the match (knockout / overtime result): straight to time's up
+  // 区域模式可提前决出胜负；记录原因后进入统一收场流程。
   endZones(winner, reason) {
     this.zoneResult = { winner, reason };
     if (this.state === 'playing') { this.time = Math.max(0, this.time); this.setState('finish'); }
   }
 
+  // 展示与练习直接进入游玩；正式比赛先播放开场。
   start() {
     this.setState(this.attract || this.practice ? 'playing' : 'intro');
   }
 
+  // 每次状态切换重置阶段计时，并广播给 HUD、音频等订阅方。
   setState(s) {
     this.state = s; this.stateT = 0;
     emit('match:state', { state: s, match: this });
   }
 
+  // 移除场景节点、重置武器并释放角色及事件订阅；清空全局角色引用。
   dispose() {
     this.bossMode?.dispose(); this.bossMode = null; this.boss = null;
     for (const a of this.actors) { G.scene.remove(a.character.root); a.weaponRunner.reset(); a.character.dispose?.(); }
@@ -185,6 +200,7 @@ export class Match {
   // Online, humans-only stage (config noBots): a player left, and nobody takes over their squidkid — it bursts into its
   // own ink and is gone. HUD squads, the minimap, specials / weapons and the judge all read this.actors (G.actors is the
   // same array), so dropping it here is all they need.
+  // 无 Bot 接管的联机房间中，离开的角色从共享阵容数组移除，随后释放模型并广播移除事件。
   removeActor(a) {
     const i = this.actors.indexOf(a);
     if (i < 0) return;
@@ -195,15 +211,18 @@ export class Match {
       G.audio?.play?.('splat_big', { pos: a.pos, volume: 0.6 });
     }
     this.actors.splice(i, 1);
+    // 观战目标退出后清空跟随对象，避免镜头继续读取已释放角色。
     if (G.rig?.spectate?.actor === a) G.rig.spectate.actor = null;   // a death cam watching them looks on at the spot
     G.scene.remove(a.character.root); a.weaponRunner.reset(); a.character.dispose?.();
     emit('actor:removed', { actor: a });
   }
 
+  // 用已进行的比赛时间记录击倒事件，供战绩或回放式界面读取。
   _onSplatted({ victim, attacker, cause }) {
     this.events.push({ t: this.duration - this.time, victim, attacker, cause });
   }
 
+  // 暂停时冻结整局；否则先推进比赛阶段，再模拟角色及处理互相推挤。
   update(dt) {
     if (this.paused) return;
     this.stateT += dt;
@@ -212,6 +231,7 @@ export class Match {
         if (this.stateT > (this.bossMode ? BOSS_MODE.intro : 4.2)) this.setState('playing');
         break;
       case 'playing': {
+        // 练习模式不消耗比赛时间；区域加时同样停止普通倒计时，等待区域规则裁决。
         if (this.practice) break;   // practice never runs out
         if (this.zones) {
           this.zones.update(dt);
@@ -220,6 +240,7 @@ export class Match {
         }
         this.time -= dt;
         if (!this.attract) {
+          // 一分钟提示只发送一次；最后倒数按整数秒去重，避免每帧重复播放。
           if (!this.lastMinuteFired && this.time <= 60 && this.duration > 60) { this.lastMinuteFired = true; emit('match:oneminute', {}); }
           const c = Math.ceil(this.time);
           if (this.time <= MATCH.finalCountdown && c !== this.lastCount && c > 0) { this.lastCount = c; emit('match:count', { n: c }); }
@@ -227,23 +248,28 @@ export class Match {
         if (this.time <= 0) {
           this.time = 0;
           // Zone Control may go to overtime instead; online, the host calls time
+          // 仅主机或离线端可因时间耗尽结束比赛；区域模式还可选择进入加时。
           if (!this.follower && (!this.zones || this.zones.timeUp())) { if (this.state === 'playing') this.setState('finish'); }
         }
         break;
       }
+      // 收场动画结束后才裁决；客机等待主机结果，已有结果也不重复计算。
       case 'finish':
         if (this.stateT > (this.bossMode ? (this.bossMode.boss.dead ? BOSS_MODE.finishWin : BOSS_MODE.finishLose) : 2.6) && !this.follower && !this.result) this._judge();
         break;
     }
+    // 本地输入由渲染帧入口单独更新；这里仅更新 Bot 意图及角色模拟。
     // actors (the local controller runs once per rendered frame via updateController)
     const live = this.state === 'playing';
     for (const a of this.actors) {
       if (a.bot) {
         if (live) a.bot.update(dt);
+        // 开场或收场阶段主动清空 Bot 操作，避免上一帧开火、跳跃等意图残留。
         else { a.intent.move.set(0, 0, 0); a.intent.fire = a.intent.squid = a.intent.sub = a.intent.jump = a.intent.special = false; }
       }
     }
     const nm = G.netm;
+    // 远程角色应用网络插值，本机拥有的角色执行本地更新，避免双重模拟。
     for (const a of this.actors) { if (a.remote && nm) nm.applyRemote(a, dt); else a.update(dt); }
     this.bossMode?.update(dt);
     // soft push between actors
@@ -255,6 +281,7 @@ export class Match {
       const r = PLAYER.radius * 1.7;
       if (d2 < r * r && Math.abs(dy) < 1.2 && d2 > 1e-5) {
         // online: other players' squidkids are where their owners say — only your own side gives way
+        // 离线双方各让一半；联机只移动本机拥有的角色，不擅自改写远程位置。
         const ka = a.remote ? 0 : b.remote ? 1 : 0.5, kb = b.remote ? 0 : a.remote ? 1 : 0.5;
         const d = Math.sqrt(d2), push = (r - d);
         a.pos.x -= (dx / d) * push * ka; a.pos.z -= (dz / d) * push * ka;
@@ -263,12 +290,14 @@ export class Match {
     }
   }
 
+  // 仅在比赛进行、未暂停且本地角色存活时启用输入，再交给控制器更新。
   updateController(dt) {
     if (!this.controller) return;
     this.controller.enabled = this.state === 'playing' && !this.paused && this.local.alive;
     this.controller.update(dt);
   }
 
+  // 按模式生成结果并发送给所有客机，然后进入裁判展示阶段。
   _judge() {
     if (this.zones) {
       const Z = this.zones;
@@ -284,6 +313,7 @@ export class Match {
       this.setState('judge');
       return;
     }
+    // 涂地模式比较覆盖率；完全相等时沿用随机决胜规则。
     const cov = G.paint.coverage();
     const win = cov[0] === cov[1] ? (Math.random() < 0.5 ? 0 : 1) : cov[0] > cov[1] ? 0 : 1;
     this.result = { coverage: cov, winner: win };
@@ -291,6 +321,7 @@ export class Match {
     this.setState('judge');
   }
 
+  // 为队伍界面输出轻量摘要：武器、存活、复活倒计时、大招状态及本人标识。
   teamSummary() {
     return [0, 1].map((t) => ({
       color: G.teamHex[t],
@@ -302,6 +333,7 @@ export class Match {
 }
 
 // a point on (or just above) a zone: inside one of its outlines, near its floor heights
+// 先限制高度，再对区域的每个多边形做射线交点奇偶判定；命中任意一块即在区域内。
 function inZone(def, p) {
   if (p.y < (def.y0 ?? -2) - 1 || p.y > (def.y1 ?? 6) + 2.5) return false;
   for (const poly of def.polys || [def.poly]) {
@@ -315,4 +347,5 @@ function inZone(def, p) {
   return false;
 }
 
+// 原地执行 Fisher–Yates 洗牌，用于打乱 Bot 名称顺序。
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; }

@@ -127,11 +127,11 @@ Builder.add(geo, {
 ## 4. 运行时调用链:谁创建、谁驱动
 
 ```
-Match 构造                                    【match.js:87(单机) / :128(联机)】
+Match 构造                                    【match.js:93(单机) / :128(联机)】
    └─► new Actor({ ..., CharacterClass })     外观:Locker 存档(玩家)/ randomStyle(Bot)
         └─► Actor 构造                        【actor.js:62,88-91】
              └─► new Character({style, color, weapon…})
-                  └─► character.root 挂进场景 【match.js:94(单机) / :130(联机)】
+                  └─► character.root 挂进场景 【match.js:100(单机) / :130(联机)】
 
 每帧:
 Actor.update(dt)                意图/物理/伤害   【actor.js:301】
