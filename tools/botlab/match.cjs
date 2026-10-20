@@ -1,3 +1,7 @@
+// 【中文导读】机器人离屏对局基准，固定60Hz模拟并尽快跑完；不是用真实墙钟等待一整局。
+// 通过MAP/MODE/SECS选择场景，WEAPONS/SUBS/TUNE只作用于当前测试进程，不写共享配置文件。
+// 需在Electron内配合offscreen-boot启动，页面注入脚本的相对import以游戏页面为基准。
+// RESULT_JSON提供可比较的行为统计；机器运行耗时与固定模拟时长应分别记录。
 // Botlab match: an all-bot (autopilot) match stepped at a fixed 60 Hz in sim time (not wall time, so machine load
 // doesn't change the result), as fast as the machine allows. See tools/botlab/README.md.
 //   MAP=halyard MODE=turf SECS=180 tools/botlab/run.sh tools/botlab/match.cjs

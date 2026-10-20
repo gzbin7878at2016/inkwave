@@ -1,8 +1,12 @@
+// 【中文导读】多客户端联机回归：实际建房、加入、准备、对战并检查远端移动、墨水和比赛状态。
+// 先用 npm run serve 启动游戏网页，再启动本地relay；npm start只启动Electron，不提供8490服务。
+// 各浏览器实例拥有独立玩家状态，--full覆盖结算回大厅，Boss模式额外核对血量、时钟和招式。
+// 基于页面状态与测量结果判通过，结束后关闭所有浏览器；不能用空WebSocket连接冒充多人实战。
 // Online end-to-end test: N headless clients on the local relay play a real match on autopilot, then everything the
 // players would notice is measured — does everyone see the same match, and do other players move smoothly?
 //
 // usage: node tools/net-test.mjs [--clients 2] [--secs 24] [--map tidewater] [--time day] [--full] [--shots dir]
-//   needs the game on :8490 (npm start) and the relay on :8787 (cd server && npx wrangler dev --port 8787)
+//   needs the game on :8490 (npm run serve) and the relay on :8787 (cd server && npx wrangler dev --port 8787)
 //   --full   play the whole (60 s) match through the results and back to the lobby
 //   --mode boss   Boss Battle: everyone one squad vs HULLBREAKER; adds the boss checks (same path / clock / HP /
 //            moves on every screen, guest hits reaching the host, boss damage landing on each owner's squidkid,

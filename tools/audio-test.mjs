@@ -1,3 +1,7 @@
+// 【中文导读】音频客观检查：在真实Chrome的OfflineAudioContext中渲染音效/音乐，再测峰值、响度、直流偏置和异常样本。
+// 需要可访问的audio-lab页面、puppeteer-core及兼容Chrome；--wav/--json会把结果写到指定目录。
+// 测试使用实际音频引擎和总线链；原始峰值与经压缩后的峰值不是同一指标，不能混淆。
+// 数值检查不能替代试听；本工具会把发现的问题反映到退出码，便于自动化识别。
 // Objective audio audit for src/audio/*.js — renders every SFX and every music track through OfflineAudioContext in
 // the real Chrome (same engine code, same master chain) and measures them.
 //

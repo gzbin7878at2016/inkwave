@@ -1,3 +1,7 @@
+// 【中文导读】操作、相机和瞄准的确定性测量，记录加速、停止、跳跃、潜行与镜头抖动。
+// 在真实页面冻结主循环并按60Hz手动步进，测的是模拟响应，不是浏览器实时FPS或触屏端到端延迟。
+// LIB等字符串会注入页面执行，其中import和全局变量属于页面环境，不能按工具目录解析。
+// --raw写逐帧样本，汇总指标须与相同地图、参数和输入脚本一起比较，不能只取最好的一段。
 // Deterministic handling / camera / aim measurements.
 // usage: node tools/measure-handling.mjs [--map tidewater|kelpline] [--only a,b,c] [--raw out.json]
 // Drives the live game with __inkwave.debug.freeze() and manual 60 Hz frames (rendering skipped), records per-frame

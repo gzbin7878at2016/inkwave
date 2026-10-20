@@ -1,3 +1,7 @@
+// 【中文导读】在真实离屏对局中执行PAGE测试脚本，读取name/ok/info列表并输出PASS/FAIL。
+// 需先加载offscreen-boot并提供Electron环境；测试脚本在游戏页面执行，不在Node工具进程执行。
+// testbox是测试专用场地，不应混入正式地图发布；WATCHDOG用于防止页面卡死后无限占进程。
+// 输出RESULT是断言汇总，HARNESS ERROR和控制台错误也要一起检查，不能只见进程退出就算通过。
 // Botlab page test: boots a match, then runs PAGE (a script evaluated in the game page that returns [{ name, ok, info }])
 // and prints PASS / FAIL lines + RESULT n/m.
 //   MAP=halyard MODE=turf PAGE=path/to/test-page.js tools/botlab/run.sh tools/botlab/page.cjs

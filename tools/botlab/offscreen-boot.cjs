@@ -1,3 +1,7 @@
+// 【中文导读】botlab启动适配层：为真实Electron应用替换离屏窗口、隔离用户目录并关闭音频。
+// 测试窗口和缓存写入.botlab等专用路径，不应复用玩家正式userData或修改个人存档。
+// 拦截模块/协议是测试专用行为；fsHandler服务页面资源，需与正式入口的协议能力保持兼容。
+// 平台相关加速开关以当前实现为准；离屏测试表现不等于普通窗口或手机的真实GPU性能。
 // Botlab boot (required by every harness): the real app (electron/main.cjs) with an isolated profile, every game window
 // rendered off-screen (never shown), audio muted, and a few switches that keep headless runs fast on macOS.
 const Module = require('module');
