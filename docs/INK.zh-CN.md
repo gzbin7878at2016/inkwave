@@ -1,7 +1,7 @@
 # INKWAVE 墨水系统图解(新手向)
 
 > 目标读者:刚接触游戏开发/图形编程的人。尽量不预设背景知识,所有概念遇到就解释。
-> 配套源码:[src/world/paint.js](../src/world/paint.js)(约 930 行)、[src/world/inkShading.js](../src/world/inkShading.js)、[src/world/levelMaterial.js](../src/world/levelMaterial.js)。
+> 配套源码:[src/world/paint.js](../src/world/paint.js)、[src/world/inkShading.js](../src/world/inkShading.js)、[src/world/levelMaterial.js](../src/world/levelMaterial.js)。
 
 ---
 
@@ -50,6 +50,8 @@ INKWAVE 的答案是一个**双轨系统**:
 
 ### 2.1 先把 3D 场景摊平成 2D 纸
 
+下文用 2048×2048 图集举例;实际大小由画质决定:low/medium 为 2048,high/ultra 为 4096,见 [QUALITY](../src/config.js#L586-L592)。
+
 想象你有一个纸盒子(3D 模型),想给它上色。一个聪明的办法是:把盒子**剪开、摊平**成一张平面图纸,在图纸上涂颜色,涂完再折回去。
 
 ```
@@ -63,7 +65,7 @@ INKWAVE 的答案是一个**双轨系统**:
          └────┘                      ↑ 一张 2048×2048 的大贴图
 ```
 
-代码里([paint.js:291-318](../src/world/paint.js#L291-318))这个过程叫 **shelf packing(货架打包)**:
+代码里([_layout / _tryPack](../src/world/paint.js#L320-L348))这个过程叫 **shelf packing(货架打包)**:
 把每个可涂墨的面按实际尺寸(米)× 分辨率(像素/米)换算成矩形,从高到低排序,一行一行摆进
 2048×2048 的渲染目标里,放不下就降低分辨率再试(最多试 30 次)。
 
@@ -98,8 +100,8 @@ INKWAVE 的答案是一个**双轨系统**:
 
 ```mermaid
 flowchart TD
-    A["splat(中心, 半径, 队伍, 选项)"] --> B{"联机且这滴墨<br/>不是自己的?"}
-    B -- 是 --> C["只记录参数,不画<br/>(房主会发回来)"]
+    A["splat(中心, 半径, 队伍, 选项)"] --> B{"联机且这滴墨<br/>ghost 回放被 mute?"}
+    B -- 是 --> C["跳过 ghost 的重复涂墨<br/>由所属玩家的墨滴事件重放"]
     B -- 否 --> D["算出 kind:<br/>shot/blast/bomb/roll..."]
     D --> E["以中心反查空间哈希表<br/>找出附近的方块 blocks"]
     E --> F["对每个方块的每个面:<br/>墨球碰到这个面了吗?"]
@@ -110,7 +112,7 @@ flowchart TD
     J --> K["本帧稍后:flush()<br/>把队列里的 quad 一次性<br/>画进图集渲染目标"]
 ```
 
-对应代码:[paint.js:466](../src/world/paint.js#L466) `splat()`。
+对应代码:[paint.js:512](../src/world/paint.js#L512) `splat()`。
 
 ### 3.1 "墨球碰到面了吗"是怎么算的?(纯高中几何)
 
@@ -159,7 +161,7 @@ quad 本身只是个占位符(覆盖墨滴可能触及的最大范围),真正的
 
 ### 4.2 一个墨团 = 5 层形状叠加(从内到外)
 
-fragment shader([paint.js:96-213](../src/world/paint.js#L96-213))把一滴墨拆成 5 个部分,
+fragment shader([paint.js:90-239](../src/world/paint.js#L90-L239))把一滴墨拆成 5 个部分,
 每部分都是从哈希种子算出来的伪随机形状——所以**同样的种子永远长出同样的墨团**(这对联机回放至关重要,第 7 节):
 
 ```
@@ -200,14 +202,14 @@ fragment shader([paint.js:96-213](../src/world/paint.js#L96-213))把一滴墨拆
    
   爆炸 blast            炸弹 bomb            墨点 trail/drop
    ╭──────╮            ╭────────╮              ·
-  (射线更多更长)      (最大最全:射线14/液滴12/飞溅14)   (小而简单)
+  (射线更多更长)      (射线10/液滴12/飞溅14)   (小而简单)
 ```
 
-kind 只影响 4 个数字:`kindShape()` 返回 `(射线数, 液滴数, 飞溅数, 滴流数)`([paint.js:87-95](../src/world/paint.js#L87-95))。滚筒特殊:主体是**直边矩形带**(滚筒压过去的痕迹),代码里用 `BAND_L/BAND_W` 定义。
+kind 只影响 4 个数字:`kindShape()` 返回 `(射线数, 液滴数, 飞溅数, 滴流数)`([paint.js:111-119](../src/world/paint.js#L111-L119))。滚筒特殊:主体是**直边矩形带**(滚筒压过去的痕迹),代码里用 `BAND_L/BAND_W` 定义。
 
 ### 4.4 图集像素的 RGBA 编码 & 混合公式
 
-每个像素存 4 个通道([paint.js:213](../src/world/paint.js#L213)):
+每个像素存 4 个通道([paint.js:238](../src/world/paint.js#L238)):
 
 ```
    R              G               B               A
@@ -219,7 +221,7 @@ kind 只影响 4 个数字:`kindShape()` 返回 `(射线数, 液滴数, 飞溅�
  └──────┘      └──────┘       └──────┘       └──────┘
 ```
 
-混合(blending)是这个系统的精妙处,RGB 和 A 用**不同规则**([paint.js:379-383](../src/world/paint.js#L379-383)):
+混合(blending)是这个系统的精妙处,RGB 和 A 用**不同规则**([paint.js:415-426](../src/world/paint.js#L415-L426)):
 
 ```
 RGB:"over" 合成 →  结果 = 新墨颜色 × 新覆盖率 + 旧颜色 × (1 − 新覆盖率)
@@ -235,7 +237,7 @@ RGB:"over" 合成 →  结果 = 新墨颜色 × 新覆盖率 + 旧颜色 × (1 �
 ### 4.5 干燥:一个"减法"pass
 
 新墨 G=1(发亮),每帧有个全图集的小 quad 用**反向减法混合**把 G 减掉一点(约 6 秒归零),
-和墨滴画在同一个 pass 里——这样 mipmap 链每帧只重建一次([paint.js:389-407](../src/world/paint.js#L389-407))。
+和墨滴画在同一个 pass 里——这样 mipmap 链每帧只重建一次([paint.js:432-446](../src/world/paint.js#L432-L446))。
 
 ```
   刚涂上         3 秒后          6 秒后
@@ -267,7 +269,7 @@ RGB:"over" 合成 →  结果 = 新墨颜色 × 新覆盖率 + 旧颜色 × (1 �
           "你在 blobWobble 边界内吗?"
 ```
 
-初始化时([paint.js:322-346](../src/world/paint.js#L322-346))还做了一件事:把每个格子中心
+初始化时([paint.js:350-377](../src/world/paint.js#L350-L377))还做了一件事:把每个格子中心
 往面内推 6cm,问关卡几何"这个点是不是埋进别的几何体里了"——是的话标记为 `dead`,
 **被埋住的格子永不计分**(防止柱子、台阶内部算成可涂面积)。
 
