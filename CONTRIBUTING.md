@@ -20,6 +20,8 @@ npm run check        # node --check on every module
 npm run smoke        # boots the game headlessly and plays 8 s on autopilot (needs Google Chrome installed)
 ```
 
+`npm run check` uses Node only and works on Windows, macOS and Linux. The smoke script requires a POSIX shell (for example, Git Bash on Windows), a running game server, Chrome and the installed test dependencies.
+
 Keep pull requests focused. If you change gameplay tuning, say what you measured and how (see `tools/measure-handling.mjs` and `tools/film.py` for the deterministic capture helpers).
 
 ## Project map
