@@ -1,3 +1,8 @@
+// 【中文导读】不参与碰撞的公共场景装饰：出生台、护栏光幕、队旗、路灯和棕榈。
+// Decor 持有场景分组，按材质合并静态部件并实例化旗帜，减少装饰造成的 draw call。
+// 旗帜和棕榈的摆动在 shader 中按 uTime 计算；阴影材质需使用对应变形，避免影子停在静置姿态。
+// 出生台 pulse 表示重生或跳回基地的视觉反馈，不负责实际的无敌、碰撞阻挡或出生判定。
+// 队色由 setTeamColors 更新，昼夜灯亮度由 setNight 更新；主循环只传入秒制 dt。
 // Non-colliding arena dressing: spawn launch pads + spawn barriers, team flags, harbour lamp posts, palms.
 //
 //   const decor = new Decor(scene, level);   decor.group · decor.setTeamColors([colA, colB]) · decor.update(dt)
@@ -222,6 +227,7 @@ export class Decor {
   }
 
   // ------------------------------------------------------------------ spawn pads
+  // 读取布局的出生点与屏障尺寸建表现网格；不能把视觉光幕当作物理墙。
   _buildPads() {
     const L = this.level;
     // bevelled glossy base ring with a metal lip, recessed face and 24 lip bolts (one merged geometry, vertex colours)
@@ -261,6 +267,7 @@ export class Decor {
   }
 
   // Flare a team's spawn pad (respawn / super jump home). strength 0..1+.
+  // 只触发指定队伍出生台的短时波纹与亮度增强，不修改玩家玩法状态。
   pulse(team, strength = 1) {
     const p = this.pads[team];
     if (!p) return;
@@ -402,6 +409,7 @@ export class Decor {
   }
 
   // ------------------------------------------------------------------ team flags (poles merged, cloth instanced)
+  // 队旗合并/实例化后仍需保留每队颜色索引，避免换色时两队被写成同一色。
   _buildFlags() {
     const L = this.level.layout;
     const pts = [...L.decor.flags.map((p) => ({ p, team: 0 })), ...L.decor.flags.map(([x, y, z]) => ({ p: [-x, y, -z], team: 1 }))];
@@ -464,6 +472,7 @@ export class Decor {
     }
   }
 
+  // 推进共享时间及出生台脉冲，并按敌人接近程度增加屏障可见度；不做碰撞求解。
   update(dt) {
     this.time += dt;
     this.uTime.value = this.time;
