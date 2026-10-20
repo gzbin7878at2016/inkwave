@@ -15,12 +15,14 @@ export function installMobile(game) {
   };
   game.input.lastDevice = 'touch';
   const panel = document.createElement('div'); panel.id = 'mobile-panel';
-  panel.innerHTML = `<button data-mobile="practice">触屏练习</button><button data-mobile="tune">触控设置</button><button data-mobile="stats">诊断</button><span></span>`;
+  panel.innerHTML = `<button data-mobile="practice">触屏练习</button><button data-mobile="tune">触控设置</button><button data-mobile="stats">诊断</button><button data-mobile="export">复制报告</button><span></span>`;
   document.body.append(panel);
   const dialog = document.createElement('div'); dialog.id = 'mobile-dialog'; dialog.hidden = true;
   document.body.append(dialog);
   const info = panel.querySelector('span');
   const state = { suspended: false, needsResume: false, lostContext: false, network: true, samples: [], clock: 0, stats: false, onlineExit: null };
+  const frameTimes = new Float32Array(240); let frameCount = 0, frameIndex = 0;
+  const practiceButton = panel.querySelector('[data-mobile="practice"]');
   const resetInput = () => {
     touch.setEnabled(false); touch.clear(); game.input.keys.clear(); game.input.pressed.clear();
     Object.assign(game.input.mouse, { dx: 0, dy: 0, left: false, right: false, leftPressed: false, rightPressed: false });
@@ -35,6 +37,7 @@ export function installMobile(game) {
   const suspend = () => {
     if (state.suspended) return;
     state.suspended = true; state.needsResume = true; game.mobileSuspended = true;
+    if (game.hud) game.hud.paused = true;
     resetInput(); game.pause(); G.music?.pause?.(); G.audio?.ctx?.suspend?.().catch(() => {});
     // Android 后台不保证 WebSocket/计时器存活。本测试版主动离房，前台明确提示重新加入。
     if (G.net && !['offline', 'error'].includes(G.net.state)) {
@@ -44,6 +47,7 @@ export function installMobile(game) {
   const resume = () => {
     if (state.suspended || state.lostContext) return;
     state.needsResume = false; game.mobileSuspended = false; dialog.hidden = true;
+    if (game.hud) game.hud.paused = false;
     G.audio?.resume?.();
     if (state.onlineExit) {
       state.onlineExit = null;
@@ -84,36 +88,52 @@ export function installMobile(game) {
   });
   panel.querySelector('[data-mobile="practice"]').onclick = () => game.startPractice();
   panel.querySelector('[data-mobile="stats"]').onclick = () => { state.stats = !state.stats; };
+  panel.querySelector('[data-mobile="export"]').onclick = async () => {
+    const report = JSON.stringify({ app: '1.1.0-android-test.1', userAgent: navigator.userAgent, viewport: [innerWidth, innerHeight, devicePixelRatio], settings: { quality: game.settings.quality, fpsCap: game.settings.fpsCap }, samples: state.samples }, null, 2);
+    try { await navigator.clipboard.writeText(report); info.textContent = '诊断报告已复制，可粘贴保存'; }
+    catch {
+      resetInput(); game.pause(); message('长按文本全选并复制诊断报告', () => { dialog.hidden = true; if (game.match?.paused) game.resume(); }, '关闭');
+      const field = document.createElement('textarea'); field.readOnly = true; field.value = report; field.style.cssText = 'width:100%;height:50%;user-select:text'; dialog.append(field);
+    }
+  };
   panel.querySelector('[data-mobile="tune"]').onclick = () => {
     resetInput(); game.pause();
     dialog.hidden = false;
     dialog.innerHTML = `<p>触控与性能设置（自动保存）</p>
       <label>转向灵敏度 <input aria-label="转向灵敏度" type="range" min="0.3" max="2.5" step="0.1" value="${game.settings.touchSensitivity ?? 1}"></label>
       <label>按钮大小 <input aria-label="按钮大小" type="range" min="0.8" max="1.3" step="0.1" value="${game.settings.touchButtonScale ?? 1}"></label>
+      <label>左手瞄准布局 <input type="checkbox" ${game.settings.touchLeftHanded ? 'checked' : ''}></label>
       <label>目标帧率 <select><option value="30">30（省电）</option><option value="60">60（更流畅）</option></select></label>
       <button>保存并返回</button>`;
     const sliders = dialog.querySelectorAll('input');
     sliders[0].oninput = () => { game.settings.touchSensitivity = +sliders[0].value; save(); };
     sliders[1].oninput = () => { game.settings.touchButtonScale = +sliders[1].value; applySize(); save(); };
+    sliders[2].onchange = () => { game.settings.touchLeftHanded = sliders[2].checked; applySize(); save(); };
     const fps = dialog.querySelector('select'); fps.value = String(game.settings.fpsCap || 30);
     fps.onchange = () => { game.settings.fpsCap = +fps.value; save(); };
     dialog.querySelector('button').onclick = () => { dialog.hidden = true; if (game.match?.paused) game.resume(); };
   };
-  const applySize = () => document.documentElement.style.setProperty('--touch-size', String(game.settings.touchButtonScale ?? 1));
+  const applySize = () => {
+    touch.clear();
+    document.documentElement.style.setProperty('--touch-size', String(game.settings.touchButtonScale ?? 1));
+    touch.root.classList.toggle('mobile-left', !!game.settings.touchLeftHanded);
+  };
   applySize();
   game.mobile = {
     touch, state, suspend, foreground, resume,
+    recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
       const live = G.mode === 'match' && game.match && !game.match.attract && game.match.state === 'playing' && !game.match.paused;
       touch.setEnabled(!!(live && !game.menus?.current && !state.needsResume && !state.lostContext && dialog.hidden));
-      panel.querySelector('[data-mobile="practice"]').hidden = G.mode !== 'menu';
+      practiceButton.hidden = G.mode !== 'menu';
       state.clock += dt;
       if (state.clock >= 1) {
         state.clock = 0;
         const mem = game.R.renderer.info.memory;
-        const sample = { at: Date.now(), fps: game.fps, scale: game.R.dynScale, textures: mem.textures, geometries: mem.geometries, rtt: G.net?.tr?.rtt || 0 };
+        const times = Array.from(frameTimes.subarray(0, frameCount)).sort((a, b) => a - b);
+        const sample = { at: Date.now(), fps: game.fps, p50: times[Math.floor((times.length - 1) * 0.5)] || 0, p95: times[Math.floor((times.length - 1) * 0.95)] || 0, scale: game.R.dynScale, textures: mem.textures, geometries: mem.geometries, calls: game.perf?.calls || 0, triangles: game.perf?.tris || 0, heapBytes: performance.memory?.usedJSHeapSize ?? null, rtt: G.net?.tr?.rtt || 0 };
         state.samples.push(sample); if (state.samples.length > 1800) state.samples.shift();
-        info.textContent = state.stats ? `${sample.fps} FPS · 比例 ${sample.scale.toFixed(2)} · 纹理 ${sample.textures} · 几何 ${sample.geometries} · RTT ${Math.round(sample.rtt)}ms` : state.network ? '' : '离线';
+        info.textContent = state.stats ? `${sample.fps} FPS · P95 ${Math.round(sample.p95)}ms · 比例 ${sample.scale.toFixed(2)} · 纹理 ${sample.textures} · 几何 ${sample.geometries} · RTT ${Math.round(sample.rtt)}ms` : state.network ? '' : '离线';
       }
     },
   };

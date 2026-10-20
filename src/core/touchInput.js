@@ -47,7 +47,8 @@ export class TouchInput {
         const radius = 48, dead = 7, k = Math.min(1, Math.max(0, (m - dead) / (radius - dead)));
         this.move.x = m ? dx / m * k : 0; this.move.y = m ? dy / m * k : 0;
         this.knob.style.transform = `translate(${this.move.x * 35}px,${this.move.y * 35}px)`;
-      } else if (p.role === 'look') {
+      } else if (p.role === 'look' || p.role === 'fire') {
+        // 两拇指也能边射边瞄：开火按钮按住后拖动同样转视；独立瞄准手指仍可并存。
         // CSS 像素与帧率、DPR 无关；异常跳点限幅，避免恢复触控时镜头瞬间翻转。
         this.look.x += Math.max(-80, Math.min(80, e.clientX - p.x));
         this.look.y += Math.max(-80, Math.min(80, e.clientY - p.y));

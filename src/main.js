@@ -1165,6 +1165,7 @@ class Game {
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
+    this.mobile?.recordFrame(dt * 1000); // 记录钳制前的实际帧间隔，不能把掉帧隐藏在 dt 上限内。
     dt = Math.min(dt, 1 / 24);
     this._frame(dt);
   }

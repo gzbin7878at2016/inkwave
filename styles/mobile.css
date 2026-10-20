@@ -24,6 +24,9 @@
 .mobile-jumps { position: absolute; left: 20%; right: 23%; bottom: 12px; display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; }
 .mobile-jumps button { min-width: 54px; font-size: 12px !important; }
 .map-open .mobile-stick, .map-open .mobile-actions { visibility: hidden; }
+.mobile-left .mobile-look { inset: 0 44% 0 0; }
+.mobile-left .mobile-stick { left: auto; right: max(24px, env(safe-area-inset-right)); }
+.mobile-left .mobile-actions { right: auto; left: max(16px, env(safe-area-inset-left)); }
 #mobile-panel { position: fixed; z-index: 42; right: max(8px, env(safe-area-inset-right)); top: max(4px, env(safe-area-inset-top)); display: flex; gap: 6px; align-items: center; }
 #mobile-panel button { min-height: 44px; font-size: 12px; }
 #mobile-panel span { position: fixed; left: max(8px, env(safe-area-inset-left)); top: max(4px, env(safe-area-inset-top)); color: #fff; background: #0009; font: 11px monospace; pointer-events: none; }
