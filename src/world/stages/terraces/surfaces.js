@@ -24,6 +24,7 @@
 //           Own colours × block colour; walls → calce. (The piazza's black-and-white pebble rose is a mural.)
 export const SURF = { calce: 43, cotto: 44, pebble: 45 };
 
+// 石灰抹墙以底色遮罩染色，剥落处露出灰色石块与灰浆，顶部使用陶土露台。
 const calce = {
   detail: 0.7, scale: 3.6, tint: true, mask: true, alpha: false, mode: 0, sym: 0, hr: [-0.004, 0.002], ao: 0.3,
   prep: `f[0] = FB(uv, ivec2(3), 4, 0.55, 4301u); f[1] = FB(uv, ivec2(14), 3, 0.5, 4303u); f[2] = FB(uv, ivec2(64), 2, 0.5, 4307u);
@@ -55,6 +56,7 @@ const calce = {
   s.cav = 1.0 - 0.02 * joint - 0.2 * flake * joint - 0.25 * crack;`,
 };
 
+// 八角陶土地砖配小釉砖，图案自带颜色；方块底色宜保持暖白以免过度染色。
 const cotto = {
   detail: 0.35, scale: 1.2, tint: true, alpha: false, mode: 1, sym: 7, hr: [-0.004, 0.0012], ao: 0.45,
   prep: `ivec2 tc = wrp(ivec2(floor(P / 0.3)), ivec2(4));
@@ -96,6 +98,7 @@ const cotto = {
   s.cav = mix(1.0, 0.55, inJ);`,
 };
 
+// 卵石铺地按 2.4 米重复并用石灰石条分框；大型黑白图案另外通过壁画叠加。
 const pebble = {
   detail: 0.5, scale: 2.4, tint: true, alpha: false, mode: 1, sym: 7, hr: [-0.007, 0.003], ao: 0.4,
   prep: `f[0] = FB(uv, ivec2(4), 4, 0.5, 4501u); f[1] = FB(uv, ivec2(24), 3, 0.5, 4503u); f[2] = FB(uv, ivec2(120), 2, 0.5, 4507u);
@@ -126,6 +129,7 @@ const pebble = {
 };
 
 // 按统一 texlib 契约提供生成函数和采样尺度；表面细节只影响表现，不改变通行高度。
+// 将三套配方绑定到保留槽，并明确墙顶重定向，避免露台侧墙被贴成地砖。
 export const SURFACES = [
   { slot: 43, name: 'calce', onTop: 44, mat: calce },
   { slot: 44, name: 'cotto', onWall: 43, mat: cotto },

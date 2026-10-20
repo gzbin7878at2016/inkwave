@@ -26,10 +26,12 @@
 //  10 Zone Control sagrato top (16 x 12 m): border, a compass rose under the tempietto's dome, a ring round its columns
 export const MURAL = { rose: 4, sagrato: 5, frieze: 6, ghost: 7, sundial: 8, sun: 9, sagratoZ: 10 };
 
+// 固定种子伪随机数保证马赛克、斑点和风化外观可复现。
 function rnd(seed) { let a = seed | 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 const DARK = 'rgba(52,50,48,0.92)', GREYP = 'rgba(128,124,116,0.85)', WHITE = 'rgba(243,239,229,0.95)';
 
 // speckle a clipped shape with pebble-sized dots (light + dark) so flat fills read as set pebbles
+// 在调用方裁剪区内撒深浅卵石点，使纯色填充读成嵌石面。
 function pebbles(g, x0, y0, w, h, S, seed, dens = 1) {
   const r = rnd(seed), n = Math.round((w * h) / (S * S) * 260 * dens);
   for (let i = 0; i < n; i++) {
@@ -39,6 +41,7 @@ function pebbles(g, x0, y0, w, h, S, seed, dens = 1) {
   }
 }
 // compass rose in world units (metres), centred at (cx, cz), radius Rr
+// 罗盘玫瑰使用米制坐标和比例 S，环带、十六芒星与中心图案分层绘制。
 function rose(g, cx, cz, Rr, S, seed) {
   g.save();
   g.translate(cx, cz);
@@ -70,8 +73,10 @@ function rose(g, cx, cz, Rr, S, seed) {
 }
 
 // 按传入矩形绘制并返回各图案的图集条目；透明边缘用于避免贴图钳位产生边线。
+// 依次绘制各编号图案并返回像素区域和世界尺寸；透明边缘避免贴面夹取产生边线。
 export function drawMurals(g, R, kit) {
   const out = [];
+  // 编号 4 用于旋转 45 度的突出平台，两侧显示不同半面，玫瑰朝向需匹配顶面 u/v。
   // ---------------------------------------------------------------- 4: bastion prow roses (7.07 x 7.07 m at 58 px/m)
   // The prow is a square turned 45° (layout.js); its top face runs u = −local x from the max-x / min-z corner, v = local
   // z. The east prow shows the face's upper-left half (v > u) past the flank slab, its mirrored twin the lower-right
@@ -91,6 +96,7 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: 4, ...r, m: [F, F], fx: [1, 0.5] });
   }
+  // 编号 5 对应普通模式广场顶部，按 16×10 米控制图案比例。
   // ---------------------------------------------------------------- 5: sagrato top (16 x 10 m at 48 px/m)
   {
     const r = { x: R.x, y: R.y + 412, w: 768, h: 480 }, S = r.w / 16;
@@ -120,6 +126,7 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: 5, ...r, m: [16, 10], fx: [1, 0.5] });
   }
+  // 编号 6 为广场侧墙的彩陶饰带，按墙面横向与高度铺开。
   // ---------------------------------------------------------------- 6: majolica frieze on the sagrato walls (16 x 1.2 m at 80 px/m)
   {
     const r = { x: R.x + 770, y: R.y + 412, w: 1278, h: 96 }, S = r.w / 16;
@@ -148,6 +155,7 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: 6, ...r, m: [16, 1.2], fx: [0.6, 0.5] });
   }
+  // 编号 7 是旧商号墙字，风化透明部分允许底墙材质透出。
   // ---------------------------------------------------------------- 7: ghost sign LIMONCELLO (3.8 x 3.0 m at 100 px/m)
   {
     const r = { x: R.x + 770, y: R.y + 512, w: 260, h: 300 }, S = 100;
@@ -181,6 +189,7 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: 7, ...r, m: [2.6, 3.0], fx: [1, 1] });
   }
+  // 编号 8 绘日晷，图案中心和尺寸按墙面米制定位。
   // ---------------------------------------------------------------- 8: sundial (5.6 x 2.8 m at 60 px/m; dial centred 1.7 m in, 1.4 m up)
   {
     const r = { x: R.x + 1152, y: R.y + 512, w: 144, h: 168 }, S = 60;
@@ -209,6 +218,7 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: 8, ...r, m: [2.4, 2.8], fx: [0.9, 1] });
   }
+  // 编号 9 为 Largo 广场的卵石太阳图案。
   // ---------------------------------------------------------------- 9: pebble sun on the Largo (5 x 5 m at 100 px/m)
   {
     const r = { x: R.x + 1500, y: R.y + 508, w: 500, h: 500 }, S = 100;
@@ -238,6 +248,7 @@ export function drawMurals(g, R, kit) {
     g.restore();
     out.push({ id: 9, ...r, place: [-0.5, 5, -0.5, 5], fx: [1, 0.5] });
   }
+  // 编号 10 是区域模式扩大的广场顶面，环带绕开柱廊并在穹顶下放罗盘。
   // ---------------------------------------------------------------- 10: Zone Control sagrato top (16 x 12 m at 34 px/m)
   // The open sagrato round San Vito's tempietto (props.js): the border band of mural 5, a pebble ring just outside the
   // colonnade (columns on a 3.4 m circle, plinths to 3.75 m), a compass rose under the dome, a star before each stair.
