@@ -10,6 +10,7 @@ export function registerBuildings(D, H, KIT) {
   const { PI, HP, hash } = KIT;
   const { facade, roof } = KIT;
   // ------------------------------------------------------------------------------------------ the house prop
+  // 按 n/s/e/w 进局部坐标画立面；主体来自布局，屋坡与烟囱另补禁入体积。
   D.crossmarket_house = {
     desc: 'Crossroads Market building dressing around a W × D block (pos = block base centre at street level): each listed face (n +Z, s -Z, e +X, w -X) gets a town facade (shopfronts, windows, balconettes, cornice, quoins …), the roof sits on the block top (h). No colliders (the block is the building).',
     params: { w: 'm X size', d: 'm Z size', h: 'm wall top (eave)', faces: '{ n|s|e|w: facade spec }', roof: 'roof spec' }, variants: 1, mount: 'ground',
@@ -41,6 +42,7 @@ export function registerBuildings(D, H, KIT) {
 }
 
 // ================================================================================================ civic + circulation
+// 登记公共建筑和通行设施外观，每类按自身约定决定是否补碰撞。
 export function registerCivic(D, H, KIT) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, GB, cx3, win, wallLantern, extrudeGeo, balconette, hash, rakedRail } = KIT;
   const IRON = K.iron, IRDK = K.ironDk, GOLD = K.gold, ST = K.stone, STL = K.stoneLt, STD = K.stoneDk;
@@ -49,6 +51,7 @@ export function registerCivic(D, H, KIT) {
   // ---- stone stair dressing (local +Z from the foot (0,0,0) up to (0, rise, run), width W centred): raked sandstone
   // balustrades just outside the walking width (plinth band, turned balusters, moulded handrail), square newels with a
   // lantern at the foot and an urn at the top. Non-colliding (the ramp sides are the level's).
+  // 石梯沿 +Z 从脚到顶，栏杆在通行宽度外，坡道碰撞由布局负责。
   D.crossmarket_stonestair = {
     desc: 'Stone stair balustrades: raked sandstone balustrades outside the walking width (both sides unless `sides` = [-1] / [1]), newels with lanterns at the foot and urns at the head. Rail colliders along the balustrades (stepped), solid newels.',
     params: { run: 'm', rise: 'm', width: 'm', sides: '[-1, 1]', lamps: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -89,6 +92,7 @@ export function registerCivic(D, H, KIT) {
 
   // ---- iron stair dressing for the thin (free-spanning) iron stairs: stringer plates both sides, balustrade with a
   // moulded handrail, a pair of legs under the head, riser plates showing between the treads (local +Z foot → head)
+  // 悬跨铁梯补侧梁、栏杆、支脚和踏步立面，局部 +Z 指向梯顶。
   D.crossmarket_ironstair = {
     desc: 'Cast-iron stair dressing (local +Z from the foot to the head): pierced stringer plates, balusters + handrail both sides (unless `sides`), legs under the upper half. Rail colliders along the handrail sides.',
     params: { run: 'm', rise: 'm', width: 'm', sides: '[-1, 1]' }, variants: 1, mount: 'ground',
@@ -120,6 +124,7 @@ export function registerCivic(D, H, KIT) {
   // slab x ±1.1 × z ±10 at 2.3 … 2.6): cast-iron columns at the street edge (and the free edge over the forecourt),
   // a lattice fascia with a pierced valance, a glazed lean-to canopy on scrolled brackets, railings (solid, see layout),
   // hanging baskets + lamps.
+  // 高层走廊以平台中心定位，装配铸铁柱、玻璃篷、栏杆和挂篮。
   D.crossmarket_veranda = {
     desc: 'The veranda gallery dressing (pos = centre of the 2.2 × 20 m slab at street level): columns (colliders) along the street edge + the free west edge over the forecourt, fascia girder, pierced valance, glazed lean-to canopy on brackets, railings (rail colliders) on the open edges, baskets, lamps, the ARCADE GALLERY sign.',
     params: { length: 'm (20)', free: 'z ranges (local) where the west edge is open', railW: 'z ranges (local) with a railing on the west edge' }, variants: 1, mount: 'ground',
@@ -201,6 +206,7 @@ export function registerCivic(D, H, KIT) {
   // the facade above the terrace: rusticated pilasters, three arched French doors, a first-floor window row, the
   // entablature with CORN EXCHANGE, a pediment with a clock, a copper-domed cupola, balustraded parapets with urns,
   // team flags on staffs. The upper mass collides (camera-safe).
+  // 交易所面朝 +Z、体块向 -Z；上部碰撞防止镜头穿入建筑。
   D.crossmarket_exchange = {
     desc: 'Corn Exchange (pos = terrace back-edge centre at street level; facade faces +Z, building behind): arched French doors on the terrace, pilasters, first-floor windows with balconettes, CORN EXCHANGE entablature, pediment clock, balustraded parapet with urns, cupola, team flags; upper mass collides.',
     params: { w: 'm (18)', team: '0|1' }, variants: 1, mount: 'ground',
@@ -295,6 +301,7 @@ export function registerCivic(D, H, KIT) {
 
   // ---- the podium: the spawn terrace's front face (pos = centre of the front edge at street level, face at z = 0,
   // +Z out): rusticated ashlar with channelled joints, blind arches with iron gates, a plinth, a string course, plaques
+  // 以出生台前沿 z=0 为贴面，补方石、盲拱与铭牌。
   D.crossmarket_podium = {
     desc: 'Rusticated podium dressing on the spawn terrace front (pos = front-edge centre, face +Z): channelled rustication, blind arches with iron grilles (skipping the stair openings), plinth + cornice band, a bronze plaque. Non-colliding.',
     params: { w: 'm (18)', h: 'm (2.4)', arches: '[x…] centres', skip: '[[x0, x1]] stair openings' }, variants: 1, mount: 'ground',
@@ -327,6 +334,7 @@ export function registerCivic(D, H, KIT) {
 
   // ---- the Fish Lane arcade: segmental arches between the piers, capitals + bases, a boarded ceiling with iron
   // beams, hanging lamps. pos = the pier line's centre (x of the pier centres, z centre), piers every `pitch` along Z.
+  // 鱼市柱廊沿 Z 等距排列，柱距参数需与布局对应。
   D.crossmarket_arcade = {
     desc: 'Arcade dressing (pos = centre of the pier row at floor level; piers 0.8 × 0.7 every `pitch` m along local Z, `n` piers): segmental arches + spandrels between the piers facing ±X, pier caps and bases, the ceiling (joists, iron beams), pendant lamps, a lettered FISH MARKET frieze. Non-colliding.',
     params: { n: 'piers (7)', pitch: 'm (4.6)', depth: 'arcade depth toward -X (3.8)', y0: 'floor (0.15)', top: 'soffit (2.8)' }, variants: 1, mount: 'ground',
@@ -373,6 +381,7 @@ export function registerCivic(D, H, KIT) {
   // ---- the Market Passage through the tall row (pos = west mouth centre on the wall line, local +Z = out toward
   // Market Street, the passage runs `depth` m into -Z): stone portals with lettered lintels at both mouths, a lantern,
   // posters on the walls, a side door, a bicycle. Non-colliding except the bicycle stand.
+  // 通道从街口向 -Z 深入，门框和海报为装饰，车架另保留碰撞。
   D.crossmarket_passage = {
     desc: 'Market Passage dressing (pos = west mouth centre at street level; local +Z out, passage toward -Z, width w, depth): stone portals with MARKET PASSAGE lintels at both mouths, hanging lanterns, bill posters, a side door. Non-colliding.',
     params: { w: 'm opening (3)', depth: 'm (9)', h: 'm (2.6)', h2: 'm soffit over the far part (2.2)', split: 'm where the soffit drops (4.5)' }, variants: 1, mount: 'ground',
@@ -413,6 +422,7 @@ export function registerCivic(D, H, KIT) {
   };
 
   // ---- roof-terrace furniture: a pergola of iron hoops with vines along the wall, planters, a menu board
+  // 屋顶休闲区补花架、种植箱和菜单，依赖已有平台承托。
   D.crossmarket_pergola = {
     desc: 'Café-terrace pergola along local +X (length): slender iron hoops from the wall line (z = 0) out to posts at depth `d`, trained vines along the top, hanging lamps. Posts collide.',
     params: { length: 'm (8)', d: 'm (1.8)', h: 'm (2.5)' }, variants: 1, mount: 'ground',

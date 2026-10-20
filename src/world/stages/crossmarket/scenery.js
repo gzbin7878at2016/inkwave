@@ -16,6 +16,7 @@ export function registerScenery(D, H, KIT) {
 
   // simplified town house facing +Z at x (width w, eave h, depth d): body, window grid with sills + shutters, a shop
   // band with an awning strip, cornice, gable or hip roof, chimney
+  // 远景只保留体块、窗列、店招带和屋顶，不用近处复杂立面。
   function farHouse(B, x, w, h, d, i) {
     const M = NS('paint'), wall = WALLS[i % WALLS.length], roofC = ROOFS[(i * 3) % ROOFS.length], sh = SHUT[(i * 7) % SHUT.length];
     pbox(B, M, wall, w - 0.04, h, d, x, h / 2, -d / 2);
@@ -51,6 +52,7 @@ export function registerScenery(D, H, KIT) {
     if (hash(i * 2.9) < 0.8) { pbox(B, M, K.chim, 0.6, 1.8, 0.6, x + w * 0.25, h + rise * 0.6, -d * 0.6); pbox(B, M, K.pot, 0.2, 0.3, 0.2, x + w * 0.25, h + rise * 0.6 + 1.0, -d * 0.6); }
   }
 
+  // 边界外码头沿 +X 铺开，用固定 hash 变化房宽与高度，不加碰撞和阴影。
   D.crossmarket_farside = {
     desc: 'Far quay across the harbour channel (scenery, outside the bounds): a stone quay wall along local +X (length) facing +Z with its coping at y 0.5, a promenade with lamps + bollards, and a row of simplified tall town houses behind it. No colliders, no shadows.',
     params: { length: 'm (44)', seed: 'house mix' }, variants: 1, mount: 'ground',
@@ -67,6 +69,7 @@ export function registerScenery(D, H, KIT) {
         B.lathe(NS('glow'), K.lit, [[0.001, -0.1], [0.14, -0.06], [0.16, 0.16], [0.001, 0.16]], x, 4.0, -1.2, { seg: 4, glow: 1.8 });
         B.lathe(M, K.iron, [[0.22, 0], [0.1, 0.12], [0, 0.2]], x, 4.16, -1.2, { seg: 4 });
       }
+      // 逐栋累加房宽填满码头，同种子保持建筑序列稳定。
       // the houses
       let x = 0, i = seed * 7;
       while (x < L - 2) {

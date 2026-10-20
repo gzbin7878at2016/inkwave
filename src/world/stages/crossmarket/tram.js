@@ -12,6 +12,7 @@ export function registerTram(D, H, KIT) {
   const WIRE = 5.3;
 
   // one side of the saloon (x along the body, z = 0 the body face, +Z out): windows, pillars, lining, fleet lettering
+  // 车长沿 X、侧面 z=0、+Z 朝外，统一安装窗柱和车队字样。
   function saloonSide(B, L) {
     const n = 8, pw = 0.16, ww = (L - 0.4 - pw * (n - 1)) / n, y0 = 1.5, y1 = 2.56;
     for (let i = 0; i < n; i++) {
@@ -46,6 +47,7 @@ export function registerTram(D, H, KIT) {
   }
   // a cab end (the platform + vestibule) at local x = 0 facing +X, depth dx: rounded dash, three-light windscreen,
   // destination box, headlamp, lifeguard tray, controller + handbrake silhouettes inside
+  // 司机室端头 x=0 面朝 +X，按深度生成玻璃、车灯和内部剪影。
   function cabEnd(B, dx, hw) {
     const prof = (y0, y1, r) => tpl(['cab', dx, hw, y0, y1, r].map(kf).join('|'), () => {
       // plan: a rounded dash (quarter ellipses) from z = -hw to hw, depth dx
@@ -83,6 +85,7 @@ export function registerTram(D, H, KIT) {
     for (const s of [-1, 1]) B.cyl(NS('metal'), K.gold, 0.02, 1.1, dx * 0.25, 1.9, s * (hw - 0.05), { seg: 6 });
   }
 
+  // 装饰包住布局的可涂主体，不把窗口细节当成额外平台。
   D.crossmarket_tram = {
     desc: 'The No. 3 tram (double-ended, place once at the origin, mirror: false) dressing the level tram blocks (x ±5, z ±1.2, 3.0 tall): saloon windows with lit ceilings, gilt lining + CROSSROADS TRAMWAYS on the rocker panels, trucks + wheels, cab ends (colliders) with windscreens, lit destination boxes (MARKET HALL · 3), headlamps, lifeguard trays; the roof: boards, trolley standard + pole up to the overhead wire.',
     params: {}, variants: 1, mount: 'ground',
@@ -112,6 +115,7 @@ export function registerTram(D, H, KIT) {
   };
 
   // ---- catenary pole (base at pos, bracket arm reaching toward +Z over the track, wire at WIRE), with a gas-style lamp
+  // 柱脚为原点，支臂朝 +Z，电线高度统一使用 WIRE。
   D.crossmarket_catenary = {
     desc: 'Tramway traction pole: fluted cast-iron base, tapered pole with collars, scrolled bracket arm reaching `reach` m toward local +Z to the overhead wire (y 5.3), finial, a street lantern hung off the back. Collider: the pole.',
     params: { reach: 'm (2.1)', lamp: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -141,6 +145,7 @@ export function registerTram(D, H, KIT) {
 
   // ---- tram stop shelter (on the platform): back screen toward local -Z (glazed, iron frame), a curved glass canopy
   // over the platform, a bench, the stop flag, timetable case; collider = the back screen (cover) + the bench
+  // 背屏朝 -Z，补雨棚、座椅与时刻表；屏和椅另作掩体碰撞。
   D.crossmarket_tramstop = {
     desc: 'Tram stop shelter: cast-iron frame, glazed back screen along local X at z = 0 facing +Z (the track side), a curved canopy, bench, MARKET HALL stop flag on a post, timetable case, poster. Colliders: back screen (rail: see-through), bench, flag post.',
     params: { length: 'm (4)' }, variants: 1, mount: 'ground',
@@ -186,6 +191,7 @@ export function registerTram(D, H, KIT) {
   };
 
   // ---- the overhead trolley wire: a taut contact wire along local +X at WIRE with droppers to a catenary messenger
+  // 架空线沿 X，接触线、承力线及吊线共用标高体系。
   D.crossmarket_wire = {
     desc: 'Tram overhead: contact wire along local +X (length) at 5.3 m with a messenger wire above and droppers. No collider.',
     params: { length: 'm (10)' }, variants: 1, mount: 'ground',
@@ -200,6 +206,7 @@ export function registerTram(D, H, KIT) {
 
   // ---- buffer stop at the end of the line (track along local X, stop facing -X): timber beam on an iron trestle,
   // a red lamp, sand drag. Collider.
+  // 止冲器朝 -X，木梁和铁架保留碰撞，红灯仅作表现。
   D.crossmarket_buffer = {
     desc: 'Tramway buffer stop (facing local -X, the track runs toward -X): a timber buffer beam with sprung heads on a cast-iron trestle, a red lamp, painted hazard boards. Collider.',
     params: {}, variants: 1, mount: 'ground',
@@ -221,6 +228,7 @@ export function registerTram(D, H, KIT) {
   };
 
   // ---- tram ticket booth: a little timber-and-glass kiosk with a hipped roof, a ticket window, the timetable (cover)
+  // 售票亭结合木玻璃外观与售票窗，作为站台掩体。
   D.crossmarket_booth = {
     desc: 'Tramways ticket booth (1.6 × 1.3 m, window toward local +Z): panelled timber lower half, glazed upper, hipped zinc roof with a finial, TICKETS board, a lamp. Collider.',
     params: {}, variants: 1, mount: 'ground',

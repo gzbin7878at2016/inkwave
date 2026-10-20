@@ -23,6 +23,7 @@ export function registerLanding(D, H, KIT) {
   const INK = '#2c2b29';
   // one closed crate, base at (x, y, z) in the current frame, w (x) × h × d (z); kind 0 slatted, 1 tea chest,
   // 2 painted box. `face` = +1 / -1: the ±X face carries a stencil. Lids are closed and flat: people stand on them.
+  // 当前坐标栈中生成单箱，kind 区分板条、茶箱与涂漆外观。
   function crate(B, x, y, z, w, h, d, kind, seed, face = 1) {
     const t = TIMBER[Math.floor(hash(seed) * TIMBER.length)], dk = shade(t, 0.72);
     if (kind === 1) {
@@ -55,11 +56,13 @@ export function registerLanding(D, H, KIT) {
     }
   }
   // rope lashing across a stack along z (over its top at y, down both sides to y0), at x
+  // 绑绳从箱垛顶沿两侧到底，宽度参数采用半宽。
   function lashing(B, x, y, y0, hw) {
     const c = '#b89c6a', r = 0.018;
     B.tube(NS('rubber'), c, [P3(x, y0 + 0.1, -hw - 0.012), P3(x, y - 0.06, -hw - 0.014), P3(x, y + 0.008, -hw + 0.08), P3(x, y + 0.01, hw - 0.08), P3(x, y - 0.06, hw + 0.014), P3(x, y0 + 0.1, hw + 0.012)], r, { radial: 4 });
   }
 
+  // tiers 每层用整层碰撞盒提供可走台阶，外观分箱不拆碎导航。
   D.crossmarket_cargo = {
     desc: 'The lighter\'s cargo stacked as steps (local +X = toward the bow): tiers [[x0, x1, top]] of slatted crates, tea chests and painted boxes from the deck (deckY) up to each tier\'s flat top, across the width W (local z), lashed with rope. One collider per tier (walkable, not inkable).',
     params: { tiers: '[[x0, x1, top]]', W: 'm (3.1)', deckY: 'm (-0.3)' }, variants: 1, mount: 'ground',
@@ -92,6 +95,7 @@ export function registerLanding(D, H, KIT) {
   };
 
   // ------------------------------------------------------------------------------------------ the lighter
+  // 驳船外观围绕甲板构建，货垛与甲板通行高度须和布局一致。
   D.crossmarket_lighter = {
     desc: 'Market lighter (dumb barge), local +X = bow: flat-sided hull with raked swim ends, tarred below an oxblood sheer strake and a cream line, timber gunwale capping round the deck (the deck itself is a layout piece), rubbing strakes, tyre fenders, a long sweep, her name. `lines`: mooring ropes [[x0, y0, z0, x1, y1, z1]] (local). No collider (the deck is the level).',
     params: { L: 'deck length (5.9)', W: 'deck width (3.1)', deckY: '(-0.3)', lines: '[[x0,y0,z0,x1,y1,z1]]' }, variants: 1, mount: 'ground',
@@ -155,6 +159,7 @@ export function registerLanding(D, H, KIT) {
   // cast-iron hand crane (dockside, c. 1880): bolted base, tapered pillar, crab frame with two gear trains and crank
   // handles, a curved jib with a tie, sheave, chain + hook with a net of sacks. Local: pillar at the origin, the jib
   // reaching toward +Z. Collider: the pillar + gearing (roof: nobody stands on it).
+  // 手摇起重机柱脚为原点、吊臂朝 +Z，柱与齿轮按禁站立结构处理。
   function crane(B, jibL = 3.0) {
     const IR = K.iron, DK = K.ironDk, RED = '#8e3a2e';
     B.box('metal', DK, 0.8, 0.08, 0.8, 0, 0.04, 0, { r: 0.02 });
@@ -205,6 +210,7 @@ export function registerLanding(D, H, KIT) {
     colT(B, -0.35, 0, -0.45, 0.35, 2.2, 0.35, { roof: true });
   }
 
+  // 起重平台结合立柱与吊机，货垛连接处需保留通行口。
   D.crossmarket_hoist = {
     desc: 'The market\'s goods hoist stage beside the tram pier (the deck is a layout piece: w × d at deckY, local -Z = the pier edge side, overhanging it by `over`): timber piles with weed-line bands in the water, headstocks, joists, X-bracing and walings, fascias (the drop edge painted white), iron railings on the water sides (rail colliders) with a gap in the outer (+Z) one where the lighter\'s cargo comes up, an iron hand crane on the outer +X corner swinging a net of sacks over the lighter, a MARKET HOIST board, a lantern under the overhang.',
     params: { w: 'm along X (3.8)', d: 'm along Z (6.9)', deckY: 'deck top (3.1)', over: 'm the deck reaches past the pier edge (0.9)', open: '[x0, x1] gap in the outer railing for the crates', craneYaw: 'rad (0.64)' }, variants: 1, mount: 'ground',

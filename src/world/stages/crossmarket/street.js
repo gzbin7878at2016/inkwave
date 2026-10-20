@@ -13,6 +13,7 @@ export function registerStreet(D, H, KIT) {
   // ---- produce: fills a crate / tray top (w × d at height y) with goods of a kind (small parts: no shadow)
   const FRUIT = { apples: ['#b83a2e', '#c9502f', '#9c2f28'], greens: ['#7aa04a', '#8cb35a'], oranges: ['#e39a2e', '#eaa73a'], lemons: ['#e8cf52', '#f0da6a'],
     tomatoes: ['#c8382c', '#d8452f'], plums: ['#5b2a4a', '#6d3656'], pears: ['#b9c25a', '#a8b04c'] };
+  // 按货物类别填箱顶，seed 微调摆放，细小果蔬不单独投影。
   function produce(B, kind, x, y, z, w, d, seed = 1) {
     const rnd = (k) => hash(seed * 7.1 + k * 3.3);
     if (FRUIT[kind]) {
@@ -48,6 +49,7 @@ export function registerStreet(D, H, KIT) {
     }
   }
   // slatted produce crate (open top) at x, y, z, filled with `kind`, optionally tilted toward +Z
+  // 开顶板条箱填入货物，可倾斜面向顾客。
   function crate(B, x, y, z, w, d, h, kind, seed, tilt = 0) {
     B.push(x, y, z, 0, tilt);
     for (const sz of [-1, 1]) for (let k = 0; k < 2; k++) pbox(B, 'wood', shade(K.woodLt, 0.92 + k * 0.06), w, h * 0.38, 0.02, 0, h * (0.22 + k * 0.5), sz * (d / 2 - 0.01));
@@ -58,6 +60,7 @@ export function registerStreet(D, H, KIT) {
   }
 
   // ---- pitched striped stall canopy (ridge along X), valance front + back, cached per size + colours
+  // 摊棚按尺寸与条纹色缓存，前后补垂帘，减少相同布面重建。
   function stallCanopy(W, Dd, rise, cA, cB) {
     return tpl(['stallcan', W, Dd, rise, cA, cB].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(4, Math.round(W / 0.25)), sw = W / n, ca = cx3(cA), cb = cx3(cB);
@@ -92,6 +95,7 @@ export function registerStreet(D, H, KIT) {
     spice: { name: 'SPICES', goods: ['spice', 'spice', 'spice', 'spice'], c: ['#b8483e', '#efe6d2'] },
     fruit: { name: 'FRUIT', goods: ['plums', 'apples', 'pears', 'oranges', 'lemons', 'apples'], c: ['#7a3a4c', '#efe6d2'] },
   };
+  // 按类别装棚、桌面和货物，摊位差异来自共享规格。
   D.crossmarket_stall = {
     desc: 'Market stall (front +Z; `double`: goods on both long sides, an island stall): timber counter w × d (collider, 1.0 m), sloped display of slatted crates filled with produce / fish on ice / flowers / bread / cheese / spices, four posts, a pitched striped canopy with a scalloped valance, a lettered header board, a hanging scale and a lamp.',
     params: { w: 'm (2.4)', d: 'm (1.2)', kind: 'veg | fruit | fish | flowers | bread | cheese | spice', double: 'bool', canopy: 'bool (true)', name: 'header text' }, variants: 1, mount: 'ground',
@@ -178,6 +182,7 @@ export function registerStreet(D, H, KIT) {
 
   // ---- the fountain: round stone basin with a moulded lip, water, a baluster pedestal with two bowls, a bronze
   // dolphin finial, lion-mask spouts into the basin; colliders: a cross of boxes approximating the round basin
+  // 圆喷泉以交叉盒近似碰撞，细节几何不直接作为物理网格。
   D.crossmarket_fountain = {
     desc: 'Market fountain (round, R 1.7): moulded sandstone basin with water, a pedestal carrying two scalloped bowls (water sheets) and a bronze dolphin, four lion-mask spouts, a cast-iron drinking cup post. Colliders: basin (cross of boxes, 0.72 m) + pedestal.',
     params: { r: 'basin radius (1.7)' }, variants: 1, mount: 'ground',
@@ -221,6 +226,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // ---- gas street lamp: fluted post, ladder bar, a four-sided lantern with a crown (variant 1: twin swan-neck arms)
+  // 灯罩与灯芯分别使用实体和发光材质，缩放保持相同位置基准。
   function lantern(B, x, y, z, s = 1) {
     B.push(x, y, z, PI / 4, 0, 0, s);
     B.lathe('metal', K.iron, [[0.06, 0], [0.13, 0.02], [0.14, 0.06], [0.09, 0.1]], 0, 0, 0, { seg: 4 });
@@ -293,6 +299,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // ---- iron railing run along local +X (optional collider): posts with finials, top + bottom rails, bars, dog bars
+  // 栏杆沿 +X 延伸，是否加碰撞由配方参数决定。
   D.crossmarket_railing = {
     desc: 'Wrought-iron railing along local +X (length): square posts with urn finials every ~1.8 m, top rail, bottom rail, bars with alternating spear tips, a scroll band. Rail collider over its full length + height.',
     params: { length: 'm (4)', height: 'm (0.95)', depth: 'collider depth toward -Z (0.1)' }, variants: 1, mount: 'ground',
@@ -312,6 +319,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // ---- stone balustrade along local +X: plinth, turned balusters, coping, dies (piers) at the ends + every ~2.4 m
+  // 石栏沿 +X 排柱，端点与中间按间距补墩。
   D.crossmarket_balustrade = {
     desc: 'Sandstone balustrade along local +X (length): plinth, turned balusters, moulded coping, square dies at the ends (with ball finials) and every ~2.4 m. Rail collider (see-through between the balusters).',
     params: { length: 'm (4)', height: 'm (0.9)', balls: 'bool (true)' }, variants: 1, mount: 'ground',
@@ -334,6 +342,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // ---- newspaper kiosk: octagonal green iron kiosk with a domed roof, a serving hatch, posters, headline boards
+  // 八角亭以统一中心生成亭体、服务窗和海报。
   D.crossmarket_kiosk = {
     desc: 'Newspaper kiosk (R 1.0): eight-sided bistro-green iron kiosk, glazed upper band, serving hatch toward +Z with a counter of papers, headline bill boards, a scalloped zinc dome with a finial + NEWS lettering in the frieze. Collider: the body.',
     params: {}, variants: 1, mount: 'ground',
@@ -397,6 +406,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // ---- produce stack: crates of produce stacked on a pallet / cobbles (cover), sacks
+  // 果蔬箱堆作为掩体，细节复用 crate/produce。
   D.crossmarket_crates = {
     desc: 'Market crate stack: 3–5 slatted crates of produce on a pallet, a sack or two (variant: kind mix). Collider.',
     params: { kind: 'veg | fruit | fish | flowers' }, variants: 3, mount: 'ground',
@@ -451,6 +461,7 @@ export function registerStreet(D, H, KIT) {
     },
   };
   // hessian sacks + a sack truck (collider)
+  // 麻袋与推车补简化碰撞，防止穿入视觉主体。
   D.crossmarket_sacks = {
     desc: 'Pile of hessian sacks (flour / potatoes / coffee) with a sack truck leaning on it. Collider.',
     params: {}, variants: 2, mount: 'ground',
@@ -558,6 +569,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // cast-iron manhole cover / gully grate set in the setts (flat, non-colliding)
+  // 井盖和排水栅贴地、不加碰撞，避免平面装饰阻碍移动。
   D.crossmarket_manhole = {
     desc: 'Cast-iron manhole cover (variant 0, round, with a lettered rim) or a gully grate (variant 1), flush in the paving. Non-colliding.',
     params: {}, variants: 2, mount: 'ground',
@@ -575,6 +587,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // fly-posted bills on a wall (wall at z = 0, facing +Z): a cluster of overlapping vintage posters, torn edges
+  // 海报朝 +Z 贴 z=0 墙面，重叠和撕边只作细节。
   D.crossmarket_bills = {
     desc: 'Fly-posted bills on a wall (local z = 0 = wall face, facing +Z): 3–5 overlapping vintage posters. Non-colliding.',
     params: { count: '(4)', seedN: 'mix' }, variants: 1, mount: 'wall',

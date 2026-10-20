@@ -31,6 +31,7 @@ export function register(D, H) {
   registerCivic(D, H, KIT);
   registerHall(D, H, KIT);
   registerTram(D, H, KIT);
+  // 街具注册返回的助手供后续模块调用，需先保存到共享 KIT。
   KIT.street = registerStreet(D, H, KIT);
   registerScenery(D, H, KIT);
   registerLanding(D, H, KIT);
@@ -38,14 +39,17 @@ export function register(D, H) {
 
 // ================================================================================================ placements
 // house(x0, x1, z0, z1, h, style, faces, roof): a crossmarket_house dressing the block x0…x1 × z0…z1 (wall top h)
+// 根据建筑范围求中心与长宽，立面屋顶跟随同一布局体。
 const house = (x0, x1, z0, z1, h, style, faces, roof, extra = {}) => ({ type: 'crossmarket_house', pos: [(x0 + x1) / 2, 0, (z0 + z1) / 2], w: x1 - x0, d: z1 - z0, h, style, faces, roof, ...extra });
 const FAS = { green: '#1f3d33', navy: '#23304a', wine: '#5b2230', black: '#202124', teal: '#1f4a4a', brown: '#4a3222' };
 const AWN = { red: ['#b8483e', '#efe6d2'], green: ['#3f7a5a', '#efe6d2'], blue: ['#3f5f86', '#efe6d2'], ochre: ['#cf9a3c', '#efe6d2'], plum: ['#7a3a4c', '#efe6d2'], teal: ['#3f8a85', '#efe6d2'] };
 
 // the tramway frame (layout.js): tw(u, v, y) → world pos; turned placements take rotY = RT (+ a local turn)
 const RT = -TH;
+// 电车 u/v 坐标通过布局 T 转世界位置，旋转同步采用 RT。
 const tw = (u, v, y = 0) => { const [x, z] = T(u, v); return [x, y, z]; };
 
+// 表内描述半场建筑，旋转镜像由地图装配层统一完成。
 const HOUSES = [
   // back corners either side of the spawn terrace (BL +X ochre render, BR −X brick)
   house(9, 24, -44, -36, 8.6, { style: 'render', trim: '#efe6d3', shut: '#4f7a5a', quoins: true, quoinC: '#e0d2b4' }, {
@@ -154,6 +158,7 @@ const STREET = [
   { type: 'crossmarket_barrow', pos: [4.8, 0.15, -24.6], rotY: -P / 2, kind: 'fruit' },
   { type: 'crossmarket_lamp', pos: [4.25, 0.15, -14.2] },
   { type: 'crossmarket_lamp', pos: [4.25, 0.15, -27.2] },
+  // 大厅摊位和中心地标各自遵守镜像规则，避免中心重复堆放。
   // ---- the hall floor (hall frame, turned): aisle stalls + the central island stall facing the tram
   // (Zone Control moves these three out of the centre zone: see ZONES below)
   { type: 'crossmarket_stall', pos: tw(-6.9, -4.9), rotY: RT, w: 2.6, d: 1.2, kind: 'cheese', notIn: 'zones' },
@@ -258,6 +263,7 @@ const ZONES = [
   // quay; bow line to a bollard there, stern line to the stage's corner pile
   { type: 'crossmarket_lighter', pos: tw(...LIGHTER), rotY: RT, L: 6.75, W: 3.1, deckY: -0.3, onlyIn: ZC,
     lines: [[3.535, -0.02, 0, ...inLighter(-21.25, 0.72, 0.4)], [-3.3, -0.12, -1.4, -3.42, 0.6, -2.15]] },
+  // 货垛逐级连到起重台；阶深兼顾旋转后的 1 米导航格，保留 Bot 跳跃连边。
   // its cargo as steps: bow landing (-0.3, the gangplank comes down onto it) → 0.6 → 1.5 → 2.35, then the stage (3.1).
   // Step depths are tuned to the bots' 1 m nav grid (turned 31° to it): every riser keeps 2-3 jump links
   { type: 'crossmarket_cargo', pos: tw(...LIGHTER), rotY: RT, W: 3.1, deckY: -0.3, tiers: [[-3.375, -1.175, 2.35], [-1.175, 0.175, 1.5], [0.175, 1.875, 0.6]], onlyIn: ZC },

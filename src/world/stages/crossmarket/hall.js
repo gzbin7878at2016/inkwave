@@ -17,6 +17,7 @@ export function registerHall(D, H, KIT) {
   const IRON = K.iron, IRDK = K.ironDk, GOLD = K.gold;
 
   // ---- cast-iron column: stone plinth, moulded base, slender shaft with bands, flared capital with an abacus
+  // 按顶高生成基座、柱身和柱头，供大厅不同标高重复使用。
   function column(B, x, z, top, o = {}) {
     B.box('paint', K.stone, 0.62, 0.46, 0.62, x, 0.23, z, { r: 0.03 });
     B.box('paint', K.stoneLt, 0.68, 0.06, 0.68, x, 0.49, z, { r: 0.015 });
@@ -29,6 +30,7 @@ export function registerHall(D, H, KIT) {
     if (o.col !== false) { colBox(B, x, 0, z, 0.62, 0.5, 0.62); colBox(B, x, 0.5, z, 0.36, top - 0.5, 0.36, true); }
   }
   // ---- lattice girder between two points at height y (depth dh), with a decorative arched spandrel under it
+  // 两个水平端点之间生成格构梁和拱形装饰，统一端点与高度基准。
   function girder(B, ax, az, bx, bz, y, dh, o = {}) {
     const L = Math.hypot(bx - ax, bz - az), ry = Math.atan2(-(bz - az), bx - ax);
     B.push((ax + bx) / 2, y, (az + bz) / 2, ry);
@@ -54,6 +56,7 @@ export function registerHall(D, H, KIT) {
   }
   // ---- glazed roof slope: iron rafters + purlins (open glazing lattice), a zinc apron at the eave, lead ridge flashing.
   // Local frame: slope rises from the eave (z = 0, y = 0) toward -Z; w along X, L up the slope, pitch a.
+  // 坡面从檐向 -Z 上升、宽沿 X，坐标栈负责转换到大厅各朝向。
   function glazedSlope(B, x, y, z, ry, w, L, a, o = {}) {
     B.push(x, y, z, ry);
     B.push(0, 0, 0, 0, a);                                  // tilt: local -Z climbs
@@ -66,6 +69,7 @@ export function registerHall(D, H, KIT) {
     B.pop(); B.pop();
   }
   // ---- clock face (faces +Z) with a gilt bezel, chapter ring, hands (glow face: lit from inside at dusk)
+  // 钟面朝 +Z，时分针按传入时间绘制，属于静态建筑表现。
   function clock(B, x, y, z, R, hh = 10, mm = 10) {
     B.cyl('metal', GOLD, R + 0.08, 0.08, x, y, z + 0.04, { rx: HP, seg: 28 });
     B.cyl(NS('glow'), '#f6eed8', R, 0.02, x, y, z + 0.09, { rx: HP, seg: 28, glow: 1.5 });
@@ -76,12 +80,14 @@ export function registerHall(D, H, KIT) {
     B.cyl(NS('metal'), GOLD, 0.05, 0.03, x, y, z + 0.13, { rx: HP, seg: 10 });
   }
   // pendant lamp hanging from y0 (glow globe)
+  // 由挂点向下生成吊灯，灯球单独分配发光材质。
   function pendant(B, x, y0, z, drop) {
     rod(B, NS('metal'), IRDK, P3(x, y0, z), P3(x, y0 - drop, z), 0.012, 4);
     B.lathe('metal', IRON, [[0, 0.02], [0.08, 0.0], [0.26, -0.14], [0.27, -0.17], [0.0, -0.17]], x, y0 - drop, z, { seg: 10 });
     B.sph(NS('glow'), K.lit, 0.12, x, y0 - drop - 0.22, z, { ws: 10, hs: 6, glow: 2.2 });
   }
 
+  // 主厅、侧廊、交汇和钟塔已半周对称，中心放置只生成一次。
   D.crossmarket_hall = {
     desc: 'The Market Hall (place once at the origin, mirror: false): 16 cast-iron columns (colliders), lattice girders with arched spandrels, lean-to glazed aisle roofs, a clerestoried glazed nave roof along Z, glazed gable ends with MARKET HALL signs over the Market Street entrances, the crossing lantern with four clock faces, an ogee copper cap + weathervane, pendant lamps, the overhead tram wire through the transept.',
     params: {}, variants: 1, mount: 'ground',
