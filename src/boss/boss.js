@@ -1,3 +1,8 @@
+// 【中文导读】HULLBREAKER 的玩法实体：保存血量、阶段、位置、招式、眩晕和小蟹状态，并连接模型与危险区。
+// 离线由本机模拟，联机只由房主驱动 BossBrain；其他客户端按房主快照和招式记录播放。
+// bt 是比赛中的 Boss 秒制时间轴；招式 t0 与危险区都以它为基准，不能混用浏览器绝对时间。
+// 命中查询、伤害汇总和视觉更新分开；小蟹与本体使用不同目标标记，防止伤害记错对象。
+// 房主迁移通过 adopt 接管当前显示状态，不重新生成一只满血 Boss。
 // HULLBREAKER — the boss entity. Owns the replicated state (pos, yaw, hp, phase, current move, stun, crablets …), the
 // model, the hazards and the damage the squad deals it. One client simulates it (offline: you; online: the host, like
 // the bots) through BossBrain; everyone else follows the host's 20 Hz snapshots on the same playback clock as remote
@@ -97,6 +102,7 @@ export class Boss {
   live() { return this.match.state === 'playing' && !this.dead; }
 
   // ---------------------------------------------------------------------------------------------- per frame
+  // 权威端推进脑、招式和伤害，跟随端读取网络状态；两条路径最后汇入一致的模型更新。
   update(dt) {
     if (this.match.state === 'init') { this.model.root.visible = false; return; }   // loading: the clock starts with the intro
     const bt0 = this.bt;
@@ -285,6 +291,7 @@ export class Boss {
 
   // A shot / blob / beam connected (target from segHit). Routing: ghosts never hurt; offline + host apply, guests send
   // the hit to the host (shooter-authoritative) and show the marker now.
+  // 统一接收武器命中，按目标和武器倍率处理；联网时保留所属方与房主之间的结算边界。
   hit(attacker, dmg, target, wid, point) {
     if (!attacker || attacker.remote || dmg <= 0 || this.dead) return;
     if (target && target.hp !== undefined && target.id !== undefined) { this._hitCrab(attacker, target, dmg); return; }
@@ -334,6 +341,7 @@ export class Boss {
   }
 
   // host / offline: the damage lands
+  // 权威扣血入口：弱点、统计和死亡转换要集中发生，避免各类弹道各算一遍。
   applyDamage(attacker, d, weak, point) {
     if (this.dead || this.invuln || !this.visible || this.match.state !== 'playing') return 0;
     d = Math.min(d, this.hp);
@@ -419,6 +427,7 @@ export class Boss {
 
   // ---------------------------------------------------------------------------------------------- netcode (see netmatch.js)
   // host → every tick: [bt, x, y, z, yaw, vx, vz, hp, phase, flags, move t0, anim, turn, flashN, weakN, killer, crabs, maxHp]
+  // 将可复制状态打包给网络层；full 与增量字段的约定需和 netmatch 的解码保持一致。
   pack(full) {
     let f = 0;
     if (this.stunned) f |= 1; if (this.dead) f |= 2; if (this.invuln) f |= 4; if (this.visible) f |= 8;
@@ -472,6 +481,7 @@ export class Boss {
   }
 
   // host migration: this client now runs the boss, from exactly what it was showing
+  // 接管房主职责时沿用当前血量、招式及时间状态，再启用本机模拟，避免迁移造成重置。
   adopt() {
     if (this.sim) return;
     this.sim = true;
@@ -483,6 +493,7 @@ export class Boss {
 
   warm() { return [this.model.root, this.hz.fx.warm()]; }
 
+  // 退出对局时撤下模型和危险区并清理事件绑定，避免下一局仍收到旧 Boss 的回调。
   dispose() {
     this.unsubs.forEach((u) => u());
     for (const c of this.crabs.values()) { c.model?.dispose?.(); c.model?.root?.removeFromParent(); }

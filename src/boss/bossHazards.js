@@ -1,3 +1,8 @@
+// 【中文导读】Boss 招式的几何判定与预警：同一招式记录配合 bt 算出圆环、冲撞、扫射和爆炸范围。
+// 记录中的 d 是预警/生效/恢复三段时长；t0 是起始 Boss 时间，所有端按相同时间轴还原形状。
+// 对玩家的伤害由该玩家所属客户端判定；地面涂墨只由房主执行并复制，不能在每端重复涂墨。
+// threat 为机器人提供未来危险评估，视觉预警与伤害应使用相同几何参数，避免看见安全却受伤。
+// HazardFX 复用对象池和按招式缓存的网格；同一招式的缓存不等于共享玩法所有权。
 // HULLBREAKER's attacks as geometry. Every hazard is a pure function of its move record { id, t0, s, d: [tele, act,
 // rec], p } and the boss clock, so every client draws the same rings, circles, lanes and beams at the same moment:
 //   · damage to a squidkid is applied by whoever owns it (victim-side, from what that screen shows — no "it hit me
@@ -36,6 +41,7 @@ const SAFE_PAD = 0.6;      // squidkids standing on a spawn pad (+ this) are out
 const REACH_N = 96;        // headings for the floor-clipped extent of rings / danger zones
 
 export function moveTimes(m) { const [tele, act, rec] = m.d; return { tele, act, rec, end: tele + act + rec }; }
+// 给定相对招式时间返回阶段；尚未开始或已结束返回 null，不能误当持续攻击。
 export function movePhaseAt(m, u) {
   const [tele, act, rec] = m.d;
   if (u < 0) return null;
@@ -77,6 +83,7 @@ export class BossHazards {
     this.fx = new HazardFX();
   }
 
+  // 登记招式记录，供表现、局部伤害和房主涂墨共同查询；不要按渲染帧重复添加。
   add(m) {
     if (this.moves.some((x) => x.t0 === m.t0)) return false;   // idempotent by t0 (net replays, host migration)
     this.moves.push(m);
@@ -116,6 +123,7 @@ export class BossHazards {
   }
 
   // ------------------------------------------------------------------------------------ victim-side damage
+  // 只判断本机拥有的玩家受击，跨时间区间检查可避免低帧时跳过短暂危险窗口。
   _hurtLocal(bt0, bt1, dt) {
     const boss = this.boss, mul = boss.dmgMul;
     for (const a of G.actors) {
@@ -230,6 +238,7 @@ export class BossHazards {
   }
 
   // ------------------------------------------------------------------------------------ host: paint the boss ink
+  // 房主在推进的 Boss 时间片上生成墨迹；其他客户端接收其涂墨事件，不独立补画。
   paint(bt0, bt1) {
     const P = G.paint; if (!P) return;
     const nav = this.boss.nav;
@@ -291,6 +300,7 @@ export class BossHazards {
   // ------------------------------------------------------------------------------------ bots: what's coming for (x, z)?
   // → { level 0..1, ax, az (unit escape direction), ringIn (s until a slam ring reaches here, or -1), cover (a beam / spray
   //   that cover beats), beam (the sweep: diving under your own ink beats it too), lane (a charge is coming down it) }
+  // 返回指定位置在预测窗口内的威胁，供机器人选路线与躲避；不在这里直接扣血。
   threat(x, y, z, horizon = 1.2) {
     const bt = this.boss.bt, out = this._thr || (this._thr = {});
     out.level = 0; out.ax = 0; out.az = 0; out.ringIn = -1; out.cover = false; out.lane = false; out.beam = false;
@@ -484,6 +494,7 @@ class HazardFX {
     });
   }
 
+  // 从同一招式状态绘制预警和生效特效，按池取用可见对象，避免每帧反复创建几何。
   draw(hz, bt, dt, live) {
     this.t += dt;
     for (const k in this.pools) this.pools[k].n = 0;

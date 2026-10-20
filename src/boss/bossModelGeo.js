@@ -1,3 +1,8 @@
+// 【中文导读】Boss 几何与骨架工厂：把大量可动硬件合并成少量按材质分类的蒙皮网格。
+// 硬部件通常权重为单骨 1，软组织混合双骨；减少 draw call 不代表丢掉独立运动能力。
+// 静置模型面向 +Z、脚底 y=0，+X 是 Boss 自身左侧；所有骨静置旋转为单位姿态。
+// Bucket 统一写 position/normal/uv、蒙皮索引权重及 aM，材质语义与 bossMats 一一对应。
+// frameQuat 把静置方向基映射到当前方向基；动画和建模必须共享这份坐标契约。
 // INKWAVE — HULLBREAKER geometry + rig.
 //
 // The whole boss is ONE skeleton and a handful of SkinnedMeshes (one per material): every rigid part (container
@@ -43,6 +48,7 @@ export function frameQuat(a0, s0, a1, s1, out) {
   return out.setFromRotationMatrix(_R1);
 }
 /** two-bone IK: joint K from root H toward target A with segment lengths l1, l2 bending toward `pole`. Returns reach 0…1+ */
+// 解析双骨 IK：根据根、目标、两段长度和弯曲极向量求关节与可达终点，写入复用输出对象。
 export function ik2(H, A, l1, l2, pole, outK, outA) {
   _d.subVectors(A, H); let dist = _d.length();
   const reach = dist / (l1 + l2);
@@ -63,6 +69,7 @@ const _p = new THREE.Vector3(), _n = new THREE.Vector3(), _nm = new THREE.Matrix
 export class Bucket {
   constructor(name) { this.name = name; this.P = []; this.N = []; this.UV = []; this.SI = []; this.SW = []; this.M = []; this.I = []; this.nv = 0; }
   /** g: BufferGeometry (model-ready or local); M: Matrix4 | null; skin: bone index | fn(p, i, t); mat: [cls, param, ao, extra] | fn(p, n, i, t, u, v) → MA */
+  // 把局部几何变换后写入当前材质桶，同时编码每个顶点的蒙皮和材质属性。
   add(g, M, skin, mat) {
     const pa = g.attributes.position, na = g.attributes.normal, ua = g.attributes.uv, tt = g.userData.t;
     if (!na) { g.computeVertexNormals(); }
@@ -315,6 +322,7 @@ export const HEAD = {
 export const BODY = { pivot: V3(0, 2.1, 0.7), belly: [V3(0, 1.37, 2.12), V3(0, 1.55, 1.35)] };
 
 // ------------------------------------------------------------------------------------------------ rig
+// 按父子顺序建立骨架与静置数据，零件和动画都依赖这些稳定骨名与枢轴。
 export function buildRig() {
   const bones = [], by = {}, rest = {};
   const add = (name, pos, parent) => {
@@ -372,6 +380,7 @@ export function buildRig() {
  * Builds every part into the material buckets. Returns { buckets, sockets, crackSites, tris }.
  * Buckets: steel (container + hard junk), cara (chitin), flesh (soft body), eye, junk (rubber/rope/plastic/kelp/flag).
  */
+// 按骨架生成主 Boss 的分桶几何；quality 调整几何细分，不改变招式碰撞规则。
 export function buildParts(rig, quality = 'high') {
   const q = QUALITY_K[quality] ?? 1;
   const S = (n, min = 3) => Math.max(min, Math.round(n * q));
@@ -837,6 +846,7 @@ export function buildParts(rig, quality = 'high') {
 
 // ------------------------------------------------------------------------------------------------ crablet
 /** Crablet minion (~0.6 m): container-lid shell, two claws, six legs, glowing eyes. One skinned mesh. */
+// 小蟹独立生成骨架和几何，使用相同属性契约，便于复用材质与动画工具。
 export function buildCrablet(quality = 'high') {
   const q = QUALITY_K[quality] ?? 1, S = (n, m = 3) => Math.max(m, Math.round(n * q));
   const bones = [], by = {}, rest = {};

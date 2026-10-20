@@ -1,3 +1,8 @@
+// 【中文导读】Boss 程序化材质：钢铁、甲壳、软组织、眼睛与杂物共用一组表现 uniform。
+// aM 顶点属性编码材质类别、参数、环境遮蔽和附加语义，必须与 bossModelGeo 的桶编码配套。
+// onBeforeCompile 在 three.js 材质中注入颜色、裂纹、发光与湿墨效果；uniform 变化不要求重建材质。
+// COMMON 等模板字符串是真正的 GLSL 源码，维护注释时不能破坏字符串边界或 shader include。
+// 文字模板使用 Canvas 生成贴图，字体就绪后的重绘属于表现更新，不影响 Boss 的血量和规则。
 // INKWAVE — HULLBREAKER materials.
 //
 // Five MeshPhysicalMaterials patched with onBeforeCompile, all reading the per-vertex aM = (class, param, ao, extra)
@@ -12,6 +17,7 @@
 //   junk  (double-sided) 0 tyre rubber · 1 rope · 2 plastic (param 0 buoy, 1 life ring) · 3 strap · 4 kelp · 5 flag · 6 lamp
 import * as THREE from 'three';
 
+// 每个 Boss 创建一组共享状态，所有对应材质读取同一引用，动画侧只需写一次。
 export function makeUniforms() {
   return {
     uTime: { value: 0 }, uInk: { value: new THREE.Color('#2f5bff') }, uWeak: { value: new THREE.Color('#ff8a14') },
@@ -68,6 +74,7 @@ const PRE = /* glsl */`
   float bAO = mix(1.0, bMassAO(vB) * mix(1.0, vM.z, 0.85), uAO);
   vec3 bRimC = vec3(0.0); float bRimP = 3.0;
 `;
+// 把顶点语义和共享 uniform 注入材质编译过程，保留原有光照与色彩输出链。
 function patch(mat, U, body, { extraFrag = '' } = {}) {
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
@@ -449,6 +456,7 @@ const JUNK = /* glsl */`
 ` + FLASH;
 
 // ------------------------------------------------------------------------------------------------ factory
+// 创建各材质桶使用的实例；类别编号必须与几何 aM 含义一致。
 export function makeBossMaterials(U) {
   const phys = (name, o) => { const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0, clearcoat: 0.01, clearcoatRoughness: 0.3, ...o }); m.name = name; return m; };
   const steel = patch(phys('steel', { side: THREE.DoubleSide, shadowSide: THREE.DoubleSide }), U, STEEL);
@@ -556,6 +564,7 @@ function drawStencils(cv) {
   for (let i = 0; i < 500; i++) { x.fillRect(10 + r() * 236, 120 + r() * 140, 1.5, 1.5); }
   x.restore();
 }
+// 生成标识贴图并处理字体加载后的更新；贴图释放由持有它的模型生命周期管理。
 export function makeStencilTexture() {
   const cv = typeof document !== 'undefined' ? document.createElement('canvas') : null;
   if (!cv) return { tex: null, ready: Promise.resolve() };
