@@ -1,6 +1,11 @@
+// 【中文导读】市场街具与货物：摊位、水果、灯、长椅、喷泉、路栏和报刊亭的程序化构建。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — street furniture + market kit: stalls, barrows, the fountain, gas lamps, bollards, benches,
 // iron railings, stone balustrades, the news kiosk, the advertising column, produce crates.
 
+// 把街具配方注入 D；小件装饰可合并且不必单独投影，真正阻路的物体需保留碰撞回传。
 export function registerStreet(D, H, KIT) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, GB, cx3, hash } = KIT;
   const blobGeo = (r, det, seed) => KIT.blob(det, seed);

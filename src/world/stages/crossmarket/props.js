@@ -1,3 +1,7 @@
+// 【中文导读】市场道具包总装与半场放置清单：连接建筑、大厅、电车、街具、远景和区域码头。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — stage prop pack + placements (owner: the crossmarket stage; see layout.js for the folder contract).
 //
 // register(D, H): add this stage's own prop builders to the PropKit definition table D (same contract as
@@ -20,6 +24,7 @@ import { registerLanding } from './landing.js';
 
 const P = Math.PI;
 
+// 按子模块注册 crossmarket_ 前缀的类型；PLACEMENTS 决定实际摆放，类型注册不等于生成实体。
 export function register(D, H) {
   const KIT = makeKit(D, H);
   registerBuildings(D, H, KIT);

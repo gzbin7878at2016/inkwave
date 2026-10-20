@@ -1,8 +1,13 @@
+// 【中文导读】中央市场大厅：铸铁框架、玻璃屋面、十字交汇与钟塔。模型自身满足半周旋转对称，中心只放一次。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — the Market Hall (centre landmark): a cast-iron-and-glass hall with open sides straddling the
 // crossroads. Nave along Z (Market Street runs in through the gable ends), lean-to aisles on ±X, the tramway along X
 // through the transept (the No. 3 tram stands under the crossing). A square clock lantern crowns the crossing.
 // Self-symmetric under the 180° mirror: placed once (mirror: false) at the origin.
 
+// 登记大厅配方；柱、屋架、侧廊等部件共享同一局部基准，不能把中心地标再镜像一份。
 export function registerHall(D, H, KIT) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, extrudeGeo, GB, cx3 } = KIT;
 

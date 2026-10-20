@@ -1,3 +1,7 @@
+// 【中文导读】区域模式的码头货船、阶梯货箱和吊装平台。带 onlyIn:zones 的放置才在区域模式出现。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — the goods landing on each tram pier (ZONE CONTROL ONLY: every placement of these types is tagged
 // `onlyIn: 'zones'`, see props.js + src/world/variants.js). The market lighter lies in the dock basin, laden to the
 // gunwales with a stepped stack of market stock that climbs to the timber hoist stage beside the tram pier; the stage
@@ -8,6 +12,7 @@
 //   crossmarket_hoist    the stage's structure: piles, bracing, joists, fascias, railings, the iron hand crane
 // (the stage's deck is a layout piece too: an inkable, real position). All three use world heights (place at y = 0).
 
+// 登记码头组件；船甲板/平台地面来自可涂的布局片，货箱台阶额外返回可行走碰撞体。
 export function registerLanding(D, H, KIT) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colT, rod, letters, textW, shade, GB, cx3, hash, sub } = KIT;
 

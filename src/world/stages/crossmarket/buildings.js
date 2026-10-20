@@ -1,6 +1,11 @@
+// 【中文导读】市场地图的住宅立面与交易所外观。建筑实体由 layout 方块提供，立面装饰不重复建碰撞。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — building dressings: town houses (crossmarket_house) and the Corn Exchange behind each spawn.
 import { FL } from './kit.js';
 
+// 将住宅构建器登记到 D；按 n/s/e/w 面描述铺立面与屋顶，朝向转换集中在局部坐标栈。
 export function registerBuildings(D, H, KIT) {
   const { PI, HP, hash } = KIT;
   const { facade, roof } = KIT;

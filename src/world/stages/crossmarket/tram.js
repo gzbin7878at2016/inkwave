@@ -1,6 +1,11 @@
+// 【中文导读】电车、接触网杆和站台雨棚。电车可涂的主体来自布局，本文件给它补车窗、车厢和装饰。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — the tramway: the No. 3 tram standing under the Market Hall crossing (dressing around the level's
 // tram blocks), catenary poles with bracket arms + street lamps, and the tram stop shelter on each flank platform.
 
+// 登记电车相关配方；沿车体的局部坐标与世界旋转分开，避免镜像半场后门窗朝向反转错误。
 export function registerTram(D, H, KIT) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, GB, cx3, latheGeo } = KIT;
   const GREEN = '#3f6b55', GREENDK = '#2c4d3d', CREAM = '#ece2c8', GOLD = K.gold, RED = '#9c3a32';

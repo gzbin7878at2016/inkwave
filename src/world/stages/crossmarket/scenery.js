@@ -1,7 +1,12 @@
+// 【中文导读】可玩边界外的港镇远景：简化外墙和屋顶提供环境轮廓，不提供碰撞也不投影。
+// D 是 PropKit 类型表，H/KIT 提供几何、材质、文字与坐标栈工具；这里不推进比赛规则。
+// 道具类型使用 crossmarket_ 命名空间，避免不同地图覆盖同名构建器。
+// 放置通常只写半场，由地图装配层旋转复制；mirror:false 的中心或自对称地标不可重复生成。
 // Crossroads Market — the town beyond the arena: the far quays across the harbour channels on either side, lined with
 // tall old houses, so the market square sits inside a harbour town rather than on a raft. Scenery only (outside the
 // bounds, unreachable): no colliders, no shadow casting, simplified facades.
 
+// 登记远岸街景类型；它们不可达，不能通过添加视觉建筑暗示玩家存在可行走路线。
 export function registerScenery(D, H, KIT) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, rod, shade, mixc, hash, GB, cx3, extrudeGeo } = KIT;
   const WALLS = ['#e2c48e', '#efe6d3', '#d8b9a2', '#a9bcc4', '#c98e6e', '#e9dcc0', '#b8765c', '#cfd6c9', '#e6cf9a', '#d6a58a'];
