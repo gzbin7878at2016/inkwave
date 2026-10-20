@@ -43,6 +43,7 @@ const HUB = new THREE.Vector3(0, 0, 0.058);
 const armR = (t) => 0.0235 - 0.0085 * t;              // half-width along the arm
 const FLAT = 0.3;                                      // thickness : width
 const lens = (c, s) => [Math.sign(c) * Math.abs(c) ** 0.85 * (c < 0 ? 0.62 : 1), s];
+// 静态模型分普通外壳与队伍墨色；世界实例还会叠加旋转模糊表现。
 function buildBoomerang() {
   const { Parts, C, M, at, screw, decal, placeXY, squidShape, hring, led, swirlShapes } = GEO_KIT;
   const P = new Parts(), I = new Parts();
@@ -100,6 +101,7 @@ registerSubModel(KIND, buildBoomerang);
 // world prop: outer (position) → tilt (bank) → spin (about +Y) → model (centred on the blade's middle, world scale),
 // plus a spin-blur disc on the tilt node that fades in with the spin rate
 let _proto = null;
+// 缓存世界模型原型及旋转表现资源，供各实例复用。
 function proto() {
   if (_proto) return _proto;
   const d = getSubDef(KIND);
@@ -125,6 +127,7 @@ const BLUR_FS = `
     al += uAlpha * 0.5 * smoothstep(0.86, 0.95, r) * smoothstep(1.0, 0.95, r);   // the tips' bright rim
     gl_FragColor = vec4(c, al);
   }`;
+// 按队伍装配实例，将需要独立更新的表现引用保存到 userData。
 function makeMesh(team) {
   const P = proto(), col = G.teamColors[team];
   const outer = new THREE.Group(), tilt = new THREE.Group(), spin = new THREE.Group(), model = new THREE.Group();
@@ -147,6 +150,7 @@ function makeMesh(team) {
 // ================================================================================================= the throw plan
 // Start at the throwing hand, flat along the aim (pitch clamped), stop ~range out or short of a wall, never skimming
 // the floor. Shared by the throw and the local player's aim guide.
+// 限制投掷俯仰并前移起点；预览与实际使用都基于同一规划函数。
 function plan(a, s, out) {
   const pitch = clamp(a.aimPitch, -0.5, 0.25), cp = Math.cos(pitch);
   out.dir.set(Math.sin(a.aimYaw) * cp, Math.sin(pitch), Math.cos(a.aimYaw) * cp);
@@ -155,6 +159,7 @@ function plan(a, s, out) {
   return planFrom(s, out);
 }
 // the rest of the plan from its start + direction (a ghost's comes from its owner's record)
+// 沿给定起点与方向查墙，终点留碰撞余量，并保证近地悬停高度。
 function planFrom(s, out) {
   const h = G.physics.raycast(out.start, out.dir, s.range + 0.4, _hit);
   out.wall = h.hit;
@@ -188,6 +193,7 @@ function use(subs, a, sub) {
 // Online, a remote player's boomerang is a ghost: out, hover, home and orbit play the same (its ink is its owner's to
 // send, its hits are dropped), but its owner decides how it ends: [3, gid, x, y, z] it caught a foe (armed there),
 // [1, gid, x, y, z, big] the burst, [2, gid] it fizzled
+// 复制飞行状态，按实际射程缩放飞出时间；ghost 表示远端表现副本。
 function spawn(subs, a, s, P, ghost, gid) {
   const mesh = makeMesh(a.team);
   mesh.position.copy(P.start);
@@ -221,6 +227,7 @@ function ghost(a, d) {
   else if (op === 2 && it.state !== 'fizzle') { it.state = 'fizzle'; it.t = 0; it.vel.multiplyScalar(0.25); setLoop(it, null); }
 }
 
+// 同名循环只更新参数，换音时先停止旧循环；超出距离不新建声音。
 function setLoop(it, name, vol, pitch) {
   if (it.loopName === name) { it.loop?.set({ volume: vol, pitch, pos: it.pos }); return; }
   it.loop?.stop(0.12); it.loop = null; it.loopName = name;
@@ -254,6 +261,7 @@ function tick(dt) {
 }
 
 // ---- outbound: eases from throw speed to a stop at the plan's end point; a foe in the way → armed
+// 按减速曲线飞向规划终点；拥有者判直击，撞墙终点补墨后进入悬停。
 function out(it, dt) {
   const P = it.plan, u = clamp(it.t / it.outT, 0, 1), s = P.len * (1 - (1 - u) * (1 - u));
   it.pos.copy(P.start).addScaledVector(P.dir, s);
@@ -273,6 +281,7 @@ function out(it, dt) {
 }
 
 // ---- hover: spin fast in place, shred what's close (ticks + device damage), ink the floor under it
+// 悬停时调整离地高度，周期伤害与涂地各自计时，时长结束后返程。
 function hover(it, dt) {
   const s = it.sub;
   it.spinW = lerp(it.spinW, 34, 1 - Math.exp(-8 * dt));
@@ -288,6 +297,7 @@ function hover(it, dt) {
 }
 
 // the rapid shredding ticks (hover / armed): foes whose body is within hoverRadius, with a clear line to it
+// 周期性检查敌人胶囊和视线并伤害装置；落墨频率独立于伤害频率。
 function shred(it, dt, paintK) {
   const s = it.sub;
   it.tickT -= dt;
@@ -328,6 +338,7 @@ function startBack(it) {
   if (nearCam(it.pos, 40)) G.audio?.play('boomerang_return', { pos: it.pos, volume: 0.8 });
   setLoop(it, 'boomerang_whirr', 0.6, 1.2);
 }
+// 平滑追踪投掷者胸部，接近后转环绕；长时间追不上时由拥有者决定爆裂。
 function back(it, dt) {
   const s = it.sub, o = it.owner;
   const tgt = chest(o, _v3); tgt.y += 0.2;
@@ -350,6 +361,7 @@ function back(it, dt) {
 }
 
 // ---- orbit: circles the thrower, grazing foes it touches, lightly inking a ring; then the small burst
+// 环绕跟随角色形态高度，每名敌人有擦碰冷却；远端等待拥有者的结束记录。
 function orbit(it, dt) {
   const s = it.sub, o = it.owner;
   it.orbitA += s.orbitSpin * dt;
@@ -377,6 +389,7 @@ function orbit(it, dt) {
 }
 
 // ---- a foe in its path: stop dead, whirr and blink in place, then a full Splat Bomb
+// 以两帧间线段检查直击，命中后停在接触点，并广播进入待爆状态。
 function contact(it) {
   const s = it.sub;
   for (const e of G.actors) {
@@ -392,6 +405,7 @@ function contact(it) {
   return false;
 }
 // caught a foe: stops dead, whirrs and blinks in place, then the full blast
+// 停止位移并重置引信、伤害和音效计时，广播带爆炸范围的预警事件。
 function arm(it, e) {
   const s = it.sub;
   {
@@ -402,6 +416,7 @@ function arm(it, e) {
     emit('sub:arm', { kind: KIND, pos: it.pos.clone(), team: it.team, radius: s.hitRadius });
   }
 }
+// 待爆时继续绞伤但不周期涂地，加快提示；最终大爆炸只由拥有者决定。
 function armed(it, dt) {
   const s = it.sub, k = clamp(it.t / s.hitFuse, 0, 1);
   it.spinW = lerp(it.spinW, 44, 1 - Math.exp(-6 * dt));
@@ -412,6 +427,7 @@ function armed(it, dt) {
 }
 
 // ---- the thrower was splatted: drop out of the air and pop (ink, no damage)
+// 投掷者被击倒后的无害坠落：触地或超时后少量涂墨并消失，不造成伤害。
 function fizzle(it, dt) {
   it.vel.y -= 20 * dt; it.vel.x *= 1 - 2 * dt; it.vel.z *= 1 - 2 * dt;
   it.pos.addScaledVector(it.vel, dt);
@@ -434,7 +450,9 @@ on('splatted', ({ victim }) => {
 });
 
 // ---- bursts
+// 普通寿命结束使用小爆裂参数；直击待爆使用另一组更大的参数。
 function burst(it) { const s = it.sub; blast(it, s.radius, s.damageMax, s.damageMin, s.paintRadius, false); }
+// 统一处理爆炸、遮挡伤害、涂墨和网络结束记录，避免状态分支各算一套。
 function blast(it, radius, dmgMax, dmgMin, paintR, big) {
   const c = it.pos.clone();
   if (!it.ghost) netRec(it.owner, KIND, [1, it.gid, r3(c.x), r3(c.y), r3(c.z), big ? 1 : 0]);
@@ -465,6 +483,7 @@ function blast(it, radius, dmgMax, dmgMin, paintR, big) {
 }
 
 // ---- a light ink streak on the floor under its flight (thinner on the way back)
+// 沿飞行路径向下采样并铺细墨线，返程可传更小半径。
 function streak(it, r) {
   it.trail += it.pos.distanceTo(it.prev);
   if (it.trail < 0.8) return;
@@ -474,6 +493,7 @@ function streak(it, r) {
 }
 
 // ================================================================================================= visuals
+// 只更新模型倾斜、自转、模糊与粒子表现，不在这里决定状态命中。
 function draw(it, dt) {
   const m = it.mesh, U = m.userData, col = color(it);
   m.position.copy(it.pos);
@@ -521,11 +541,13 @@ function draw(it, dt) {
 }
 
 // 移除实例网格并停止循环声音，避免换局后继续发声或保留活跃数量门禁。
+// 撤下实例并释放其独有表现资源，同时停止循环音。
 function dispose(it) {
   it.loop?.stop(0.1); it.loop = null;
   it.mesh.parent?.remove(it.mesh);
   it.mesh.userData.blur.material.dispose();
 }
+// 换局批量释放活动对象，清空预览和模块状态。
 function clear() {
   for (const it of items) dispose(it);
   items.length = 0;
@@ -536,6 +558,7 @@ function clear() {
 // While the local player holds the sub: a dashed line along the flat throw to where it will hover, a drop line to the
 // floor and a ring there the size of its shredding reach (grey when it can't be thrown).
 let guide = null;
+// 延迟创建投掷预览网格，重复使用而非按帧重建。
 function guideMesh() {
   if (guide) return guide;
   const group = new THREE.Group();
@@ -552,6 +575,7 @@ function guideMesh() {
   (G.scene).add(group);
   return guide;
 }
+// 按当前瞄准更新路线预览；实际投掷仍由 use 入口创建。
 function hold(runner, dt, inp, sub) {
   const a = runner.a;
   if (!a.isLocal || !a.alive || !G.scene) return;
@@ -574,6 +598,7 @@ function hold(runner, dt, inp, sub) {
   g.group.visible = true;
   g.stamp = G.time;
 }
+// 本帧未更新的旧预览及时隐藏，避免松手或切装后残留。
 function guideTick() { if (guide && guide.group.visible && guide.stamp < G.time - 1e-6) guide.group.visible = false; }
 
 // ================================================================================================= bots

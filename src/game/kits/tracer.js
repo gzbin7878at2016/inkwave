@@ -43,6 +43,7 @@ const hitR = (e) => e.hitR || PLAYER.radius;
 // a caged window onto a glowing team-ink core, a cream rear body with three swept team fins, and a knurled rubber
 // grip stub (the fist's handle) with a metal end cap.
 const YC = 0.02;
+// 构建尖头、墨芯窗口、尾翼与握柄，按普通材质和队伍色分组。
 function buildTracer() {
   const { Parts, C, M, latheZ, torus, at, profR, led, gripSleeve, chevrons, wrapZ } = GEO_KIT;
   const P = new Parts(), I = new Parts(), L = new Parts();
@@ -108,6 +109,7 @@ const RIB_FS = `
     #include <colorspace_fragment>
   }`;
 const RIB_CAP = 160;
+// 为单条尾迹创建有容量上限的动态带状网格和独立寿命材质。
 function makeRibbon(team, life) {
   const g = new THREE.BufferGeometry();
   const pos = new THREE.BufferAttribute(new Float32Array(RIB_CAP * 2 * 3), 3); pos.setUsage(THREE.DynamicDrawUsage);
@@ -123,6 +125,7 @@ function makeRibbon(team, life) {
   const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 2;
   return m;
 }
+// 根据未过期路径点更新尾迹顶点与透明度，保持尾迹随弹头结束自然消退。
 function drawRibbon(b) {
   const R = b.rib, P = b.pts, n = P.length;
   if (n < 2 || !G.camera) { R.geometry.setDrawRange(0, 0); return; }
@@ -146,6 +149,7 @@ function drawRibbon(b) {
 }
 
 // =============================================================================================== bolt head
+// 弹头实例带独立发光与高速光痕，朝向由运行中的飞行方向决定。
 function buildHead(team) {
   const d = getSubDef('tracer');
   const col = G.teamColors[team];
@@ -170,6 +174,7 @@ function credit(b, area) { if (!area) return; if (b.sp) b.owner.addTurfNoSpecial
 function sceneOf(subs) { return subs?.scene || G.scene; }
 
 // launch point (chest height, a little in front; never inside a wall) and direction (the crosshair line, lowered)
+// 从角色前方取出射点，贴墙时回退；瞄准太近或反向时使用原瞄准方向。
 function launch(a, sub, from, dir) {
   const sy = a.smoothY || 0;
   _v.set(a.pos.x, a.pos.y + sy + 1.0, a.pos.z);
@@ -184,6 +189,7 @@ function launch(a, sub, from, dir) {
   return dir.set(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp);
 }
 // the bounce rule: mirror off the surface; off a floor the vertical part of the rebound is scaled down (skims low)
+// 按法线镜面反射，地面反弹压低竖直分量，并保证不会重新射入斜面。
 function rebound(dir, n, sub) {
   dir.addScaledVector(n, -2 * dir.dot(n));
   if (n.y > 0.6) {
@@ -207,6 +213,7 @@ function use(subs, a, sub) {
 // Online, a remote player's bolt is a ghost: it flies and ricochets the same (its puddles are its owner's to send, its
 // hits are dropped), but it doesn't decide foe hits itself — its owner's end record does: [1, gid, x, y, z, foe nid]
 // (-1 a hit on no one here, -2 blocked by a device)
+// 保存剩余射程、反弹数及命中过集合，同时创建弹头与尾迹。
 function spawn(subs, a, sub, from, dir, ghost, gid) {
   const scene = sceneOf(subs);
   const b = {
@@ -222,6 +229,7 @@ function spawn(subs, a, sub, from, dir, ghost, gid) {
   poseHead(b);
   return b;
 }
+// 按 gid 去重创建；结束记录携带终点和受击角色编号，由拥有者决定直击。
 function ghost(a, d) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
@@ -239,6 +247,7 @@ function ghost(a, d) {
   if (e) directHit(b, e); else end(b, d[5] === -2 ? 'blocked' : 'hit');
 }
 
+// 重合采样点刷新时间，超过容量移除最旧点，避免尾迹数组无限增长。
 function addPoint(b) {
   const P = b.pts;
   if (P.length && P[P.length - 1].p.distanceToSquared(b.pos) < 1e-6) { P[P.length - 1].b = clock; return; }
@@ -274,6 +283,7 @@ function tick(dt) {
 }
 
 // move the bolt `dist` along its path: bounces, direct hits, devices, range
+// 本帧可连续处理多次反弹；逐段扣射程，设置循环上限防止贴面反弹不收敛。
 function advance(b, dist) {
   const s = b.sub;
   let remain = dist, guard = 0;
@@ -282,6 +292,7 @@ function advance(b, dist) {
     const w = G.physics.raycast(b.pos, b.dir, step, _hit, true);   // grates: straight through
     const seg = w.hit ? w.dist : step;
     _end.copy(b.pos).addScaledVector(b.dir, seg);
+    // 在到墙之前的线段上找最早敌人；远端副本不自行裁决直击目标。
     // a foe on this stretch (the earliest one)
     let best = null, bt = 2;
     if (!b.ghost) for (const e of G.actors) {   // (a ghost's foe hit is its owner's call)
@@ -332,6 +343,7 @@ function bounce(b, w) {
   emit('weapon:impact', { pos: w.point.clone(), normal: n.clone(), team: b.team, kind: 'shot', radius: s.puddleRadius * 0.5 });
   if (b.bounces > s.maxBounces) end(b, 'bounces');
 }
+// 直击造成伤害并标记，立即加入命中集合，避免残留尾迹再次伤害同一角色。
 function directHit(b, e) {
   const s = b.sub, col = G.teamColors[b.team];
   b.hitSet.add(e); b.direct = e;
@@ -345,6 +357,7 @@ function directHit(b, e) {
   emit('tracer:hit', { actor: b.owner, victim: e, direct: true, pos: b.pos.clone() });
   end(b, 'hit');
 }
+// 仅第一次结束有效；隐藏弹头并按原因发送网络记录，尾迹留到寿命结束。
 function end(b, why) {
   if (b.state !== 'fly') return;
   if (!b.ghost && (why === 'hit' || why === 'blocked')) netRec(b.owner, 'tracer', [1, b.gid, r3(b.pos.x), r3(b.pos.y), r3(b.pos.z), why === 'hit' ? b.direct?.nid ?? -1 : -2]);
@@ -353,6 +366,7 @@ function end(b, why) {
   if (why !== 'hit' && nearCam(b.pos, 30)) { G.fx?.burst(b.pos, _v.copy(b.dir).negate(), G.teamColors[b.team], { count: 5, speed: 2.2, size: 0.05 }); }
 }
 // a foe touching the lingering trail: damaged + marked (short), once per bolt
+// 检查尚有效的每段尾迹，每名敌人对同一发射体最多结算一次命中和追踪。
 function trailTouch(b) {
   const P = b.pts, n = P.length, s = b.sub;
   if (n < 2) return;
@@ -380,6 +394,7 @@ function trailTouch(b) {
     }
   }
 }
+// 将弹头 Z 轴对齐飞行方向，再叠加轴向旋转和闪光。
 function poseHead(b) {
   const H = b.head;
   if (!H.visible) return;
@@ -390,6 +405,7 @@ function poseHead(b) {
   const S = H.userData.streak; S.material.opacity = 0.45 + 0.2 * Math.sin(b.age * 70);
   if (nearCam(b.pos, 30) && Math.random() < 0.7) G.fx?.glint?.(b.pos, G.teamColors[b.team], 0.18);
 }
+// 撤下弹头和尾迹，释放实例几何、材质并停止循环声音。
 function dispose(b) {
   b.scene.remove(b.head, b.rib);
   b.head.userData.glow.dispose(); b.head.userData.streak.geometry.dispose(); b.head.userData.streak.material.dispose();
@@ -397,6 +413,7 @@ function dispose(b) {
   if (b.hum) { b.hum.stop(0.1); b.hum = null; }
 }
 // 清弹体、尾迹和导引表现，避免换局后保留标记碰撞或旧路径。
+// 换局清空弹体及预览，释放当前模块持有的活动实例。
 function clearAll() {
   for (const b of bolts) dispose(b);
   bolts.length = 0;
@@ -406,6 +423,7 @@ function clearAll() {
 // =============================================================================================== aim guide (local player)
 let guide = null, guideSeen = false;
 const _gFrom = new V3(), _gDir = new V3();
+// 延迟创建射线、反弹段和落点预览，随后复用。
 function guideMeshes() {
   if (guide && guide.line.parent) return guide;
   if (!guide) {
@@ -423,8 +441,11 @@ function guideMeshes() {
   G.scene?.add(guide.line, guide.exit, guide.ring);
   return guide;
 }
+// 统一隐藏所有预览元素，避免只隐藏主线却留下反弹或落点。
 function hideGuide() { if (guide) guide.line.visible = guide.exit.visible = guide.ring.visible = false; }
+// 未被本帧瞄准入口使用时自动隐藏预览。
 function guideTick() { if (!guideSeen) hideGuide(); guideSeen = false; }
+// 预览共用实际发射与反射规则，显示首段、首个反弹段及碰撞落点。
 function hold(runner, dt, inp, sub) {
   const a = runner.a;
   if (!a || a !== G.local || !a.alive) return;
