@@ -1,3 +1,8 @@
+// 【中文导读】Tidewater 海滨广场的半场布局与弧形/折线构件工具。
+// 广场、海滨步道和柱廊共用 SQ/PROM/TERR/COLO 等几何基准，道具层也引用这些值保持位置一致。
+// arcBand/arcSub 将弧形区域拆为旋转盒体；chain 系列按折线段生成走道与不同高度的分段。
+// 只描述半场，由地图层旋转180度构成另一队；布局高度、roof和可涂面同时影响通行与战术。
+// 模型展示与碰撞使用相同基础数据，修改步道曲线时需核对边界、台阶和出生点接续。
 // Tidewater Plaza — stage layout (src/world/stages/tidewater/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
@@ -45,6 +50,7 @@ export const STAIR = { x: [17.5, 20], foot: -7.0, top: -15.5, landing: -18.5 };
 // turned segments along a circle arc (centre c, radii rIn…rOut, angles a0…a1 degrees, n pieces) meeting at their inner
 // corners (like mapkit ARC); fill: lower slabs over the outer wedges between them (and at the chain ends if `ends`)
 // (y0 may be [even, odd]: the bottoms alternate to sit on arcSub's alternating tops)
+// 以角度区间和内外半径生成弧带分块，n 决定分段数；端部封口和跳过段由参数控制。
 export function arcBand(c, rIn, rOut, a0, a1, n, y0, y1, o, fill = null, ends = false, skip = null) {
   const out = [], da = (a1 - a0) / n, t = rOut - rIn, rm = (rIn + rOut) / 2, h = Math.abs(da) * D2R / 2, len = 2 * rIn * Math.tan(h);
   for (let i = 0; i < n; i++) {
@@ -73,6 +79,7 @@ export function arcSub(c, rIn, rOut, a0, a1, n, y0, tops, o) {
 // sections along a polyline P (travelling so the outward side is on the right: n = (dz, -dx)), spanning offsets
 // dIn…dOut from the line (negative = inward); pieces meet at their inner corners, fill covers the outer wedges
 function unit(a, b) { const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz); return [dx / l, dz / l, l]; }
+// 计算折线路径各段的局部方向及内侧连接，供走道、栏边等多个构建器复用。
 export function chainSections(P, dIn) {
   const S = [];
   for (let i = 0; i < P.length - 1; i++) { const [dx, dz, l] = unit(P[i], P[i + 1]); S.push({ p: P[i], d: [dx, dz], n: [dz, -dx], l, h: Math.atan2(dx, dz) / D2R }); }

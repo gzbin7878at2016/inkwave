@@ -1,3 +1,7 @@
+// 【中文导读】Tidewater 的喷泉徽章、钟塔马赛克、冰淇淋招牌和旧广告。
+// 只绘制传入的地图图集区域 R；布局通过朝外法线与图案 id 选择贴在哪个可见面上。
+// Canvas 像素尺寸与关卡米制尺寸分别处理；顶面 u=-x、v=+z，墙面按从外侧观察的左右方向。
+// 带种子的纹理细节用于可复现外观，透明边缘和风化参数避免图案像悬浮贴纸。
 // Tidewater Plaza — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
 // drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
@@ -92,6 +96,7 @@ function sign(g, x, y, w, h, fill, stroke, lw, r = 10) {
 }
 function fitFont(g, str, maxW, px, fontFn) { let p = px; g.font = fontFn(p); while (g.measureText(str).width > maxW && p > 8) { p -= 2; g.font = fontFn(p); } return p; }
 
+// 绘制各图案并返回图集矩形/世界放置参数，保持与布局中 mural id 的对应关系。
 export function drawMurals(g, R, kit) {
   const { font, fontB } = kit;
   const X = R.x, Y = R.y;

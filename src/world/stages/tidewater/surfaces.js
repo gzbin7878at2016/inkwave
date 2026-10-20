@@ -1,3 +1,7 @@
+// 【中文导读】Tidewater 的人字砖、磨石地坪和抹灰墙面配方，使用28至30号保留槽。
+// SURF 是布局选择的图案编号，SURFACES 描述 texlib 生成颜色、高度和粗糙细节的方法。
+// 这些表面使用 paint mask，让方块色参与同一纹理的不同配色；不能将 alpha 一概理解成透明度。
+// onWall/onTop 控制墙和顶面替代关系，图案细节与实际几何台阶分开。
 // Tidewater Plaza — stage surface materials (texlib layers), on this stage's three reserved PATTERN slots.
 //
 // SURF maps your names to the slot ids; use them in layout.js as `pattern: SURF.<name>`. SURFACES lists what each
@@ -137,6 +141,7 @@ const stucco = {
   s.cav = (1.0 - 0.32 * groove) * (1.0 - 0.15 * crack);`,
 };
 
+// 按统一纹理库契约声明材质，不在这里改变墨水判分、碰撞或地图镜像。
 export const SURFACES = [
   { slot: 28, name: 'herringbone', mat: herringbone, onWall: 30 },   // slab edges / sea wall: ashlar
   { slot: 29, name: 'terrazzo', mat: terrazzo, onWall: 30 },
