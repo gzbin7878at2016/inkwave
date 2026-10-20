@@ -1,3 +1,7 @@
+// 【中文导读】确定性片段录制器：向页面注入REEL规格，逐段按帧推进并输出JPEG序列与元数据。
+// canvas模式由页面返回图像，shot模式截页面；fps控制采样帧间隔，不代表实际运行性能。
+// segs按order组织，begin/frame由可信页面脚本提供；修改规格时需保持初始化与每段状态隔离。
+// 只生成帧和JSON，最终MP4由reel-compose.py合成；浏览器路径和平台选项按当前实现核对。
 // Deterministic video reel recorder.
 // usage: node tools/reel.mjs <url> <spec.js> <outDir> [--w 1600 --h 900 --fps 30 --only 0,3,5 --mode canvas|shot
 //                                                     --until "js" --preWait ms]

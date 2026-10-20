@@ -1,3 +1,7 @@
+// 【中文导读】真实对局动画录制规格：从出生点依次运行、射击、潜行、跳跃与投弹。
+// 由reel.mjs注入已启动的游戏页面，读取window.__inkwave及debug接口，不能直接在Node中执行。
+// 动作脚本按模拟时间调度，切片段时需释放之前按住的输入，防止跨片段粘键。
+// 这是展示用受控输入，不改变正式玩家控制器、武器参数或机器人策略。
 // In-match footage for the animation reel (page-side spec for tools/reel.mjs, screenshot mode, real HUD).
 // A scripted run from the spawn deck: run + fire, drop off the deck, swim through fresh ink, dolphin-jump out,
 // strafe-fire, aim and throw a splat bomb, then run on with the camera swinging round. Bots play normally.

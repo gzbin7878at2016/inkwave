@@ -1,3 +1,7 @@
+// 【中文导读】角色实验台动画录制规格，使用window.lab安排镜头、角色姿态与展示片段。
+// 页面必须先完成实验台初始化，再由reel工具逐帧调用规格；不是独立可启动的比赛脚本。
+// 固定dt与相机用于可复现画面，展示数据和正式对局数据分离；参数变化应局限当前页面。
+// 帧输出交给外部录制器，片段顺序及字幕由REEL元数据提供。
 // Animation-system reel, recorded in tools/character-lab.html (page-side spec for tools/reel.mjs).
 (() => {
   const lab = window.lab;

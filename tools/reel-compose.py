@@ -1,3 +1,7 @@
+# 【中文导读】把录制目录中的分段帧和seg元数据合成为带标题、字幕、转场的MP4。
+# 按order排序，固定画布布局；fps由参数控制，不能把录制采样时间与合成输出帧率混淆。
+# 依赖Pillow、NumPy、OpenCV及选择的编码后端；当前字体与部分编码路径带macOS假设。
+# 输出路径由命令指定，合成不重新运行游戏；错误的输入帧或顺序应回查录制元数据。
 # Compose reel captures (tools/reel.mjs) into a captioned MP4.
 # usage: python3 tools/reel-compose.py <out.mp4> <captureDir> [<captureDir> ...] [--title T] [--subtitle S] [--backend ffmpeg|avf]
 # Each capture dir holds seg-<order>.json + frames; segments play in `order`. Adds a title card, a caption per segment
@@ -86,6 +90,7 @@ if a.backend == 'avf': vw = cv2.VideoWriter(a.out, cv2.CAP_AVFOUNDATION, fourcc,
 else: vw = cv2.VideoWriter(a.out, cv2.CAP_FFMPEG, fourcc, FPS, (W, H))
 assert vw.isOpened(), 'video writer failed to open'
 count = 0
+# 统一把合成后的帧交给选定编码后端，保持颜色通道与尺寸符合该后端输入格式。
 def emit(fr):
     global count
     vw.write(np.clip(fr, 0, 255).astype(np.uint8)); count += 1
