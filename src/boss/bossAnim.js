@@ -66,8 +66,10 @@ const bump = (t, a, b) => (t <= a || t >= b ? 0 : Math.sin(((t - a) / (b - a)) *
 const mix = (a, b, t) => a + (b - a) * t;
 const dampK = (l, dt) => 1 - Math.exp(-l * dt);
 function hashN(i) { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+// 确定性平滑噪声让待机动作连续，避免逐帧随机值造成抖动。
 function vnoise(t, seed = 0) { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return mix(hashN(i + seed * 57), hashN(i + 1 + seed * 57), u) * 2 - 1; }
 
+// 弹簧保存位移和速度，较大 dt 拆成两步以改善数值稳定性；只影响视觉附加动作。
 class Spring {
   constructor(k, d) { this.k = k; this.d = d; this.x = 0; this.v = 0; }
   step(dt, target = 0) { const n = dt > 1 / 90 ? 2 : 1, h = dt / n; for (let i = 0; i < n; i++) { this.v += (this.k * (target - this.x) - this.d * this.v) * h; this.x += this.v * h; } return this.x; }
@@ -85,12 +87,14 @@ const _ray = { hit: false, dist: 0, point: new THREE.Vector3(), normal: new THRE
 // ------------------------------------------------------------------------------------------------ clips
 // Each clip phase: fn(P, t, D, A) adds onto the locomotion pose P (t = seconds into the phase, D = its length).
 // Shared key poses are functions so tele → act → rec stay continuous.
+// 共享抬钳姿势用于预警和重复砸击，保持阶段间动作连续。
 const slamUp = (P, u) => {           // crusher raised high over its shoulder (clear of the face), pincer braced, body leaning back
   P[C.lx] += 0.55 * u; P[C.ly] += 2.45 * u; P[C.lz] += -1.25 * u; P[C.lp] += 1.65 * u; P[C.lyw] += 0.35 * u; P[C.lr] += -0.5 * u; P[C.lo] = mix(P[C.lo], 0.95, u);
   P[C.bp] += -0.13 * u; P[C.br] += 0.07 * u; P[C.by] += 0.2 * u; P[C.bz] += -0.28 * u; P[C.byaw] += -0.14 * u; P[C.hp] += -0.08 * u;
   P[C.rx] += -0.5 * u; P[C.ry] += 0.35 * u; P[C.rz] += -0.4 * u; P[C.ro] = mix(P[C.ro], 0.55, u); P[C.rp] += 0.3 * u;
   P[C.splay] += 0.06 * u; P[C.ep] += 0.12 * u; P[C.ey] += 0.1 * u;
 };
+// 共享落钳姿势同时带动身体重心、另一只钳和腿部张开。
 const slamHit = (P, f) => {          // claw on the ground in front, body lunged into it
   P[C.lx] += -0.95 * f; P[C.ly] += -0.62 * f; P[C.lz] += 0.35 * f; P[C.lp] += -0.32 * f; P[C.lyw] += -0.42 * f; P[C.lo] = mix(P[C.lo], 0.08, f);
   P[C.bp] += 0.15 * f; P[C.br] += -0.06 * f; P[C.by] += -0.3 * f; P[C.bz] += 0.32 * f; P[C.byaw] += 0.16 * f; P[C.hp] += 0.1 * f;
@@ -98,8 +102,10 @@ const slamHit = (P, f) => {          // claw on the ground in front, body lunged
 };
 // fallbacks mirror bossBrain's current tuning when st.params isn't passed
 const RINGS = [[0], [0], [0, 0.9], [0, 0.6]], BARRELS = [0, 3, 4, 6];
+// 优先使用招式携带的波环节奏，缺失时按当前战斗阶段选后备时间表。
 function slamRings(A) { const r = A.params?.rings; return Array.isArray(r) && r.length ? r : RINGS[Math.min(3, A.phaseNow)]; }
 const CLIPS = {
+  // 砸击：预警抬钳，生效按波环时间逐次落钳，恢复时拖回并甩掉墨迹。
   slam: {
     tele(P, t, D, A) {
       // raise (ease out), hold with a tremble while the claw glows, then the downswing lands exactly at act start
@@ -137,6 +143,7 @@ const CLIPS = {
       P[C.glowL] = 0;
     },
   },
+  // 桶弹齐射：蓄力抖舱盖，生效按实际投射时间交替开盖，随后收回投掷姿势。
   barrage: {
     tele(P, t, D, A) {
       const u = eo(k01(t, 0, 0.5));
@@ -189,6 +196,7 @@ const CLIPS = {
       if (A.cross(0.02)) A.kickShell(0.4);
     },
   },
+  // 扫射：低身张钳支撑并给喷口蓄光，生效追踪瞄准，恢复时喷口泄压。
   sweep: {
     tele(P, t, D, A) {
       const u = eo(k01(t, 0, 0.6));
@@ -221,6 +229,7 @@ const CLIPS = {
       P[C.steam] = Math.max(P[C.steam], bump(t, 0, 0.8));
     },
   },
+  // 冲刺：预警压低身体并刨地，生效锁住前钳，恢复用滑步和弹簧表现急停。
   charge: {
     tele(P, t, D, A) {
       const u = eo(k01(t, 0, 0.5));
@@ -249,6 +258,7 @@ const CLIPS = {
       if (A.cross(0.02)) A.kickShell(0.6);
     },
   },
+  // 召唤小蟹：后部蹲下蓄力，打开后舱并摇晃，恢复时合盖回到行走姿势。
   crablets: {
     tele(P, t, D, A) {
       const u = eo(k01(t, 0, 0.5));
@@ -277,6 +287,7 @@ const CLIPS = {
       P[C.bp] += -0.28 * u; P[C.by] += -0.12 * u; P[C.ly] += 0.35 * u; P[C.ry] += 0.35 * u;
     },
   },
+  // 狂暴：先反向扭身蓄力，实际根节点已旋转时不再重复加整身旋转。
   frenzy: {
     tele(P, t, D, A) {
       const u = eo(k01(t, 0, 0.7));
@@ -309,6 +320,7 @@ const CLIPS = {
 };
 
 // stun: optional wall bonk, collapse nose-up with the belly out, legs splayed, eyes spiralling
+// 眩晕分撞墙和普通晕眩；前者先有冲击，随后倒下、露腹并垂下双钳。
 function stunClip(P, t, D, A) {
   const bonk = A.stunKind === 'bonk';
   const t0 = bonk ? 0.34 : 0.12;
@@ -332,6 +344,7 @@ function stunClip(P, t, D, A) {
   P[C.sipP] += 0.3 * c;
 }
 // after a stun: shake it off and stand
+// 眩晕结束后从低姿态起身并摇头，作为返回常规动作的短过渡。
 function recoverClip(P, t, D, A) {
   const u = 1 - eo(k01(t, 0, 0.7));
   P[C.by] += -0.7 * u; P[C.bp] += -0.15 * u; P[C.splay] += 0.3 * u; P[C.slide] = Math.max(P[C.slide], u);
@@ -339,6 +352,7 @@ function recoverClip(P, t, D, A) {
   P[C.hy] += Math.sin(t * 24) * 0.2 * sh; P[C.br] += Math.sin(t * 24 + 0.8) * 0.06 * sh; P[C.sr] += Math.sin(t * 24 + 1.6) * 0.06 * sh;
   P[C.ey] += Math.sin(t * 24 + 0.4) * 0.25 * sh; P[C.belly] = Math.max(P[C.belly], u);
 }
+// 按传入时长缩放吼叫关键时刻，事件与身体、钳子抬起动作同步。
 function roarClip(P, t, D, A) {
   const k = D > 0 ? D / 1.9 : 1, T = t / k;
   const an = eo(k01(T, 0, 0.32)) * (1 - k01(T, 0.32, 0.5));
@@ -353,6 +367,7 @@ function roarClip(P, t, D, A) {
   P[C.splay] += 0.1 * up; P[C.steam] = Math.max(P[C.steam], bump(T, 0.4, 1.6));
   P[C.cannon] = Math.max(P[C.cannon], 0.2 * up);
 }
+// 开场按出土、腾空、落地、抖身和吼叫分段；落地时请求重设脚部锚点。
 function introClip(P, t, D, A) {
   const k = D > 0 ? D / 3.4 : 1, T = t / k;
   // underground → burst → airborne → land → shake off → roar → settle
@@ -382,6 +397,7 @@ function introClip(P, t, D, A) {
   P[C.sy] += Math.sin(t * 57) * 0.02 * up;
   P[C.slide] = Math.max(P[C.slide], T < 1.2 ? 1 : 0);
 }
+// 死亡用独立时间轴控制踉跄、倒地、外壳喷墨和末尾抽动，不再执行招式片段。
 function deadClip(P, t, D, A) {
   // stagger → collapse → shell bursts (ink geyser) → X eyes, twitching legs
   const st = bump(t, 0, 0.9);
@@ -407,6 +423,7 @@ function deadClip(P, t, D, A) {
 
 // ------------------------------------------------------------------------------------------------ animator
 export class BossAnimator {
+  // 预分配姿势数组、骨骼索引、弹簧和脚部状态；每帧复用，减少动画分配。
   constructor(model, rig) {
     this.m = model; this.rig = rig; this.by = rig.by; this.rest = rig.rest;
     this.legBones = LEGS.map((L, i) => ['c', 'm', 't', 'd'].map((x) => rig.by['leg' + i + x]));
@@ -434,6 +451,7 @@ export class BossAnimator {
     for (const l of this.legs) l.off %= 1;
     // aim
     this.aimYaw = 0; this.aimPitch = 0; this.aimW = 0; this.hasAim = false; this.aimLocal = new THREE.Vector3();
+    // 记录腿和手臂的静止方向及平面法线，供逆向运动学解转为相对骨骼旋转。
     // leg rest frames
     this.legRest = LEGS.map((L) => {
       const n = new THREE.Vector3().crossVectors(new THREE.Vector3().subVectors(L.ankle, L.cox), legPole(L.out, new THREE.Vector3())).normalize();
@@ -453,13 +471,20 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- hooks used by clips
+  // 检查两帧之间是否跨过事件时刻，避免低帧漏掉音效或一帧内重复触发。
   cross(t) { return this.prevT < t && this.curT >= t; }
+  // 把冲击委托模型的锚点事件接口，由外部决定音效、震屏等效果。
   impact(socket, s) { this.m._emitImpact(socket, s); }
+  // 片段只发送视觉事件，不创建玩法投射物，也不直接造成伤害。
   event(name, socket, data) { this.m._emitEvent(name, socket, data); }
+  // 给壳体和门板弹簧注入速度冲量，表现冲击后的惯性摆动。
   kickShell(a) { this.sp.shY.v += -1.6 * a; this.sp.shP.v += (Math.sin(this.time * 13.1) > 0 ? 1 : -1) * 1.1 * a; this.sp.shR.v += (Math.sin(this.time * 7.7) > 0 ? 1 : -1) * 1.3 * a; this.sp.door.v += 2.5 * a; }
+  // 受伤反应以弹簧叠加到当前动作，不直接中断正在播放的招式。
   flinch(a) { this.sp.flP.v += -3.6 * a; this.sp.flR.v += (Math.sin(this.time * 91.7) > 0 ? 1 : -1) * 1.6 * a; this.sp.flE.v += 6 * a; this.sp.shY.v += -0.8 * a; }
+  // hurt 直接触发受击弹簧；其他名字登记为使用本地时钟的单次动作。
   trigger(name) { if (name === 'hurt') this.flinch(0.8); else { this.oneShot = name; this.oneT = 0; } }
   // sweep aim → body twist + head yaw + nozzle yaw/pitch
+  // 将瞄准偏转分摊到身体、头和喷口，各部分限幅，避免单个关节扭转过大。
   aimBlend(P, w) {
     if (!this.hasAim) return;
     const y = this.aimYaw, p = this.aimPitch;
@@ -471,7 +496,9 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- main
+  // 依次选择片段、混合姿势、叠加弹簧、求步态、写骨骼和模拟附属链；不能随意交换顺序。
   update(dt, st) {
+    // 动画 dt 限幅只保护表现数值稳定，不负责推进 Boss 玩法时间。
     dt = Math.min(dt, 1 / 15);
     this.time += dt;
     const m = this.m, root = m.root;
@@ -482,6 +509,7 @@ export class BossAnimator {
     this.rootPos.setFromMatrixPosition(RW);
     _v1.set(0, 0, 1).applyQuaternion(this.rootQ); const yaw = Math.atan2(_v1.x, _v1.z);
     if (this.first) { this.rootPrev.copy(this.rootPos); this.yawPrev = yaw; }
+    // 从模型实际根位移推导步态速度，过滤传送及快照突变，避免瞬移被当作高速步行。
     // measured root motion (what the sim actually did) drives the gait
     _v2.subVectors(this.rootPos, this.rootPrev).divideScalar(Math.max(dt, 1e-4)); _v2.y = 0;
     if (_v2.lengthSq() > 30 * 30) _v2.set(0, 0, 0);            // teleport / snapshot snap
@@ -490,6 +518,7 @@ export class BossAnimator {
     this.yawRate = mix(this.yawRate, Math.abs(dy) > 1.5 ? 0 : dy / Math.max(dt, 1e-4), dampK(12, dt));
     this.rootPrev.copy(this.rootPos); this.yawPrev = yaw;
 
+    // 先把世界目标变换到模型空间，再平滑瞄准角度，保证身体旋转时方向计算一致。
     // aim (model space) for the cannon / eyes
     this.hasAim = !!st.aim && !st.dead;
     if (this.hasAim) {
@@ -511,6 +540,7 @@ export class BossAnimator {
     this.prevPhase = phase;
     this.autoRoarT += dt;
 
+    // 动作优先级：死亡、开场、眩晕、吼叫、招式、恢复、行走；优先级高者接管当前片段。
     // ---------- 1. clip selection
     let key, fn = null, t = 0, D = 0, own = false;
     if (st.dead) { this.deadT = this.key === 'dead' ? this.deadT + dt : 0; key = 'dead'; fn = deadClip; t = this.deadT; D = 6; }
@@ -525,12 +555,14 @@ export class BossAnimator {
       this.lastMove = st.move;
     } else if (this.recoverT < 1.0) { key = 'recover'; fn = recoverClip; t = this.recoverT; D = 1.0; }
     else key = 'loco';
+    // 记录眩晕来源，区分撞墙与普通晕眩；退出眩晕时开启恢复动作。
     // stun bookkeeping
     if (st.stunned && !this.wasStunned) this.stunKind = this.lastMoveKey === 'charge:act' && (!this.params || this.params.wall !== 0) ? 'bonk' : 'daze';
     if (!st.stunned && this.wasStunned && !st.dead) this.recoverT = 0;
     this.wasStunned = !!st.stunned; this.recoverT += dt;
     if (key !== 'stun' && key !== 'loco') this.lastMoveKey = key;
     if (key !== this.key) {
+      // 切换时保留屏幕上的姿势作为起点；生效、眩晕和死亡使用更短混合以保留冲击感。
       // cross-fade from whatever was on screen
       this.Px.set(this.P); this.xf = 0;
       this.xfDur = key === 'intro' ? 0.0001 : key === 'dead' ? 0.12 : key === 'stun' ? 0.08 : key.endsWith(':act') ? 0.07 : 0.2;
@@ -541,6 +573,7 @@ export class BossAnimator {
     if (this.oneShot && (key !== this.oneShot || this.clipT > D + 0.05)) { if (key !== this.oneShot || this.clipT > D) this.oneShot = null; }
     this.curT = t;
 
+    // 先生成行走基础姿势，再叠加当前片段，最后与切换前姿势平滑混合。
     // ---------- 2. locomotion base + clip + cross-fade
     const Pb = this.Pb; this._loco(Pb, dt, st);
     const P = this.P;
@@ -553,6 +586,7 @@ export class BossAnimator {
     // ---------- 3. additive springs
     const S = this.sp;
     S.shP.step(dt); S.shR.step(dt); S.shY.step(dt); S.flP.step(dt); S.flR.step(dt); S.flE.step(dt);
+    // 局部加速度驱动壳体滞后与门板摆动，表现沉重外壳的惯性。
     // shell lags the body's acceleration (heavy container)
     _v3.copy(this.vel).applyQuaternion(this.rootQi);
     const ax = (_v3.x - (this._lvx || 0)) / Math.max(dt, 1e-3), az = (_v3.z - (this._lvz || 0)) / Math.max(dt, 1e-3); this._lvx = _v3.x; this._lvz = _v3.z;
@@ -575,6 +609,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- locomotion base pose
+  // 每帧清零基础通道，再叠加呼吸、步态起伏、转向倾斜与待机小动作。
   _loco(P, dt, st) {
     P.fill(0);
     const t = this.time;
@@ -610,6 +645,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- body transform (model space)
+  // 由姿势通道计算身体模型空间变换，后续脚步与骨骼求解共用。
   _bodyTransform(P) {
     _e.set(P[C.bp], P[C.byaw], -P[C.br], 'YXZ');
     this.bodyQ.setFromEuler(_e);
@@ -617,6 +653,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- gait
+  // 脚步向下射线找地面；模型预览没有物理系统时使用后备高度。
   _groundY(x, z, fallback) {
     const ph = this.m.physics;
     if (!ph || !ph.raycast) return fallback;
@@ -624,6 +661,7 @@ export class BossAnimator {
     const r = ph.raycast(_v6, DOWN, 5, _ray);
     return r && r.hit ? r.point.y : fallback;
   }
+  // 计算每只脚的世界空间理想落点，可按预测时长补根节点位移与转向。
   _home(l, P, out, tAhead = 0) {
     // home = rest foot rotated with the body's yaw, splayed; world space (optionally predicted tAhead seconds)
     const sw = [1, 0.75, 0.55][l.i % 3], sp = 1 + P[C.splay] * sw, yaw = P[C.byaw] + this.yawRate * tAhead;
@@ -634,6 +672,7 @@ export class BossAnimator {
     if (tAhead) { _v5.copy(this.vel).multiplyScalar(tAhead); out.add(_v5); }
     return out;
   }
+  // 支撑脚锚定世界位置，摆动脚按三足交替节奏移向预测落点；冲刺改用更快步态。
   _gait(dt, P, st) {
     const RW = this.m.root.matrixWorld, gy = this.rootPos.y;
     const v = Math.hypot(this.vel.x, this.vel.z), yr = Math.abs(this.yawRate);
@@ -642,6 +681,7 @@ export class BossAnimator {
     // homes + errors
     let maxErr = 0;
     for (const l of this.legs) { this._home(l, P, l.home); l.home.y = gy; if (!l.swing) { l.err = Math.hypot(l.foot.x - l.home.x, l.foot.z - l.home.z); maxErr = Math.max(maxErr, l.err); } }
+    // 首次或开场落地时直接重置所有脚，避免沿用无效的世界空间锚点。
     if (this.first || this.resetFeet) { for (const l of this.legs) { l.foot.copy(l.home); l.swing = false; } this.first = false; this.resetFeet = false; maxErr = 0; }
     const slide = P[C.slide];
     if (slide > 0.001) for (const l of this.legs) if (!l.swing) { l.foot.lerp(l.home, cl(slide * dt * 8)); }
@@ -673,6 +713,7 @@ export class BossAnimator {
         } else {
           l.s = s;
           this._home(l, P, l.to, Tst * 0.5 + (1 - s) * duty / f);
+          // 限制预测落点伸出距离并采样地面，抬脚轨迹在两点之间增加弧线高度。
           // don't overreach
           _v4.subVectors(l.to, l.home); const dl = _v4.length(), mx = 1.25 + (gallop ? 0.8 : 0); if (dl > mx) l.to.copy(l.home).addScaledVector(_v4, mx / dl);
           l.to.y = this._groundY(l.to.x, l.to.z, gy);
@@ -681,6 +722,7 @@ export class BossAnimator {
           l.foot.y = mix(l.from.y, l.to.y, e) + Math.sin(s * PI) * arc * (1 - 0.3 * Math.pow(s, 3));
         }
       }
+      // 快速转身或状态突变后限制支撑脚拖离距离，防止腿被无限拉长。
       // skitter fallback: a planted foot never gets left more than ~2.3 m behind (frenzy spin, snaps)
       if (!l.swing) { _v4.subVectors(l.foot, l.home); _v4.y = 0; const d = _v4.length(), mx = 2.6; if (d > mx) { l.foot.x = l.home.x + _v4.x * mx / d; l.foot.z = l.home.z + _v4.z * mx / d; } }
     }
@@ -696,6 +738,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- apply pose to bones
+  // 把混合通道写入骨骼；脚目标先由世界转模型空间，再求腿和双钳的逆向运动学。
   _apply(dt, P, st) {
     const by = this.by, R = this.rest;
     const bQ = this.bodyQ, bP = this.bodyPos;
@@ -727,6 +770,7 @@ export class BossAnimator {
         _v4.set(L.foot.x * 0.55, L.foot.y + 1.3, (L.foot.z - BODY.pivot.z) * 0.7 + BODY.pivot.z).sub(BODY.pivot).applyQuaternion(bQ).add(bP);
         _F.lerp(_v4, curl);
       }
+      // 髋节先向脚目标转动且限角，剩余腿段再解膝、踝，避免关节方向跳变。
       // coxa yaw toward the foot (about the body's up axis), clamped
       _out.subVectors(_F, _H); _out.addScaledVector(bodyUp, -_out.dot(bodyUp)); if (_out.lengthSq() < 1e-6) _out.copy(L.out); _out.normalize();
       _v1.copy(L.out).applyQuaternion(bQ); _v1.addScaledVector(bodyUp, -_v1.dot(bodyUp)).normalize();
@@ -735,6 +779,7 @@ export class BossAnimator {
       _q1.setFromAxisAngle(bodyUp, ang).multiply(bQ);               // coxa model quat
       LB[0].quaternion.copy(bQ).invert().multiply(_q1);
       _X.copy(LR.coxOff).applyQuaternion(_q1).add(_H);                 // coxa end
+      // 两段 IK 限制可达范围，目标过远时连脚一起修正，保持各腿段长度。
       // ankle + knee
       _out.subVectors(_F, _X); _out.y = 0; if (_out.lengthSq() < 1e-6) _out.copy(L.out); _out.normalize();
       ankleFor(_F, _out, L.ld, _A);
@@ -751,6 +796,7 @@ export class BossAnimator {
       LB[3].quaternion.copy(_q3).invert().multiply(_q4);
     }
 
+    // 腕部目标在身体空间叠加偏移，先限制离地高度，再解上臂和前臂。
     // ---- claws (2-bone IK to a body-space wrist target, explicit claw orientation)
     for (let a = 0; a < 2; a++) {
       const A = ARMS[a], AR = this.armRest[a], AB = this.armBones[a];
@@ -780,6 +826,7 @@ export class BossAnimator {
       AB[3].quaternion.setFromAxisAngle(AR.side, -open);
     }
 
+    // 眼柄按头部加速度加入弹簧晃动，叠加注视、外张和下垂以表现重量及状态。
     // ---- eyes on stalks: look + spread + droop, jiggle springs from head acceleration
     const S = this.sp;
     const hW = this.headW; hW[2].copy(hW[1]); hW[1].copy(hW[0]); by.head.getWorldPosition(hW[0]);
@@ -808,6 +855,7 @@ export class BossAnimator {
     _e.set(P[C.sipP] * 0.5, P[C.sipY] * 0.5, 0, 'YXZ'); by.siphon.quaternion.setFromEuler(_e);
     _e.set(P[C.sipP] * 0.5, P[C.sipY] * 0.5, 0, 'YXZ'); by.nozzle.quaternion.setFromEuler(_e);
     by.nozzle.scale.setScalar(1 + 0.12 * P[C.cannon] + 0.04 * Math.sin(this.time * 40) * P[C.cannon]);
+    // 舱盖轴来自容器局部坐标变换；左右舱盖镜像开合，后盖绕横轴打开。
     // hatches: A hinges on +x edge (lifts with −angle about the container z), B mirrored, C on its rear edge
     const cz = _v1.set(0, 0, 1).applyQuaternion(this.contRot), cx = _v2.set(1, 0, 0).applyQuaternion(this.contRot), cy = _v3.set(0, 1, 0).applyQuaternion(this.contRot);
     by.hatchA.quaternion.setFromAxisAngle(cz, -1.95 * Math.max(0, P[C.hA]));
@@ -821,6 +869,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- verlet chains
+  // 为附属链分配当前及上一帧粒子位置、静止段长和骨骼映射。
   _initChain(ch) {
     const n = ch.pts.length;
     const P = new Float32Array(n * 3), Q = new Float32Array(n * 3), L = new Float32Array(n);
@@ -828,6 +877,7 @@ export class BossAnimator {
     const parentRest = this.rest[ch.parent];
     return { ch, n, P, Q, L, bones: ch.bones.map((b) => this.by[b]), parent: this.by[ch.parent], restLocal: ch.pts.map((p) => p.clone().sub(parentRest)), restDir: ch.pts.slice(1).map((p, i) => p.clone().sub(ch.pts[i]).normalize()), init: false };
   }
+  // 附属链按固定 1/60 秒运行，每帧最多补四步，避免卡顿后大量追帧。
   _chains(dt, st) {
     this.acc = Math.min(this.acc + dt, 4 / 60);
     const h = 1 / 60;
@@ -854,6 +904,7 @@ export class BossAnimator {
           const x = P[j], y = P[j + 1], z = P[j + 2];
           let fx = 0, fz = 0;
           if (ch.flag) { const g = 0.5 + 0.5 * Math.sin(t * 1.7 + i) * Math.sin(t * 0.63); fx = (0.6 + g) * 0.00035 * (0.6 + Math.sin(t * 9.1 + i * 1.7) * 0.4); fz = Math.sin(t * 5.3 + i * 2.1) * 0.00018; }
+          // Verlet 位移加阻尼和重力，并限制单步速度，防止根节点突变把附属物甩飞。
           // verlet with a speed cap (≈ 6 m/s) so a violent body snap can't fling the junk over the roof
           let vx = (x - Q[j]) * damp, vy = (y - Q[j + 1]) * damp, vz = (z - Q[j + 2]) * damp;
           const vl = Math.sqrt(vx * vx + vy * vy + vz * vz); if (vl > 0.1) { const k = 0.1 / vl; vx *= k; vy *= k; vz *= k; }
@@ -861,6 +912,7 @@ export class BossAnimator {
           Q[j] = x; Q[j + 1] = y; Q[j + 2] = z;
           if (stiff > 0) { _v1.copy(c.restLocal[i]).applyMatrix4(pm); P[j] += (_v1.x - P[j]) * stiff; P[j + 1] += (_v1.y - P[j + 1]) * stiff; P[j + 2] += (_v1.z - P[j + 2]) * stiff; }
         }
+        // 每步迭代三轮段长约束，再应用平面和地面限制，保持链条形状稳定。
         for (let it = 0; it < 3; it++) {
           for (let i = 1; i < n; i++) {
             const a = (i - 1) * 3, b = i * 3;
@@ -875,6 +927,7 @@ export class BossAnimator {
           for (let i = 1; i < n; i++) { const j = i * 3; if (P[j + 1] < gy) P[j + 1] = gy; }
         }
       }
+      // 粒子方向决定骨骼世界旋转，再转回父骨骼局部空间。
       // bones follow the particles
       c.parent.matrixWorld.decompose(_v1, _q1, _v2);        // parent world quat
       for (let i = 0; i < c.bones.length; i++) {
