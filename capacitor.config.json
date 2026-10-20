@@ -1,0 +1,7 @@
+{
+  "appId": "com.demoink.inkwave",
+  "appName": "INKWAVE",
+  "webDir": "dist-mobile",
+  "server": { "hostname": "localhost", "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}

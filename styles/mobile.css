@@ -1,0 +1,39 @@
+/* 手机安全区和触控控件；桌面入口不加载此表。 */
+.iw-mobile body { touch-action: none; overscroll-behavior: none; }
+/* 控件使用 CSS 像素，保留刘海/手势安全区；DOM 只拦截自身区域。 */
+.iw-mobile [hidden] { display: none !important; }
+.iw-mobile { --touch-size: 1; }
+.iw-mobile button { -webkit-tap-highlight-color: transparent; }
+#mobile-controls { position: fixed; inset: 0; z-index: 32; pointer-events: none; user-select: none; touch-action: none; }
+#mobile-controls [data-touch] { pointer-events: auto; touch-action: none; }
+#mobile-controls button, #mobile-panel button, #mobile-dialog button, #mobile-dialog select {
+  color: #fff; background: #211f36dd; border: 2px solid #ffffff8c; border-radius: 14px;
+  font: 600 14px system-ui; min-width: 48px; min-height: 48px; padding: 5px 10px;
+}
+#mobile-controls button.is-held { background: #e05b15ee; border-color: white; }
+.mobile-look { position: absolute; inset: 0 0 0 44%; }
+.mobile-stick { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); left: max(24px, env(safe-area-inset-left));
+  width: 132px; height: 132px; border: 2px solid #ffffff70; border-radius: 50%; background: #211f3655; }
+.mobile-stick span { position: absolute; width: 56px; height: 56px; top: 36px; left: 36px; border-radius: 50%; background: #ffffff77; pointer-events: none; }
+.mobile-stick small { position: absolute; bottom: 5px; width: 100%; text-align: center; color: #fff; pointer-events: none; }
+.mobile-actions { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom));
+  display: grid; grid-template-columns: repeat(2, calc(64px * var(--touch-size))); gap: 10px; }
+.mobile-actions button { height: calc(52px * var(--touch-size)); }
+.mobile-actions [data-touch="fire"] { background: #ca4518bb !important; }
+.mobile-top { position: absolute; top: max(62px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); display: flex; gap: 8px; }
+.mobile-jumps { position: absolute; left: 20%; right: 23%; bottom: 12px; display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; }
+.mobile-jumps button { min-width: 54px; font-size: 12px !important; }
+.map-open .mobile-stick, .map-open .mobile-actions { visibility: hidden; }
+#mobile-panel { position: fixed; z-index: 42; right: max(8px, env(safe-area-inset-right)); top: max(4px, env(safe-area-inset-top)); display: flex; gap: 6px; align-items: center; }
+#mobile-panel button { min-height: 44px; font-size: 12px; }
+#mobile-panel span { position: fixed; left: max(8px, env(safe-area-inset-left)); top: max(4px, env(safe-area-inset-top)); color: #fff; background: #0009; font: 11px monospace; pointer-events: none; }
+#mobile-dialog { position: fixed; z-index: 80; inset: 8% max(10%, env(safe-area-inset-right)) 8% max(10%, env(safe-area-inset-left));
+  padding: 20px; background: #161326f5; color: white; border: 2px solid white; border-radius: 18px; font: 16px system-ui; overflow-y: auto; touch-action: pan-y; }
+#mobile-dialog p { margin: 0 0 14px; }
+#mobile-dialog label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
+#mobile-dialog input { min-height: 36px; width: 50%; }
+/* 缩小屏幕时菜单本身允许滚动，输入框保留系统输入法。 */
+.iw-mobile .iw-screen { overflow-y: auto; touch-action: pan-y; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+@media (orientation: portrait) {
+  #mobile-controls::after { content: '请横屏游玩'; position: absolute; inset: 40% 15%; text-align: center; color: white; background: #211f36ee; font: 24px system-ui; }
+}

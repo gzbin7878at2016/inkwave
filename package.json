@@ -21,7 +21,10 @@
     "build": "python3 tools/build-dist.py",
     "release": "./tools/release-pages.sh",
     "deploy-relay": "cd server && wrangler deploy",
-    "relay": "cd server && wrangler dev --ip 0.0.0.0 --port 8787"
+    "relay": "cd server && wrangler dev --ip 0.0.0.0 --port 8787",
+    "build:mobile": "node tools/build-mobile.mjs",
+    "check:mobile": "node tools/check-mobile.mjs",
+    "sync:android": "npm run build:mobile && cap sync android"
   },
   "keywords": [
     "game",
@@ -44,11 +47,17 @@
     "url": "https://github.com/jaydendavisnc/inkwave/issues"
   },
   "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/network": "8.0.1",
     "three": "^0.186.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.5.3",
     "@electron/packager": "^20.3.0",
     "electron": "^44.4.5",
+    "esbuild": "0.28.2",
     "puppeteer-core": "^25.12.0",
     "wrangler": "^4.141.0"
   }

@@ -21,6 +21,7 @@ function collect(directory) {
 
 try {
   for (const directory of roots) collect(join(root, directory));
+  files.push(join(root, 'mobile-entry.js'));
   // 用参数数组调用当前 Node，路径中的空格不会被 shell 再次解释；首个失败即返回非零。
   for (const file of files) {
     const result = spawnSync(process.execPath, ['--check', file], { stdio: 'inherit' });

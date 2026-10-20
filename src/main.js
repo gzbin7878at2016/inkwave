@@ -93,7 +93,9 @@ class Game {
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
     // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
-    this.settings = G.settings = loadJSON('inkwave.settings', DEFAULT_SETTINGS);
+    // 手机首启保守档：减少填充、阴影与后处理开销；以后尊重玩家保存的设置。
+    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', shadows: false, bloom: false, fpsCap: 30, showFps: true } : DEFAULT_SETTINGS;
+    this.settings = G.settings = loadJSON('inkwave.settings', defaults);
     setLang(this.settings.lang || 'en');   // before any menu renders (src/i18n/strings.js)
     document.title = t('INKWAVE — Turf Riot');
     // desktop app: the window's fullscreen state is owned by the native shell; mirror it into settings for the menu
@@ -1159,7 +1161,7 @@ class Game {
     if (cap && ts !== undefined && this._lastTs !== undefined && ts - this._lastTs < 1000 / cap - 2) return;
     this._lastTs = ts;
     this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());
-    if (this.frozen || this._building) return;
+    if (this.frozen || this._building || this.mobileSuspended) return;
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
@@ -1219,6 +1221,7 @@ class Game {
     G.renderer.info.reset();
     G.time += dt;
     this.input.pollPad();
+    this.mobile?.update(dt);
     this._padMenus();
     G.net?.update?.(dt);
     const m = this.match;

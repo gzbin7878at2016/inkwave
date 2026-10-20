@@ -115,6 +115,7 @@ export class Input {
   // 【请求指针锁定】须在用户手势内调用;优先 unadjustedMovement(原始增量,不受系统加速),
   // 平台拒绝时回退到普通请求。非手势调用会抛异常,已 try/catch 静默。
   requestLock() {
+    if (this.touch && this.lastDevice !== 'kbm') return; // 触屏不依赖 Android 不支持的指针锁定。
     if (this.locked) return;
     try {
       const p = this.canvas.requestPointerLock({ unadjustedMovement: true });
@@ -126,8 +127,8 @@ export class Input {
   exitLock() { if (document.pointerLockElement) document.exitPointerLock(); }
 
   // 【查询】down = 当前是否按住(持续态);wasPressed = 本帧是否刚按下(边沿态,一帧有效)。
-  down(code) { return this.keys.has(code); }
-  wasPressed(code) { return this.pressed.has(code); }
+  down(code) { return this.keys.has(code) || !!this.touch?.down(code); }
+  wasPressed(code) { return this.pressed.has(code) || !!this.touch?.wasPressed(code); }
 
   // 【手柄采样】每帧调用一次:优先选 standard mapping 的手柄,其次任意已连接手柄;
   // 比较前后帧按钮态得出 padPressed("刚按下"),并在有输入时把 lastDevice 切到 'pad'。
@@ -199,6 +200,7 @@ export class Input {
   // Call once at the very end of each frame.
   // 【收尾】每帧末尾必须调用一次:清空"本帧刚按下"集合与鼠标增量,让边沿态只存活一帧。
   endFrame() {
+    this.touch?.endFrame();
     this.pressed.clear();
     this.mouse.dx = 0; this.mouse.dy = 0;
     this.mouse.leftPressed = false; this.mouse.rightPressed = false;

@@ -93,7 +93,11 @@ export class PlayerController {
     const inv = s.invertY ? -1 : 1;
     const friction = as ? lerp(1, 0.58, as.closeness * as.strength) : 1;
     let lookActive = false;
-    const mdx = inp.mouse.dx, mdy = inp.mouse.dy;
+    // 触屏按 CSS 像素累计转视，不乘 dt；映射到原有鼠标通道，复用地图/大招瞄准分支。
+    const touch = inp.touch;
+    const touchGain = (s.touchSensitivity ?? 1) * 2;
+    const mdx = inp.mouse.dx + (touch?.enabled ? touch.look.x * touchGain : 0);
+    const mdy = inp.mouse.dy + (touch?.enabled ? touch.look.y * touchGain : 0);
     // Vortex Strike targeting: the mouse / right stick drives a cursor over the (opened) stage map, fire launches
     // 【Vortex Strike 光标分支】该大招的 aiming 阶段完全接管输入:鼠标/右摇杆/方向键移动地图
     // 上的打击光标,扳机按下沿确认发射;此分支内清空一切常规意图并提前 return。
@@ -107,7 +111,7 @@ export class PlayerController {
       if (inp.down('KeyW')) cy -= 260 * dt; if (inp.down('KeyS')) cy += 260 * dt; if (inp.down('KeyA')) cx -= 260 * dt; if (inp.down('KeyD')) cx += 260 * dt;
       G.specials.aimMove(a, cx, cy, mm);
       // launch on a fresh press (a trigger still held from shooting when the special started doesn't count)
-      const pull = inp.mouse.left || inp.padValue(7) > 0.3;
+      const pull = inp.mouse.left || touch?.action('fire') || inp.padValue(7) > 0.3;
       if (spx.t < 0.05) this._strikePull = pull;
       if (pull && !this._strikePull) G.specials.aimConfirm(a);
       this._strikePull = pull;
@@ -146,6 +150,7 @@ export class PlayerController {
     // 【移动·相机相对】收集 WASD/方向键/左摇杆 → (mx,mz),长度归一(斜向不加速),
     // 再按 yaw 旋转到世界空间写入 it.move:forward=(sy,0,cy),right=(-cy,0,sy)。
     let mx = 0, mz = 0;
+    if (touch?.enabled) { mx += touch.move.x; mz -= touch.move.y; }
     if (inp.down('KeyW') || inp.down('ArrowUp')) mz += 1;
     if (inp.down('KeyS') || inp.down('ArrowDown')) mz -= 1;
     if (inp.down('KeyA') || inp.down('ArrowLeft')) mx -= 1;
@@ -170,7 +175,7 @@ export class PlayerController {
 
     it.jump = inp.down('Space') || inp.padButton(0);
     it.squid = inp.down('ShiftLeft') || inp.down('ShiftRight') || inp.padValue(6) > 0.3;
-    it.fire = inp.mouse.left || inp.padValue(7) > 0.3;
+    it.fire = inp.mouse.left || !!touch?.action('fire') || inp.padValue(7) > 0.3;
     it.sub = inp.mouse.right || inp.down('KeyE') || inp.padButton(5);
     it.special = inp.down('KeyF') || inp.down('KeyQ') || inp.padButton(3) || inp.padButton(11);
     this.mapHeld = inp.down('Tab') || inp.down('KeyM') || inp.padButton(8);
