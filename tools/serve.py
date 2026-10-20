@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# 【运行说明】这是浏览器/局域网静态服务，默认8490端口；Electron的 npm start 不会启动此服务。
+# Windows按本机Python命令使用 py -3 或 python；相对资源从配置的根目录提供，避免在tools目录误启动。
+# 服务会监听局域网可达地址；no-cache要求重新验证模块，不等于禁止所有浏览器缓存。
 """INKWAVE dev/LAN server: static files from the repo root on 0.0.0.0 (reachable from other machines on the network).
 
 【中文导读】浏览器形态(非 Electron)的启动方式:python3 tools/serve.py → 打开 http://localhost:8490。
@@ -20,6 +23,7 @@ port = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 8490
 root = sys.argv[sys.argv.index('--dir') + 1] if '--dir' in sys.argv else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# 维护资源MIME和缓存头，尤其JS模块必须返回可被浏览器接受的脚本类型。
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
@@ -36,6 +40,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+# IPv6套接字尽量打开双栈，让localhost及IPv4局域网地址均可访问。
 class Server(http.server.ThreadingHTTPServer):
     address_family = socket.AF_INET6
     daemon_threads = True
@@ -56,6 +61,7 @@ class Server(http.server.ThreadingHTTPServer):
         super().server_bind()
 
 
+# 枚举用于启动提示的局域网地址；探测失败不应阻断本地静态服务。
 def lan_ips():
     ips = set()
     try:
