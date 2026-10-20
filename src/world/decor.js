@@ -28,6 +28,7 @@ float dNoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
 
 // ---------------------------------------------------------------------------------------------- shared helpers
 // Paint a geometry with a flat vertex colour (for merging into one vertex-coloured mesh).
+// 将统一色写为每顶点颜色，并补缺省 UV，使不同来源几何能够合并。
 function tint(g, color, k = 1) {
   const c = new THREE.Color(color).multiplyScalar(k);
   const n = g.attributes.position.count, a = new Float32Array(n * 3);
@@ -38,15 +39,18 @@ function tint(g, color, k = 1) {
 }
 const at = (g, x, y, z, rx = 0, ry = 0, rz = 0, s = 1) => g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')), new THREE.Vector3(s, s, s)));
 const lathe = (prof, seg = 16) => new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), seg);
+// 沿控制点样条生成装饰管件，细分数随控制点数量调整。
 function tube(pts, r, radial = 6) {
   const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)));
   return new THREE.TubeGeometry(curve, Math.max(4, pts.length * 4), r, radial, false);
 }
+// 转为非索引几何并统一属性集合，再按材质合并，避免不兼容属性导致合并失败。
 function merge(list) {
   const clean = list.map((g) => { const x = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(x.attributes)) if (!['position', 'normal', 'color', 'uv'].includes(k)) x.deleteAttribute(k); return x; });
   return mergeGeometries(clean, false);
 }
 // Original squid emblem (white on transparent) — mantle with fins, round head, four tentacles, eye holes.
+// 生成透明底鱿鱼徽记，圆环和眼洞用擦除合成，作为出生台及队旗贴图。
 function emblemCanvas(size = 256, ring = true) {
   const cv = document.createElement('canvas'); cv.width = cv.height = size;
   const x = cv.getContext('2d'), c = size / 2, s = size / 256;
@@ -72,6 +76,7 @@ function emblemCanvas(size = 256, ring = true) {
 }
 
 // ---------------------------------------------------------------------------------------------- spawn pad shaders
+// 出生台 shader 生成墨池、徽记、旋转刻线和重生波纹，所有变化由 uniform 驱动。
 const PAD_FRAG = /* glsl */`
 ${HASH}
 uniform vec3 uColor;
@@ -157,6 +162,7 @@ const FLAG_DISP = /* glsl */`
   float dwdx = (cos(fa) * 3.1 * 0.16 + cos(fb) * 5.7 * 0.045) * fk + (sin(fa) * 0.16 + sin(fb) * 0.045) / ${FLAG_W.toFixed(2)};
   float dwdy = cos(fb) * 3.9 * 0.045 * fk;
 `;
+// 旗面顶点按共享时间变形，并修正法线，保持起伏后的光照方向一致。
 function flagMaterial(emblemTex, uTime) {
   const m = new THREE.MeshStandardMaterial({ map: emblemTex, roughness: 0.78, metalness: 0, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
@@ -184,6 +190,7 @@ function flagMaterial(emblemTex, uTime) {
   };
   return m;
 }
+// 阴影通道复用旗面位移，避免可见旗布在飘但投影停留在静置形状。
 function flagDepthMaterial(uTime) {
   const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
@@ -196,6 +203,7 @@ function flagDepthMaterial(uTime) {
 }
 
 // ---------------------------------------------------------------------------------------------- palm fronds (wind sway)
+// 棕榈叶在顶点阶段按时间摆动，重复使用共享时间引用。
 function frondMaterial(uTime) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
@@ -210,6 +218,7 @@ function frondMaterial(uTime) {
 }
 
 export class Decor {
+  // 创建统一装饰组及徽记贴图，依次生成出生台、路灯、棕榈和队旗。
   constructor(scene, level) {
     this.scene = scene; this.level = level;
     this.group = new THREE.Group();
@@ -230,6 +239,7 @@ export class Decor {
   // 读取布局的出生点与屏障尺寸建表现网格；不能把视觉光幕当作物理墙。
   _buildPads() {
     const L = this.level;
+    // 出生台金属底环、螺栓等静态细节合并，墨池面与透明光幕保留独立材质。
     // bevelled glossy base ring with a metal lip, recessed face and 24 lip bolts (one merged geometry, vertex colours)
     const parts = [];
     parts.push(tint(lathe([[1.93, 0.072], [1.97, 0.074], [2.01, 0.1], [2.1, 0.104], [2.17, 0.078], [2.2, 0.04], [2.22, 0.0]], 72), 0x2b2f3a));
@@ -276,6 +286,7 @@ export class Decor {
   }
 
   // ------------------------------------------------------------------ lamps (all merged: body + glass)
+  // 所有路灯按实体与灯球分材质合并，夜间只修改灯球发光强度。
   _buildLamps() {
     const L = this.level.layout;
     const pts = [...L.decor.lamps, ...L.decor.lamps.map(([x, z]) => [-x, -z])];
@@ -315,6 +326,7 @@ export class Decor {
   }
 
   // ------------------------------------------------------------------ palms (trunks + coconuts merged, fronds merged with sway)
+  // 树干、椰果与叶片分组生成，叶片走可摆动材质，避免逐树逐帧改几何。
   _buildPalms() {
     const L = this.level.layout;
     const pts = [...L.decor.palms, ...L.decor.palms.map(([x, z]) => [-x, -z])];
@@ -454,6 +466,7 @@ export class Decor {
     const mesh = new THREE.InstancedMesh(geo, mat, pts.length);
     const m = new THREE.Matrix4();
     pts.forEach(({ p }, i) => { m.makeTranslation(p[0], p[1] + 4.28, p[2]); mesh.setMatrixAt(i, m); mesh.setColorAt(i, new THREE.Color(1, 1, 1)); });
+    // 实例队旗使用专用深度材质同步变形，共用几何仍按实例索引区分队伍。
     mesh.customDepthMaterial = flagDepthMaterial(this.uTime);
     mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = false; mesh.name = 'flags:cloth';
     this.group.add(mesh);
@@ -462,8 +475,10 @@ export class Decor {
   }
 
   // lamp bulbs: a dim warm glass by day, properly lit at dusk (k = environment night factor 0…1)
+  // 把昼夜因子钳在 0～1，再插值灯泡发光强度，不额外创建动态光源。
   setNight(k = 0) { if (this.bulbMat) this.bulbMat.emissiveIntensity = 0.22 + 0.68 * Math.min(1, Math.max(0, k)); }
 
+  // 出生台和屏障更新 uniform，旗布更新实例色并标记上传，布局无需重建。
   setTeamColors(colors) {
     for (const p of this.pads) { p.padMat.uniforms.uColor.value.copy(colors[p.team]); p.barMat.uniforms.uColor.value.copy(colors[p.team]); }
     if (this.flagMesh) {
@@ -482,6 +497,7 @@ export class Decor {
       const u = p.padMat.uniforms, b = p.barMat.uniforms;
       u.uTime.value = this.time; u.uPulse.value = p.pulse; u.uPulseT.value = p.pulseT;
       b.uTime.value = this.time; b.uPulse.value = p.pulse;
+      // 检查存活敌人到出生台的水平距离，只提高视觉亮度，实际阻挡由玩法层处理。
       // barrier brightens when an enemy approaches it
       let near = 0;
       for (const a of G.actors) {
