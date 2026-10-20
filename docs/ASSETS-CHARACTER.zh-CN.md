@@ -25,7 +25,7 @@
 ① 风格解析    resolveStyle(style, seed)      character-style.js:120
      │  缺省字段从名字种子推导(同名字 ⇒ 永远同一个长相)
      ▼
-② 材质工厂    按风格建 9 种材质               character.js:669-681
+② 材质工厂    按风格建 9 种材质               character.js:666-676
      │  (skin/cloth/hair/dark/eye/fill/squid/squidGhost/glow)
      ▼
 ③ 几何构建    共享缓存 getKidShared(lod)      character-geo.js:1867
@@ -40,9 +40,9 @@
 
 ### 1.1 风格:一张 append-only 的目录表
 
-[character-style.js](../src/game/character-style.js) 全是纯数据:9 种肤色(:13)、10 套服装配色(:29)、8 种虹膜(:44)、帽子/眉毛/整套装预设。两条规则值得学:
+[character-style.js](../src/game/character-style.js) 全是纯数据:9 种肤色([SKIN_TONES](../src/game/character-style.js#L32))、10 套服装配色([OUTFITS](../src/game/character-style.js#L51))、8 种虹膜([IRIS](../src/game/character-style.js#L67))、帽子/眉毛/整套装预设。两条规则值得学:
 
-- **APPEND-ONLY**(:5):存档存的是索引,表只能在尾部追加——旧存档永远不会"指错"条目;
+- **APPEND-ONLY**([表索引契约](../src/game/character-style.js#L22-L27)):存档存的是索引,表只能在尾部追加——旧存档永远不会"指错"条目;
 - **种子确定性**:`resolveStyle` 里缺什么就从名字种子推导,所以"叫同一个名字的 Bot 永远长一个样"。
 
 ### 1.2 几何:四种图元积木
@@ -51,12 +51,12 @@
 
 | 积木 | 作用 | 角色身上的用法 |
 |---|---|---|
-| `superEllipsoid` :190 | 超椭球(指数控制方圆) | 头、身体躯干 |
-| `lathe` :206 | 轮廓绕轴旋转 | 四肢段、罐体 |
-| `sweep` :240 | 截面沿曲线扫掠 | 发丝、肩带 |
-| `gridGeo` :338 | 参数网格 | 面部 |
+| [superEllipsoid](../src/game/character-geo.js#L244) | 超椭球(指数控制方圆) | 头、身体躯干 |
+| [lathe](../src/game/character-geo.js#L262) | 轮廓绕轴旋转 | 四肢段、罐体 |
+| [sweep](../src/game/character-geo.js#L302) | 截面沿曲线扫掠 | 发丝、肩带 |
+| [gridGeo](../src/game/character-geo.js#L405) | 参数网格 | 面部 |
 
-`Builder` 类(:435)把零件拼成一个 BufferGeometry。**最值得一提的是 T 恤**:它用 **SDF(有向距离场)建模**——先定义一个"T 恤形状的数学函数"([character-outfit.js:354](../src/game/character-outfit.js#L354) `teeSD`),再把图案掩模、缝线投影上去(:357,:408)。衣服不是"穿"上去的,是从数学里"长"出来的。
+[Builder](../src/game/character-geo.js#L515) 类把零件拼成一个 BufferGeometry。**最值得一提的是 T 恤**:它用 **SDF(有向距离场)建模**——先定义一个"T 恤形状的数学函数"([character-outfit.js:354](../src/game/character-outfit.js#L354) `teeSD`),再由 [addOutfit](../src/game/character-outfit.js#L1488) 和 [teeSurfacePoint](../src/game/character-outfit.js#L1624) 等函数装配表面细节。衣服不是"穿"上去的,是从数学里"长"出来的。
 
 ### 1.3 材质:零贴图的图集策略
 
@@ -102,7 +102,7 @@ Builder.add(geo, {
 });
 ```
 
-回调按参数(沿肢体的参数 t、SDF 距离)直接算出权重([character-geo.js:519-552](../src/game/character-geo.js#L519))。两个漂亮细节:脊柱用**段中点居中的 C1 帽形函数,相邻权重恒和为 1**(:1451-1454)——弯曲时不会起皱;手指是程序化生成的握姿(:77-91,围绕 Ø2.8cm 握把圆反解,即"静置即握持"契约的另一半)。
+回调按参数(沿肢体的参数 t、SDF 距离)直接算出权重([character-geo.js:519-552](../src/game/character-geo.js#L519))。两个细节:[发束权重](../src/game/character-geo.js#L1607-L1620)用**段中点居中的 C1 帽形函数**在相邻发骨间平滑分配影响,不是躯干脊柱的权重;[handParts](../src/game/character-geo.js#L590)程序化生成手指握姿,遵循"静置即握持"契约。
 
 ---
 
@@ -127,11 +127,11 @@ Builder.add(geo, {
 ## 4. 运行时调用链:谁创建、谁驱动
 
 ```
-Match 构造                                    【match.js:87(单机) / :109(联机)】
+Match 构造                                    【match.js:87(单机) / :128(联机)】
    └─► new Actor({ ..., CharacterClass })     外观:Locker 存档(玩家)/ randomStyle(Bot)
         └─► Actor 构造                        【actor.js:62,88-91】
              └─► new Character({style, color, weapon…})
-                  └─► character.root 挂进场景 【match.js:99】
+                  └─► character.root 挂进场景 【match.js:94(单机) / :130(联机)】
 
 每帧:
 Actor.update(dt)                意图/物理/伤害   【actor.js:301】
@@ -143,7 +143,7 @@ Actor.update(dt)                意图/物理/伤害   【actor.js:301】
 
 分工很清楚:**Actor 管"我是谁、我在哪"(root 位置朝向),Character 管"我怎么动"(全部子节点)**。远端玩家走同一入口,只是 AnimState 来自网络插值。
 
-菜单展示台([showcase.js:1246-1323](../src/game/showcase.js#L1246))复用同一 Character 类,换装时先离屏 warm 16 帧——防止新角色以 T-pose 闪过一帧。
+菜单展示台([展示角色创建](../src/game/showcase.js#L1234-L1250)与[离屏预热](../src/game/showcase.js#L1310-L1325))复用同一 Character 类,换装时先离屏 warm 16 帧——防止新角色以 T-pose 闪过一帧。
 
 ---
 

@@ -45,7 +45,7 @@ let tr = new Float32Array(TN);        // 长度 TN 【character.js:308】;实例
 ## 2. 每帧流水线:从意图到骨骼
 
 ```
-AnimState a(由 Actor 填写:form/charge/rolling/ink/hp…)   【actor.js:1016-1037】
+AnimState a(由 Actor 填写:form/charge/rolling/ink/hp…)   【actor.js:1153-1202】
    │
    ▼ character.update(dt, a)                                【character.js:1538】
 ① _trackRoot        从 root 实际运动测速度/加速度/转向率    【:1593】
