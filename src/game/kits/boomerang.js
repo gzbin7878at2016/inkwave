@@ -1,3 +1,8 @@
+// 【中文导读】回旋副武器：去程、悬停切割、返程、绕身和爆炸组成独立状态机。
+// 飞行中碰到敌人会转入短暂锁定爆炸，不再执行普通返程；投掷者死亡时按状态决定消散。
+// 同时只能存在一个，blocked 门禁和清理必须一致，否则可能永久无法再次投掷。
+// 配置读取 SUBS.boomerang；模型、音效、图标和机器人策略在模块加载时自注册。
+// ghost 只回放远端表现，伤害与墨迹保留所属方判定；netRec/netId 用于对齐同一实体。
 // Whirl Boomerang (sub kind 'boomerang'): thrown flat along the aim, it spins out ~9 m (stopping short at a wall), hovers
 // there shredding anything close (small rapid ticks + ink under it), then whirls back to the thrower, circles them for a
 // couple of seconds (grazing foes it touches) and bursts beside them like a small Splat Bomb. Should it hit a foe while
@@ -172,6 +177,7 @@ const credit = (it, area) => { if (area > 0) { if (it.sp) it.owner.addTurfNoSpec
 const color = (it) => G.teamColors[it.team];
 const bodyH = (e) => (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
 
+// 使用入口生成路线和初始状态，记录事件以便远端还原同一投掷。
 function use(subs, a, sub) {
   const P = plan(a, sub, newPlan());
   const it = spawn(subs, a, sub, P, false, netId(a));
@@ -197,6 +203,7 @@ function spawn(subs, a, s, P, ghost, gid) {
   setLoop(it, 'boomerang_whirr', 0.55, 1.15);
   return it;
 }
+// 远端事件入口，按稳定实体标识复现，而不是重新随机生成一条本机投掷。
 function ghost(a, d) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
@@ -220,6 +227,7 @@ function setLoop(it, name, vol, pitch) {
   if (name && G.audio && nearCam(it.pos, 45)) it.loop = G.audio.loop(name, { pos: it.pos, volume: vol, pitch });
 }
 
+// 按当前状态推进飞行与表现；退出状态时必须停止上一个阶段持有的循环音。
 function tick(dt) {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
@@ -309,6 +317,7 @@ function shred(it, dt, paintK) {
 }
 
 // ---- return: a curving homing flight back to the thrower (through anything); a foe in the way → armed
+// 从悬停切换返程，重设返程所需参数；已经锁敌的分支不能走这条路径。
 function startBack(it) {
   it.state = 'back'; it.t = 0;
   const o = it.owner;
@@ -511,6 +520,7 @@ function draw(it, dt) {
   }
 }
 
+// 移除实例网格并停止循环声音，避免换局后继续发声或保留活跃数量门禁。
 function dispose(it) {
   it.loop?.stop(0.1); it.loop = null;
   it.mesh.parent?.remove(it.mesh);

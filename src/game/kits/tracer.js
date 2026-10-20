@@ -1,3 +1,8 @@
+// 【中文导读】反弹标记弹：松开副武器键瞬时射出，无重力，略低于准星方向。
+// 碰实面会反射并涂地，穿过格栅；落地后的反弹压低竖直速度，使弹体贴近地面行进。
+// 直击与尾迹都会造成标记，但同一发对同一敌人的计数不能重复；直击优先于尾迹伤害。
+// 预览线展示真实发射线及第一次反弹，必须与实际反射公式一致，不能另造近似弹道。
+// 模型、图标和音效自注册，配置从 SUBS.tracer 读取；远端回放不重复生成权威伤害。
 // Tracer Bolt (sub kind 'tracer') — see kits/registry.js.
 //
 // Fired the instant the sub button is released: a fast bolt (no gravity) sent a few degrees BELOW the crosshair line.
@@ -190,6 +195,7 @@ function rebound(dir, n, sub) {
   return dir.normalize();
 }
 
+// 从实际发射朝向创建弹体，保留微向下偏角，使用者看到的预览应与此一致。
 function use(subs, a, sub) {
   const from = new V3(), dir = new V3();
   launch(a, sub, from, dir);
@@ -240,6 +246,7 @@ function addPoint(b) {
   P.push({ p: b.pos.clone(), b: clock });
 }
 
+// 同时推进弹体和延迟消退的尾迹；弹体消失不表示尾迹立即失效。
 function tick(dt) {
   clock += dt;
   guideTick();
@@ -304,6 +311,7 @@ function advance(b, dist) {
     if (b.pos.y < PLAYER.waterY - 0.3) { addPoint(b); end(b, 'water'); return; }
   }
 }
+// 根据碰撞法线计算反射，地面命中额外压低出射竖直分量，并记录反弹涂墨。
 function bounce(b, w) {
   const s = b.sub, n = w.normal, col = G.teamColors[b.team];
   addPoint(b); b.path.push(b.pos.clone());
@@ -388,6 +396,7 @@ function dispose(b) {
   b.rib.geometry.dispose(); b.rib.material.dispose();
   if (b.hum) { b.hum.stop(0.1); b.hum = null; }
 }
+// 清弹体、尾迹和导引表现，避免换局后保留标记碰撞或旧路径。
 function clearAll() {
   for (const b of bolts) dispose(b);
   bolts.length = 0;

@@ -1,3 +1,8 @@
+// 【中文导读】摇摇炸弹：按住积累一至三段充能，松开投掷，落地后按段数连续弹跳爆炸。
+// 充能保存在 runner.shaker，不占主武器 runner.kit；角色死亡时取消手持准备，不误扣墨或发射。
+// 摇杆、鼠标变化及角色动作加快充能；这里没有读取真实手柄陀螺仪。
+// 每段提示音、投掷事件和每次爆炸分别有语义，不能把连续爆炸只当一个视觉事件。
+// 本地与 ghost 使用相同投掷参数，实际伤害和涂地仍按所属方边界处理。
 // Shaker Bomb (kit sub 'shaker') — see kits/registry.js.
 //
 // Hold the sub button to shake it up: the charge climbs from one blast to two to three, with a clink at each new charge
@@ -189,6 +194,7 @@ function waggles(st, a, dt) {
   return n;
 }
 
+// 按住阶段累加充能并检测加速动作，跨过新段位时发一次提示，不按帧重复播放。
 function hold(runner, dt, inp, sub) {
   const a = runner.a;
   let st = runner.shaker;
@@ -354,6 +360,7 @@ function botLob(a, sub, short) {
   a.aimYaw = Math.atan2(tx - a.pos.x, tz - a.pos.z); a.aimPitch = p;
 }
 const items = [];
+// 松开后取已保存的充能等级生成弹体；保留取消和死亡时不出手的规则。
 function use(subs, a, sub) {
   const r = a.weaponRunner, st = r.shaker;
   const level = st && G.time - st.t1 < 0.25 ? st.level : 1;
@@ -384,6 +391,7 @@ function spawn(a, sub, pos, vel, level, ghost, gid) {
   lamps(it);
   return it;
 }
+// 按网络记录生成远端弹体与等级，不在远端重新计算投掷者的手持充能。
 function ghost(a, d) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
@@ -491,6 +499,7 @@ function drip(it) {
     { damage: 0, radius: it.sub.trailRadius * (0.85 + Math.random() * 0.3), size: 0.045 });
 }
 
+// 每段爆炸推进剩余次数与后续弹跳，区分伤害、涂墨和纯表现，防止重复充能统计。
 function blast(it) {
   const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team];
   const c = it.pos.clone();
@@ -533,6 +542,7 @@ function blast(it) {
   } else it.state = 'dead';
 }
 
+// 实例退出时移除表现资源和持续声音，手持状态恢复由对应的取消路径处理。
 function dispose(it) {
   G.scene?.remove(it.m.outer);
   for (const m of it.m.mats) m.dispose();

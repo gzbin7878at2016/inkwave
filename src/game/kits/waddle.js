@@ -1,3 +1,8 @@
+// 【中文导读】行走炸弹：投掷落地后感知敌人，锁定后沿导航图步行、下落或跳台阶追踪。
+// 走路期间不沿途涂墨，也不按敌方墨水减速；到达目标、寿命或路程耗尽时爆炸。
+// 没有感知到敌人则按落地引信爆炸；敌方射击摧毁走无害消散分支，不能误触正常伤害爆炸。
+// 脚步和警告音是定位循环，锁敌、死亡、销毁和清局时要同步停止。
+// 本地实体和网络 ghost 共用状态语义，gid 与伤害事件保持稳定，不在回放端重复结算。
 // Waddle Bomb (kit sub 'waddle') — see kits/registry.js.
 //
 // Thrown in an arc. When it lands it shows a sensing circle (senseRadius). If a foe is inside that circle, either at
@@ -365,6 +370,7 @@ function land(it, h) {
 }
 
 // ---- sensing: the circle opens; a foe inside (now or before the fuse runs out) wakes it, else it blows where it sits
+// 落地等待阶段扫描感知圈，发现合法敌人再切锁定，未锁定时仍受引信限制。
 function sense(it, dt) {
   const s = it.sub, M_ = it.m;
   const tgt = it.ghost ? null : scan(it, s.senseRadius * Math.min(1, it.t / 0.3 + 0.35));
@@ -401,6 +407,7 @@ function wake(it, dt) {
 }
 
 // ---- walking after its foe
+// 根据目标和导航网格重算路线；与直接朝敌人直线移动相比，可绕障并避免走入海里。
 function repath(it) {
   const nav = G.nav, T = it.target;
   it.path = null; it.pi = 0;
@@ -500,6 +507,7 @@ function look(it, dt, moved, T) {
   noise(it, 1 + 0.45 * close);
 }
 // one step on the flat: slide along walls, snap onto the ground (steps ≤ 0.45 m), never onto open water
+// 步行推进要配合地面、台阶与落差检测，动作表现不能跳过物理约束。
 function stepWalk(it, dt, spd) {
   const hx = Math.sin(it.heading), hz = Math.cos(it.heading), step = spd * dt;
   let mx = hx * step, mz = hz * step;
@@ -602,6 +610,7 @@ function blast(it) {
   it.state = 'dead';
 }
 // popped by enemy fire / an enemy blast: harmless
+// 处理被射击或范围伤害摧毁的路径，保持无害爆裂与主动引爆的区别。
 function hurt(it, dmg) {
   if (it.state === 'dead' || it.state === 'fly' || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
   if (!it.ghost) it.hp -= dmg;
@@ -621,6 +630,7 @@ function pop(it) {
   it.why = 'popped'; it.state = 'dead';
 }
 
+// 回收本体、感知圈和循环声音；避免已删除物体仍在 tick 中被再次更新。
 function dispose(it) {
   emit('sub:end', { kind: 'waddle', why: it.why || 'cleared', team: it.team, pos: it.pos.clone() });
   hush(it);

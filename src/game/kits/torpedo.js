@@ -1,3 +1,8 @@
+// 【中文导读】追踪鱼雷：普通抛物飞行、搜索可见敌人、展鳍锁定、发射追踪与爆炸的状态机。
+// 未锁定碰撞只产生基础爆炸；锁定后的爆炸附带墨滴，每个敌人的墨滴命中次数受限。
+// 鱼雷可被敌方射击和范围伤害摧毁；锁定后致命爆炸等交互必须走同一事件协议。
+// 每位玩家同时一个，gid 区分网络实体；KIT_GHOSTS/SUB_KITS 的注册必须在装载时完成。
+// 模型、瞄准警戒圈与追踪音是表现，不能替代真实视线检测、碰撞和所属方伤害判定。
 // Tide Torpedo (sub kind 'torpedo') — see kits/registry.js.
 //
 // Thrown like a bomb (the same arc as the throw preview); throwing inks a patch under the thrower's feet. While it is
@@ -241,6 +246,7 @@ function credit(t, area) { if (!area) return; if (t.sp) t.owner.addTurfNoSpecial
 function locked(t) { return t.state === 'unfold' || t.state === 'launch'; }
 function live(t) { return t.state !== 'dead'; }
 
+// 生成投掷并记录初始位置速度；已有存活鱼雷时由使用门禁拒绝再次投掷。
 function use(subs, a, sub) {
   const pos = a.pos.clone(); pos.y += 1.35;
   const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new V3());
@@ -358,6 +364,7 @@ function fly(t, h) {
   }
   if (t.age > s.flyLife) burst(t, false);
 }
+// 在范围内筛选敌方目标并检查视线，避免隔墙锁定造成预警与判定不一致。
 function findTarget(t, range) {
   let best = null, bd = range;
   for (const e of G.actors) {
@@ -371,6 +378,7 @@ function findTarget(t, range) {
   }
   return best;
 }
+// 切到展鳍锁定阶段并设置目标，预警圈与后续发射读取同一目标信息。
 function startLock(t, e) {
   if (!t.ghost) netRec(t.owner, 'torpedo', [3, t.gid, e?.nid ?? -1, r2(t.pos.x), r2(t.pos.y), r2(t.pos.z)]);
   t.state = 'unfold'; t.t = 0; t.target = e;
@@ -474,6 +482,7 @@ function lethalContact(t) {
 }
 
 // ---- the burst. full = the locked torpedo's (wide paint + droplets); else the plain bomb-like one
+// full 区分锁定后的完整爆炸与普通落地爆炸，派生墨滴和伤害上限不能混用。
 function burst(t, full) {
   if (!live(t)) return;
   if (!t.ghost) netRec(t.owner, 'torpedo', [1, t.gid, r2(t.pos.x), r2(t.pos.y), r2(t.pos.z), full ? 1 : 0]);
@@ -651,6 +660,7 @@ function dispose(t) {
   if (t.ring) { t.scene.remove(t.ring); t.ring.geometry.dispose(); t.ring.material.dispose(); t.ring = null; }
   if (t.whirr) { t.whirr.stop(0.12); t.whirr = null; }
 }
+// 换局时同时清鱼雷本体、锁定标记和派生墨滴，不能只删主网格留下伤害对象。
 function clearAll() {
   for (const t of list) { t.state = 'dead'; dispose(t); }
   list.length = 0; drops.length = 0;
