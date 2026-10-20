@@ -35,6 +35,8 @@ export const PROD_RELAY = 'wss://inkwave-net.inkwave.workers.dev';
 export function relayURL() {
   const q = new URLSearchParams(location.search).get('relay');
   if (q) return q.replace(/\/$/, '');
+  // APK 的 https://localhost 是内置资源域名，不是手机上运行了中继服务器。
+  if (globalThis.inkwaveMobile?.native) return PROD_RELAY;
   const h = location.hostname;
   const local = h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || /^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\./.test(h) || h.endsWith('.local');
   return local ? `ws://${h}:8787` : PROD_RELAY;
@@ -82,6 +84,7 @@ export class Transport {
       // 【8 秒兜底】握手迟迟不来(socket 卡在建连/被中间设备吞掉)时强制失败并关闭,否则 Promise 永不落地
       const timer = setTimeout(() => { done(reject, netError(ERR.CONNECT, 'Could not connect')); try { ws.close(); } catch { /* ignore */ } }, 8000);
       const handle = (ev) => {
+        if (this.ws !== ws) return; // 离房/重连后丢弃旧 socket 的迟到消息。
         const s = typeof ev.data === 'string' ? ev.data : '';
         this.bytesIn += s.length;
         // 【pong(裸文本)】中继运行时直接应答 "pong",不唤醒房间对象 —— 顺带回填平滑 RTT(只用最老一条未答 ping)
@@ -99,7 +102,7 @@ export class Transport {
         // 【控制帧(纯 JSON)】解析失败即忽略;下面是各种 t 类型的分发
         let o; try { o = JSON.parse(s); } catch { return; }
         if (o.t === 'err') { done(reject, netError(codeFromRelay(o.c, o.e), o.e || 'Could not connect')); return; }
-        if (o.t === 'pong') { const r = performance.now() - o.c; this.rtt = this.rtt ? this.rtt + (r - this.rtt) * 0.3 : r; return; }
+        if (o.t === 'pong') { this._pingSent = 0; const r = performance.now() - o.c; this.rtt = this.rtt ? this.rtt + (r - this.rtt) * 0.3 : r; return; }
         // 【welcome = 建连成功】记下自己的 id、启动心跳,然后 resolve 整帧;后面的 onControl 仍会收到它
         if (o.t === 'welcome') { this.id = o.id; this._startPing(); done(resolve, o); }
         this.onControl?.(o);
@@ -112,6 +115,7 @@ export class Transport {
       };
       // 【关闭】握手阶段就关 → reject(带 close reason 映射的 code);已建连后关 → 交 onClose,由 session 判 bye/掉线
       ws.onclose = (ev) => {
+        if (this.ws !== ws) return;
         this._stopPing();
         if (!settled) { done(reject, netError(codeFromRelay(null, ev.reason), ev.reason || 'Could not connect')); return; }
         this.onClose?.(ev.reason || 'Disconnected');
@@ -126,6 +130,11 @@ export class Transport {
   _startPing() {
     this._stopPing();
     const ping = () => {
+      // 连接假活时主动失败，让会话层给出掉线出口，不无限播放旧战场。
+      if (this._pingSent && performance.now() - this._pingSent > 20000) {
+        try { this.ws?.close(4000, 'Heartbeat timeout'); } catch { /* 关闭事件统一处理 */ }
+        return;
+      }
       if (!this._pingSent) this._pingSent = performance.now();   // time the oldest unanswered one (pongs come in order)
       this._raw('ping');                                          // always sent: the relay reads silence as a dead link
     };
@@ -133,13 +142,15 @@ export class Transport {
     this._pingT = setInterval(ping, 2000);
   }
   // 【停心跳】断开或关闭时调用,清掉 interval;幂等(可重复调用)
-  _stopPing() { if (this._pingT) clearInterval(this._pingT); this._pingT = null; }
+  _stopPing() { if (this._pingT) clearInterval(this._pingT); this._pingT = null; this._pingSent = 0; }
 
   // 【底层发送】只在 socket OPEN(readyState === 1)时发出;返回布尔表示是否真的写进了 socket。
   //   不抛出、不排队 —— 断线期间的发送静默失败,由上层状态机负责重连/退出。
   _raw(s) {
     const ws = this.ws;
     if (!ws || ws.readyState !== 1) return false;
+    // 不积压过时操作：发送队列超限时整条连接失败，可靠控制帧也不静默丢弃。
+    if (ws.bufferedAmount > 256 * 1024) { ws.close(4001, 'Network send backlog'); return false; }
     this.bytesOut += s.length;
     ws.send(s);
     return true;
