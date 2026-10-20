@@ -1,3 +1,7 @@
+// 【中文导读】Boss 模型、动画阶段、灯光和相机的独立预览台。
+// lab.go/冻结步进用于确定性截图，不表示运行完整联机Boss玩法或实际伤害结算。
+// 通过静态服务器访问配套HTML，ES module及资源路径按网页地址解析，不能直接file://打开。
+// 本文件属于开发工具，不打包为比赛逻辑；手动控制与自动截图应复用同一入口。
 // INKWAVE boss lab — preview + deterministic capture harness for src/boss/bossModel.js (HULLBREAKER).
 // URL params: ?ui=0 (hide panels) &q=high &cam=q25 &light=dusk &go={json} (see lab.go)
 import * as THREE from 'three';
@@ -174,6 +178,7 @@ function play(name, lp = true) {
 }
 function resetRoot() { boss.root.position.set(0, 0, 0); boss.root.rotation.set(0, 0, 0); boss.root.updateMatrixWorld(true); }
 const _aim = new THREE.Vector3();
+// 在实验台时间轴推进模型与效果，保持截图预设和固定步进使用相同状态。
 function stepSim(dt) {
   simT += dt;
   let s = segs[segI];

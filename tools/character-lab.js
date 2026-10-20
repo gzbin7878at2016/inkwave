@@ -1,3 +1,7 @@
+// 【中文导读】角色动画、形态、地形和LOD的预览实验台。
+// 既有真实 Character，也有实验场地与测试动作；测试状态不应写回正式比赛或个人存档。
+// 通过静态服务器访问配套HTML，ES module及资源路径按网页地址解析，不能直接file://打开。
+// 本文件属于开发工具，不打包为比赛逻辑；手动控制与自动截图应复用同一入口。
 // INKWAVE character lab — preview + deterministic capture harness for src/game/character.js
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -242,6 +246,7 @@ function engineStep(dt) {
 }
 function dampA(a, b, l, dt) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * (1 - Math.exp(-l * dt)); }
 const _lastRoot = new THREE.Vector3();
+// 使用受控dt推进当前动作，便于同一姿态在不同画质和机位下做截图对照。
 function stepSim(dt) {
   labT += dt; S.time = labT;
   _lastRoot.copy(hero.root.position);

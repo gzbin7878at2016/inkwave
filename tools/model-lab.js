@@ -1,3 +1,7 @@
+// 【中文导读】静态模型与绑定审查实验台，提供角色、鱿鱼、武器转台与多机位拼图。
+// mlab 的静态审查和真实 Character 动画模式目的不同，不能当作同一个性能基准。
+// 通过静态服务器访问配套HTML，模块和资源路径按网页地址解析，不用file://打开。
+// 这是开发工具，手动预览与自动截图复用同一入口，不替代正式比赛验证。
 // INKWAVE model lab — turntable / close-up review harness for the squidkid, squid form and weapons
 //. Builds its OWN rig straight from character-geo / character-mats /
 // character-weapons (bind pose + a small IK for weapon holds), so it keeps working while character.js is being
@@ -203,6 +207,7 @@ const L = { subject: 'kid', style: { hair: 0, skin: 0, outfit: 0, eyes: 0 }, wea
 const stage = new THREE.Group(); scene.add(stage);
 let items = []; // { obj, rig?, live?, update? }
 function teamColor(side = L.side, pal = L.pal) { const p = TEAM_PALETTES[pal % TEAM_PALETTES.length]; return side === 'a' ? p.a : p.b; }
+// 清理本轮展示对象和绑定实例后再换主题，避免旧对象影响三角统计与截图。
 function clearStage() { for (const it of items) { it.rig?.dispose(); it.live?.dispose?.(); stage.remove(it.obj); } items = []; }
 
 function makeKid(o) {

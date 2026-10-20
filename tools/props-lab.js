@@ -1,3 +1,7 @@
+// 【中文导读】道具陈列、变体与组合街景实验台，检查造型、材质、三角量和碰撞回传。
+// 陈列密度与可见范围不同于真实比赛，性能数字仅用于对应场景比较。
+// 通过静态服务器访问配套HTML，模块和资源路径按网页地址解析，不用file://打开。
+// 这是开发工具，手动预览与自动截图复用同一入口，不替代正式比赛验证。
 // INKWAVE props lab: every prop type in a showroom, a composed "street scene" plaza corner, and a variants sheet,
 // rendered with a mock of the game renderer (NeutralToneMapping, PCF sun shadows, RoomEnvironment PMREM, bloom 2.4).
 // Scripted use: lab.preset('showroom'|'street'|'variants'), lab.cam(name), lab.stats(), lab.tris().
@@ -314,6 +318,7 @@ function market() {
 
 const PRESETS = { showroom, street, variants, market };
 let current = null;
+// 先清当前陈列再切预设，类型注册和实际摆放分开，碰撞列表跟随本次布局。
 function preset(name) {
   if (!PRESETS[name]) return 'unknown preset';
   kit.dispose();

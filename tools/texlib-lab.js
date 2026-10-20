@@ -1,3 +1,7 @@
+// 【中文导读】程序化纹理实验台，在地面、墙、球体和原始图层上检查接缝与抗平铺。
+// raw图层检查和实际世界采样是不同视图，参数通过统一texlib接口设置。
+// 通过静态服务器访问配套HTML，模块和资源路径按网页地址解析，不用file://打开。
+// 这是开发工具，手动预览与自动截图复用同一入口，不替代正式比赛验证。
 // INKWAVE texture lab — every texlib layer on (a) a huge anti-tiled floor from a 1.7 m gameplay camera,
 // (b) walls/cubes up close, (c) spheres, (d) a contact sheet, (e) the raw maps (2x2 tiled, for seam checks).
 // Scripted control: window.lab.view('floor'|'wall'|'cubes'|'spheres'|'sheet'|'raw', name?), lab.mat(name),
@@ -278,6 +282,7 @@ void main(){
 
 function setCam(p, t, fov = 70) { if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); } camera.position.set(...p); controls.target.set(...t); camera.lookAt(...t); controls.update(); }
 
+// 重建当前展示与机位后比较同一材质，旧展示对象须按生命周期清理。
 function view(kind = current.view, name = current.name) {
   if (!builders[kind]) throw new Error('unknown view ' + kind);
   if (!lib.layers.hasOwnProperty(name)) throw new Error('unknown material ' + name);

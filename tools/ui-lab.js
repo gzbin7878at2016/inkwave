@@ -1,3 +1,7 @@
+// 【中文导读】菜单与HUD实验台，使用mock API和模拟HudFrame覆盖页面、结算与低墨状态。
+// 比分、网络和动作数据是测试输入，不代表已经运行真实对局。
+// 通过静态服务器访问配套HTML，模块和资源路径按网页地址解析，不用file://打开。
+// 这是开发工具，手动预览与自动截图复用同一入口，不替代正式比赛验证。
 // INKWAVE UI lab — mounts Menus + HUD with a mock api and an animated mock HudFrame.
 // URL params: ?screen=main|...|hud  &clean=1 (hide panel)  &pal=0..4  &cb=1 (colorblind)  &pad=1  &slow=0.25
 // Console / --eval: window.lab.go('setup'), lab.hud(), lab.set({time:8, ink:.2}), lab.judge(), lab.results({win:false}) ...
@@ -138,6 +142,7 @@ let hudOn = false, paused = false, tHud = 0;
 const mock = { time: 180, ink: 1, subCost: SUB.bomb.inkCost / PLAYER.inkMax, special: 0, hp: 1, weapon: S.loadout.weapon, charge: 0, spread: 4, onTarget: null, expanded: false, prompt: 'Hold [SHIFT] to swim', fps: 60 };
 const fixed = new Set();
 const deadUntil = {};
+// 按测试状态组装HUD帧并遵守正式字段契约，避免界面演示掩盖实战缺字段。
 function buildFrame(dt) {
   tHud += dt;
   const t = tHud;

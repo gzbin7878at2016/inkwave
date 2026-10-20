@@ -1,3 +1,7 @@
+// 【中文导读】核心渲染、关卡与墨水系统的最小联调页面。
+// 独立构造Renderer/Level/PaintSystem用于观察图集和材质，不包含完整对局状态机。
+// 通过静态服务器访问配套HTML，ES module及资源路径按网页地址解析，不能直接file://打开。
+// 本文件属于开发工具，不打包为比赛逻辑；手动控制与自动截图应复用同一入口。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -45,6 +49,7 @@ controls.target.set(0, 0, 0);
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const hit = { };
+// 按测试范围生成指定队伍墨点，用于验证显示和图集更新，不作为可复现的比赛输入。
 function randomSplats(n, team) {
   const dir = new THREE.Vector3();
   for (let i = 0; i < n; i++) {

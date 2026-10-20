@@ -1,3 +1,7 @@
+// 【中文导读】音效与配乐实验台，试听一次性声音、循环音、三维声像和音量总线。
+// 首次用户手势后才初始化音频；停止循环时必须释放句柄，UI上的播放状态需与引擎同步。
+// 通过静态服务器访问配套HTML，ES module及资源路径按网页地址解析，不能直接file://打开。
+// 本文件属于开发工具，不打包为比赛逻辑；手动控制与自动截图应复用同一入口。
 // INKWAVE audio lab: every SFX, loops with live params, 3D panning radar, music tracks + intensity, bus volumes.
 import { audio, SFX, SFX_GROUPS, LOOP_NAMES } from '../src/audio/audio.js';
 import { music, TRACKS } from '../src/audio/music.js';
@@ -172,6 +176,7 @@ function meters() {
 
 // ---------------- frame loop ----------------
 let last = performance.now();
+// 按时间更新声源轨道、雷达和电平显示，声源运动不等于每帧重建声音节点。
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
   if (st.orbit) { st.ang += dt * st.speed; src.x = Math.cos(st.ang) * st.radius; src.z = Math.sin(st.ang) * st.radius; }

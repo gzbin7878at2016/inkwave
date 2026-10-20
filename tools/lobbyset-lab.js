@@ -1,3 +1,7 @@
+// 【中文导读】大厅场景实验台，复现展示台的HDR离屏目标、透明合成和UI遮挡区域。
+// 测试相机、队伍与角色布局，须在相同画质与灯光下比较，不能用独立场景帧率代表比赛。
+// 通过静态服务器访问配套HTML，ES module及资源路径按网页地址解析，不能直接file://打开。
+// 本文件属于开发工具，不打包为比赛逻辑；手动控制与自动截图应复用同一入口。
 // INKWAVE lobby set lab: the alley set (src/game/lobbySet.js) rendered the way the showcase draws it — an HDR MSAA
 // half-float target, then un-premultiplied + tone mapped (Neutral) + sRGB in a composite pass — with real squidkids on the
 // marks, nameplates, and translucent stand-ins for the lobby UI (left 28% / bottom 13%, hub: left 55%).

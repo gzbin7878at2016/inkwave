@@ -1,3 +1,7 @@
+// 【中文导读】特效实验台，在模拟游戏灯光和后处理环境中触发特效。
+// window.lab 控制特效、相机和冻结步进；计时器跟随模拟时间，便于按帧拍摄同一阶段。
+// 通过静态服务器访问配套HTML，ES module及资源路径按网页地址解析，不能直接file://打开。
+// 本文件属于开发工具，不打包为比赛逻辑；手动控制与自动截图应复用同一入口。
 // INKWAVE FX lab: Environment + FX in a mock of the game renderer (NeutralToneMapping, PCF shadows, bloom).
 // Scripted control via window.lab (see bottom).
 import * as THREE from 'three';
@@ -296,6 +300,7 @@ function later(delay, fn) { timers.push({ t: simTime + delay, fn }); }
 // flat team-colour "ink" disc on the ground (lab stand-in for painted turf)
 function inkPatch(x, z, r, col) { paintSplat(V(x, 0.001, z), UP, col, r / 3.75); }
 const FX_KEYS = Object.keys(EFFECTS);
+// 根据测试名称触发对应效果，提供的碰撞和涂墨接口是实验环境替身，不代表完整玩法。
 function fire(name, team = 'a') {
   if (!fx) return 'fx not loaded';
   const f = EFFECTS[name]; if (!f) return 'unknown effect ' + name;
