@@ -1,3 +1,8 @@
+// 【中文导读】Terrace Heights 的马赛克、广场饰带、日晷和墙面旧招牌。
+// Canvas 的 R 是该地图在壁画图集中的像素区域，返回 m/place 则描述贴到关卡面上的米制范围。
+// 共享编号0至3不能覆盖，地图自己的 MURAL 名称表与布局引用保持一致。
+// 卵石和风化使用带种子的随机生成，同参数下应得到可复现图案；不要在绘制中引入无种子随机。
+// 顶面与墙面的 UV 基不同，特别是顶面 u 指向 -x，图案旋转时要核对面坐标。
 // Terrace Heights — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
 // drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
@@ -64,6 +69,7 @@ function rose(g, cx, cz, Rr, S, seed) {
   g.restore();
 }
 
+// 按传入矩形绘制并返回各图案的图集条目；透明边缘用于避免贴图钳位产生边线。
 export function drawMurals(g, R, kit) {
   const out = [];
   // ---------------------------------------------------------------- 4: bastion prow roses (7.07 x 7.07 m at 58 px/m)

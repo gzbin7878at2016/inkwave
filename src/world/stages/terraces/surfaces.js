@@ -1,3 +1,7 @@
+// 【中文导读】Terrace Heights 的石灰抹墙、陶土地砖和卵石铺地三类表面配方。
+// SURF 的43至45是本地图的保留槽；layout 选择槽位，texlib 在启动时烘焙对应图层。
+// 墙与顶面可通过 onWall/onTop 互相重定向，例如抹灰房子的顶部使用地砖以表现露台。
+// 材质 tint/mask 决定方块颜色如何参与外观，不能为了换色而随意改 shader 语义或槽号。
 // Terrace Heights — stage surface materials (texlib layers), on this stage's three reserved PATTERN slots.
 //
 // SURF maps your names to the slot ids; use them in layout.js as `pattern: SURF.<name>`. SURFACES lists what each
@@ -121,6 +125,7 @@ const pebble = {
   s.cav = mix(mix(0.7, 1.0, peb), mix(1.0, 0.65, pb.y), band);`,
 };
 
+// 按统一 texlib 契约提供生成函数和采样尺度；表面细节只影响表现，不改变通行高度。
 export const SURFACES = [
   { slot: 43, name: 'calce', onTop: 44, mat: calce },
   { slot: 44, name: 'cotto', onWall: 43, mat: cotto },
