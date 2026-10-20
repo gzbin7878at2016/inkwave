@@ -28,6 +28,7 @@ export function makeUniforms() {
   };
 }
 
+// 共享 GLSL 提供噪声、裂纹距离、凹凸法线及静置空间遮蔽；下列字符串属于 shader 源码。
 const COMMON = /* glsl */`
 uniform float uTime; uniform vec3 uInk; uniform vec3 uWeak; uniform float uFlash; uniform float uWeakFlash;
 uniform float uCrack; uniform float uOpen; uniform float uEnrage; uniform float uGlowL; uniform float uCannon; uniform float uBelly;
@@ -65,6 +66,7 @@ float bMassAO(vec3 p){
 }
 `;
 
+// 顶点阶段保留 aM、静置位置和 UV，片元阶段据此生成程序化图案。
 const VERT_DECL = 'attribute vec4 aM;\nvarying vec4 vM; varying vec3 vB; varying vec2 vU;\n';
 const VERT_BODY = '#include <begin_vertex>\n vM = aM; vB = position; vU = uv;\n';
 
@@ -77,6 +79,7 @@ const PRE = /* glsl */`
 // 把顶点语义和共享 uniform 注入材质编译过程，保留原有光照与色彩输出链。
 function patch(mat, U, body, { extraFrag = '' } = {}) {
   mat.onBeforeCompile = (sh) => {
+    // 将 uniform 对象引用挂到编译结果，后续修改 value 即可更新所有相应材质。
     Object.assign(sh.uniforms, U);
     sh.vertexShader = VERT_DECL + sh.vertexShader.replace('#include <begin_vertex>', VERT_BODY);
     sh.fragmentShader = sh.fragmentShader
@@ -97,6 +100,7 @@ function patch(mat, U, body, { extraFrag = '' } = {}) {
 #endif
 `);
   };
+  // 给不同材质桶提供稳定程序缓存键，避免被误判为同一套 shader。
   mat.customProgramCacheKey = () => 'hullbreaker-' + mat.name;
   return mat;
 }
@@ -107,6 +111,7 @@ const FLASH = /* glsl */`
 `;
 
 // ------------------------------------------------------------------------------------------------ steel
+// 钢材按顶点类别生成波纹墙漆、框架、锈迹、黄铜与附着物；结合阶段状态表现热裂与撕裂。
 const STEEL = /* glsl */`
   float cls = floor(vM.x + 0.5), pid = floor(vM.y + 0.5), ao = vM.z, ex = floor(vM.w + 0.5);
   vec3 P = vB; vec2 uv = vU;
@@ -260,6 +265,7 @@ const STEEL = /* glsl */`
 ` + FLASH;
 
 // ------------------------------------------------------------------------------------------------ carapace
+// 甲壳以顶点语义区分壳面、棘刺、牙齿和腿段，叠加湿墨、蓄力发光及阶段裂纹。
 const CARA = /* glsl */`
   float cls = floor(vM.x + 0.5), tone = vM.y, ex = vM.w;
   vec3 P = vB;
@@ -323,6 +329,7 @@ const CARA = /* glsl */`
 ` + FLASH;
 
 // ------------------------------------------------------------------------------------------------ flesh
+// 软组织按类别调整腹节、膜和喷管外观，用少量自发光近似暖色透光。
 const FLESH = /* glsl */`
   float cls = floor(vM.x + 0.5), seg = vM.y;
   vec3 P = vB;
@@ -363,6 +370,7 @@ const FLESH = /* glsl */`
 ` + FLASH;
 
 // ------------------------------------------------------------------------------------------------ eye
+// 眼球使用局部方向生成虹膜与瞳孔，并由眼模式切换晕眩螺旋或死亡叉眼。
 const EYE = /* glsl */`
   float side = vM.x; vec3 d = normalize(vM.yzw);
   vec3 ctr = normalize(vec3(0.3 * side, 0.12, 1.0));
@@ -408,6 +416,7 @@ const EYE = /* glsl */`
 ` + FLASH;
 
 // ------------------------------------------------------------------------------------------------ junk
+// 杂物按类别表现橡胶、绳索、塑料、绑带、海带、旗帜和灯光。
 const JUNK = /* glsl */`
   float cls = floor(vM.x + 0.5), prm = vM.y; vec3 P = vB; vec2 uv = vU;
   float n2 = bFbm(P * 5.0 + 2.0), n3 = bNoise(P * 31.0);
@@ -491,6 +500,7 @@ const CRAB = /* glsl */`
   bEmis += vec3(1.0) * uFlash * 1.2;
   diffuseColor.rgb = c;
 `;
+// 每只小蟹拥有独立 uniform 和材质状态，程序代码共用，避免受击闪光相互串联。
 export function makeCrabletMaterial(U) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, clearcoat: 0.01, sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color(1, 1, 1) });
   m.name = 'crablet';
@@ -502,6 +512,7 @@ export function makeCrabletMaterial(U) {
 // bottom-right = sprayed warning. All original art (the DEEPTIDE line is fictional).
 let _fontP = null;
 const FD = 'HullbreakerDisplay', FT = 'HullbreakerText';
+// 字体加载 Promise 只创建一次；环境不支持或加载失败时保留 Canvas 后备字体。
 function loadFonts() {
   if (_fontP) return _fontP;
   if (typeof FontFace === 'undefined' || typeof document === 'undefined') return (_fontP = Promise.resolve());
@@ -510,12 +521,14 @@ function loadFonts() {
   _fontP = Promise.all([d.load(), t.load()]).then((f) => { f.forEach((x) => document.fonts.add(x)); }).catch(() => {});
   return _fontP;
 }
+// 临时用 destination-out 擦除细竖缝，形成模板喷字断桥，再恢复普通合成。
 function stencilBridges(x, x0, y0, w, h, every, bw) {
   // stencil-cut bridges: thin vertical gaps punched through the letters
   x.globalCompositeOperation = 'destination-out';
   for (let px = x0 + every * 0.5; px < x0 + w; px += every) x.fillRect(px, y0, bw, h);
   x.globalCompositeOperation = 'source-over';
 }
+// 重绘图集四个区域：标志、编号、警示牌和喷漆；绘制方向与 shader 的 UV 约定对应。
 function drawStencils(cv) {
   const x = cv.getContext('2d'); const W = cv.width, H = cv.height;
   x.clearRect(0, 0, W, H);
@@ -571,6 +584,7 @@ export function makeStencilTexture() {
   cv.width = cv.height = 1024;
   drawStencils(cv);
   const tex = new THREE.CanvasTexture(cv); tex.anisotropy = 8; tex.generateMipmaps = true; tex.colorSpace = THREE.NoColorSpace;
+  // 先有可用贴图，字体完成后再重画并标记上传；ready 允许加载流程等待最终字形。
   const ready = loadFonts().then(() => { drawStencils(cv); tex.needsUpdate = true; });
   return { tex, ready };
 }

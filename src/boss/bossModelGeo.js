@@ -21,6 +21,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 const PI = Math.PI, TAU = PI * 2;
 export const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 export const UP = Object.freeze(V3(0, 1, 0));
+// 固定种子的伪随机数用于凹痕与附着物，让相同配方生成可复现外观。
 export function mulberry(a) {
   return function () { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
@@ -30,6 +31,7 @@ export const QUALITY_K = { low: 0.5, medium: 0.72, high: 1.0, ultra: 1.3 };
 const _q = new THREE.Quaternion(), _m4 = new THREE.Matrix4(), _m4b = new THREE.Matrix4();
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3();
 /** matrix whose Z axis = fwd, Y ≈ up (orthogonalised), X = Y × Z, origin o */
+// 由前向与向上提示构造正交局部坐标系，再设置原点；平行退化时提供后备轴。
 export function frameM(o, fwd, up = UP, out = new THREE.Matrix4()) {
   const z = _a.copy(fwd).normalize();
   const x = _b.crossVectors(up, z); if (x.lengthSq() < 1e-8) x.set(1, 0, 0); x.normalize();
@@ -40,6 +42,7 @@ export function frameM(o, fwd, up = UP, out = new THREE.Matrix4()) {
 /** rotation q with q·a0 = a1 and q·(s0 ⟂ a0) = (s1 ⟂ a1) — maps a rest frame (dir, side) onto a posed one */
 const _e1 = new THREE.Vector3(), _e2 = new THREE.Vector3(), _e3 = new THREE.Vector3(), _f1 = new THREE.Vector3(), _f2 = new THREE.Vector3(), _f3 = new THREE.Vector3();
 const _R0 = new THREE.Matrix4(), _R1 = new THREE.Matrix4();
+// 分别建立静置和当前方向基，以当前基乘静置基转置，求两者间旋转。
 export function frameQuat(a0, s0, a1, s1, out) {
   _e1.copy(a0).normalize(); _e2.copy(s0).addScaledVector(_e1, -s0.dot(_e1)); if (_e2.lengthSq() < 1e-10) _e2.set(0, 1, 0).addScaledVector(_e1, -_e1.y); _e2.normalize(); _e3.crossVectors(_e1, _e2);
   _f1.copy(a1).normalize(); _f2.copy(s1).addScaledVector(_f1, -s1.dot(_f1)); if (_f2.lengthSq() < 1e-10) _f2.set(0, 1, 0).addScaledVector(_f1, -_f1.y); _f2.normalize(); _f3.crossVectors(_f1, _f2);
@@ -88,15 +91,18 @@ export class Bucket {
       if (typeof mat === 'function') { MA[0] = 0; MA[1] = 0; MA[2] = 1; MA[3] = 0; mat(_p, _n, i, t, u, v); this.M.push(MA[0], MA[1], MA[2], MA[3]); }
       else this.M.push(mat[0], mat[1] ?? 0, mat[2] ?? 1, mat[3] ?? 0);
     }
+    // 镜像变换会反转三角朝向，合并索引时同步交换绕序以保持外表面一致。
     const flip = M && M.determinant() < 0;
     const push = (a, b, c) => { if (flip) this.I.push(base + a, base + c, base + b); else this.I.push(base + a, base + b, base + c); };
     if (g.index) { const ix = g.index.array; for (let i = 0; i < ix.length; i += 3) push(ix[i], ix[i + 1], ix[i + 2]); }
     else for (let i = 0; i < pa.count; i += 3) push(i, i + 1, i + 2);
     this.nv += pa.count;
+    // add 已把顶点拷贝到桶中，此时释放输入临时几何；调用方不能再依赖其 GPU 资源。
     g.dispose();
     return this;
   }
   get tris() { return this.I.length / 3; }
+  // 将累积数组转为 BufferGeometry；顶点超过 65535 时使用 32 位索引。
   geometry() {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.P, 3));
@@ -112,6 +118,7 @@ export class Bucket {
 }
 
 // ------------------------------------------------------------------------------------------------ primitives
+// 对环形首尾重合顶点平均法线，消除扫掠体接缝的光照裂缝。
 function seamFix(g, radial, rings) {
   const n = g.attributes.normal;
   for (let i = 0; i < rings; i++) {
@@ -125,6 +132,7 @@ function seamFix(g, radial, rings) {
  * sec(t) → { n, b, e = 2, on = 0, ob = 0 } radii along the frame normal (≈ up hint) and binormal (side), exponent;
  * rmod(t, ang) → radius multiplier (bumps, serration). Returns indexed geometry with uv = (around, metres) + userData.t.
  */
+// 沿曲线平行传递截面坐标架，支持超椭圆、变半径和端盖；保存纵向参数供蒙皮使用。
 export function loft(pts, o = {}) {
   const segs = o.segs ?? 12, radial = o.radial ?? 12;
   const curve = pts.length > 2 ? new THREE.CatmullRomCurve3(pts, false, 'centripetal') : new THREE.LineCurve3(pts[0], pts[1]);
@@ -174,6 +182,7 @@ export function loft(pts, o = {}) {
 
 /** cube-sphere superellipsoid: r = [rx, ry, rz], e (1 = ellipsoid, < 1 boxier), n grid per face, disp(dir, p) edits p */
 const FACES = [[0, 1, 2, 1], [0, 1, 2, -1], [1, 2, 0, 1], [1, 2, 0, -1], [2, 0, 1, 1], [2, 0, 1, -1]];
+// 从立方体六面生成圆滑超椭球，适合甲壳及软组织块体。
 export function blob(o = {}) {
   const n = Math.max(2, o.n ?? 8), r = o.r || [1, 1, 1], e = o.e ?? 1;
   const pos = [], idx = [];
@@ -210,6 +219,7 @@ export function blob(o = {}) {
  * period P, recess `depth`. keep(u, v) filters quads (holes / flaps), dent(u, v) → inward push (m).
  * Each profile facet is its own strip (crisp folds), uv = (u, v) in metres.
  */
+// 按波纹折线分条生成墙板，保留硬折面；keep 裁孔，dent 产生向内凹痕。
 export function corrPanel({ w, h, P = 0.28, depth = 0.05, nY = 8, phase = 0, keep = null, dent = null, flat = false }) {
   const cols = [];
   const K = [0, 0.36, 0.5, 0.86, 1.0], Z = [0, 0, -1, -1, 0];
@@ -244,6 +254,7 @@ export function corrPanel({ w, h, P = 0.28, depth = 0.05, nY = 8, phase = 0, kee
 }
 
 /** thin quad-strip ribbon along a path (kelp, straps, flags): width(t), ruffle(t, side) → normal offset */
+// 沿曲线生成可变宽薄带并附加褶皱，供绑带、海带与旗帜使用。
 export function ribbon(pts, { segs = 8, width = () => 0.1, ruffle = null, up = UP, across = 2 } = {}) {
   const curve = pts.length > 2 ? new THREE.CatmullRomCurve3(pts) : new THREE.LineCurve3(pts[0], pts[1]);
   const len = curve.getLength();
@@ -268,6 +279,7 @@ export function ribbon(pts, { segs = 8, width = () => 0.1, ruffle = null, up = U
   return g;
 }
 
+// 无倒角时直接用方盒，有倒角时以方形指数超椭球近似圆角体。
 export function box(w, h, d, r = 0, seg = 1) {
   if (r <= 0) { const g = new THREE.BoxGeometry(w, h, d); return g; }
   // cheap bevelled box: superellipsoid blob with a boxy exponent
@@ -279,6 +291,7 @@ const TRS = (x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx) => M().c
 // ------------------------------------------------------------------------------------------------ layout (metres)
 // ISO 20 ft container 6.058 × 2.438 × 2.591, carried nose-down on the crab's back.
 export const CONT = { pos: V3(0, 3.0, -1.3), pitch: 0.12, hl: 3.03, hw: 1.22, hh: 1.3 };
+// 容器局部空间到模型空间的固定变换；几何、骨架和 shader 必须保持同一约定。
 export const MC = TRS(CONT.pos.x, CONT.pos.y, CONT.pos.z, CONT.pitch, 0, 0);   // container local → model
 export const cont = (x, y, z) => V3(x, y, z).applyMatrix4(MC);
 
@@ -296,7 +309,9 @@ for (const s of [1, -1]) for (const L of LEG_L) {
   LEGS.push({ side: s, hip: m(L.hip), cox: m(L.cox), foot: m(L.foot), l1: L.l1, l2: L.l2, ld: DACTYL });
 }
 /** ankle point for a foot: the dactyl stands steep, tip slightly outboard */
+// 由脚尖和伸出方向反推踝点，保持末端腿节的静置倾角。
 export function ankleFor(foot, outDir, ld, out) { return out.copy(foot).addScaledVector(outDir, -ld * 0.3).addScaledVector(UP, ld * 0.954); }
+// 腿部弯曲方向同时偏上和向外，供静置求解与动画 IK 共用。
 export function legPole(outDir, out) { return out.copy(UP).multiplyScalar(1).addScaledVector(outDir, 0.35); }
 // rest knees / ankles solved with the same IK the animator uses
 for (const L of LEGS) {
@@ -325,6 +340,7 @@ export const BODY = { pivot: V3(0, 2.1, 0.7), belly: [V3(0, 1.37, 2.12), V3(0, 1
 // 按父子顺序建立骨架与静置数据，零件和动画都依赖这些稳定骨名与枢轴。
 export function buildRig() {
   const bones = [], by = {}, rest = {};
+  // 骨名映射、模型空间静置位置和父子局部偏移同时保存；顺序决定蒙皮骨索引。
   const add = (name, pos, parent) => {
     const b = new THREE.Bone(); b.name = name;
     const pp = parent ? rest[parent] : V3();
@@ -359,6 +375,7 @@ export function buildRig() {
     add('arm' + A.name + '0', A.S, 'body'); add('arm' + A.name + '1', A.E, 'arm' + A.name + '0'); add('claw' + A.name, A.W, 'arm' + A.name + '1'); add('dact' + A.name, D, 'claw' + A.name);
   }
   LEGS.forEach((L, i) => { add('leg' + i + 'c', L.hip, 'body'); add('leg' + i + 'm', L.cox, 'leg' + i + 'c'); add('leg' + i + 't', L.knee, 'leg' + i + 'm'); add('leg' + i + 'd', L.ankle, 'leg' + i + 't'); });
+  // 悬挂杂物以链条节点建骨，并记录平面、阻尼、刚度等模拟参数给动画器。
   // dangling junk (verlet-driven chains): anchor points + link points in container space
   const CH = [];
   const chain = (name, parent, pts, opt = {}) => { const P = pts.map((p) => cont(p[0], p[1], p[2])); const names = []; for (let i = 0; i < P.length - 1; i++) { add(name + i, P[i], i ? name + (i - 1) : parent); names.push(name + i); } CH.push({ name, parent, pts: P, bones: names, ...opt }); };
@@ -394,6 +411,7 @@ export function buildParts(rig, quality = 'high') {
   const shell = bi('shell');
   const { hl, hw, hh } = CONT;
   const WALL_H = 2.36, WALL_L = 5.86;
+  // 墙板凹痕使用固定种子，穿腿洞和第三阶段裂口分别控制墙板保留范围。
   // dents (panel space u,v per wall) — seeded, plus a big crumple on the front-left top corner (wall bonks)
   const dentsFor = (seed, extra = []) => { const r = mulberry(seed); const D = extra.slice(); for (let i = 0; i < 5; i++) D.push([r() * WALL_L, 0.3 + r() * (WALL_H - 0.6), 0.25 + r() * 0.35, 0.03 + r() * 0.06]); return D; };
   const dentFn = (D) => (u, v) => { let s = 0; for (const [du, dv, rr, dd] of D) { const x = (u - du) / rr, y = (v - dv) / rr; s += dd * Math.exp(-(x * x + y * y) * 1.6); } return s; };
@@ -447,6 +465,7 @@ export function buildParts(rig, quality = 'high') {
     const m = M().makeBasis(V3(-1, 0, 0), V3(0, 1, 0), V3(0, 0, -1)).setPosition(1.1, -1.18, -hl + 0.02);
     B.steel.add(corrPanel({ w: 2.2, h: WALL_H, P: 0.27, depth: 0.045, nY: nYw, dent: dentFn([[0.5, 0.6, 0.4, 0.05], [1.7, 1.9, 0.3, 0.04]]) }), CMx(m), shell, [0, 3, 1, 0]);
   }
+  // 屋顶按向上坐标架生成，裁掉舱盖开口；舱盖几何随后绑定独立铰链骨。
   // roof (outward +y; X' = x, Y' = −z), shallow ribs across, hatch openings cut
   const roofHoles = [[0.15, 0.95, -0.12, 0.72], [-0.95, -0.15, -0.12, 0.72], [-0.52, 0.52, -2.45, -1.62]];
   {
@@ -498,6 +517,7 @@ export function buildParts(rig, quality = 'high') {
       B.steel.add(new THREE.CylinderGeometry(0.2, 0.2, 0.5, S(12, 8)), CMx(TRS(bx, hh - 0.32, bz)), shell, [7, 0, 0.7, 0]);
     }
   }
+  // 左门折回壳侧，右门绑定独立门轴；不要把可动门片合并到固定外壳骨。
   // door leaves: left folded back flat against the left wall, right one hangs half open on its own hinge bone
   {
     const leaf = (m, bone, id) => {
@@ -590,6 +610,7 @@ export function buildParts(rig, quality = 'high') {
     scatterBarn(B.steel, shell, cont(-0.8, hh + 0.02, -0.1), nrm(0, 1, 0), S(6, 3), 0.3);
   }
 
+  // 悬挂物几何沿链条节点分配骨权重，运行时跟随附属链粒子运动。
   // ============================================================ HANGING JUNK (verlet chain bones)
   {
     // tyre fender on the right wall, hung by a rope pair from the top rail
@@ -646,6 +667,7 @@ export function buildParts(rig, quality = 'high') {
     }
   }
 
+  // 蟹体分配甲壳和软组织桶，眼、喷管及肢体各自绑定相应骨骼。
   // ============================================================ CRAB
   const body = bi('body'), head = bi('head');
   // abdomen: the big soft sac filling the container (seen through the door, leg holes, tears)
@@ -726,6 +748,7 @@ export function buildParts(rig, quality = 'high') {
     B.flesh.add(blob({ r: [1.0, 0.55, 0.9], e: 0.9, n: S(8, 4) }), TRS(0, 1.85, 1.7), body, [0, 0, 0.6, 0]);
   }
 
+  // 双钳按上臂、前臂、掌与活动钳指分骨，表面棘刺与主体共用材质桶。
   // ------------------------------------------------------------ CLAWS
   const spineRow = (bucket, bone, a, b, up, n, h0, h1, cls = 1, param = 0.3) => {
     for (let i = 0; i < n; i++) {
@@ -799,6 +822,7 @@ export function buildParts(rig, quality = 'high') {
     }
   }
 
+  // 腿节分别绑定骨骼；额外顶点语义携带条纹与段落信息供材质生成花纹。
   // ------------------------------------------------------------ LEGS (striped, spined, spiky dactyl tips)
   LEGS.forEach((L, li) => {
     const bc = bi('leg' + li + 'c'), bm = bi('leg' + li + 'm'), bt = bi('leg' + li + 't'), bd = bi('leg' + li + 'd');
@@ -827,6 +851,7 @@ export function buildParts(rig, quality = 'high') {
     if (li % 3 === 1) scatterBarn(B.cara, bm, L.cox.clone().lerp(L.knee, 0.4).addScaledVector(up, 0.12), up, 3, 0.15, 0.8, 3);
   });
 
+  // 锚点保存所属骨和模型空间静置位置，供模型运行时更新脚步、冲击及特效位置。
   // ------------------------------------------------------------ sockets (bone + model-space rest point)
   const sockets = {
     clawL: ['clawL', ARMS[0].W.clone().addScaledVector(ARMS[0].D, 1.05)], clawR: ['clawR', ARMS[1].W.clone().addScaledVector(ARMS[1].D, 0.9)],
@@ -837,6 +862,7 @@ export function buildParts(rig, quality = 'high') {
     crackL: ['abdomen', cont(hw - 0.1, 0.5, -0.22)], crackR: ['abdomen', cont(-hw + 0.1, 0.5, -0.22)],
   };
   LEGS.forEach((L, i) => { sockets['foot' + (i < 3 ? 'L' : 'R') + (i % 3)] = ['leg' + i + 'd', L.foot.clone()]; });
+  // 蒸汽口从容器空间转到模型空间，第三阶段表现可复用这些固定出口。
   // steam vents (phase 3) — container space
   const vents = [['tearL', cont(hw + 0.1, 0.55, -0.2)], ['tearR', cont(-hw - 0.1, 0.55, -0.2)], ['hatchA', cont(0.55, hh + 0.1, 0.3)], ['hatchB', cont(-0.55, hh + 0.1, 0.3)], ['hatchC', cont(0, hh + 0.1, -2.05)]];
 
@@ -860,6 +886,7 @@ export function buildCrablet(quality = 'high') {
   // body
   bk.add(blob({ r: [0.14, 0.09, 0.13], e: 0.85, n: S(6, 3) }), TRS(0, 0.26, 0.02), bi('body'), [1, 0.3, 1, 0]);
   bk.add(blob({ r: [0.1, 0.07, 0.09], e: 0.9, n: S(4, 3) }), TRS(0, 0.2, 0.06), bi('body'), [2, 0, 0.9, 0]);
+  // 小蟹背甲使用弯曲波纹门片，绑定独立壳骨以支持爆裂掀盖。
   // lid shell: a bent corrugated container-door fragment with a hinge block + stencil (class 0)
   const lid = corrPanel({ w: 0.46, h: 0.4, P: 0.08, depth: 0.018, nY: S(4, 2) });
   lid.translate(-0.23, -0.2, 0); const lp = lid.attributes.position; for (let i = 0; i < lp.count; i++) { const x = lp.getX(i), y = lp.getY(i); lp.setZ(i, lp.getZ(i) - (x * x + y * y) * 0.9); } lid.computeVertexNormals();
