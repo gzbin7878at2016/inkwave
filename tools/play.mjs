@@ -1,3 +1,7 @@
+// 【中文导读】脚本化页面操作与截图：按JSON步骤等待、按键、鼠标、执行页面代码和保存图像。
+// 输入可以是JSON文件或内联JSON；eval/evalFile属于可信开发脚本，会在游戏页面执行。
+// 需先启动静态服务和安装puppeteer-core；当前Chrome路径与Metal参数针对macOS，不能宣称Windows可直接跑。
+// 冻结与debug.step由传入脚本决定，普通wait是墙钟等待；两者不可混用为确定性模拟时长。
 // Scripted play-through for audits.
 // usage: node tools/play.mjs <url> <script.json|inline-json> [--w 1600 --h 900]
 // script: [{"wait":ms},{"down":"KeyW"},{"up":"KeyW"},{"press":"Space"},{"mouse":"down"|"up"},{"move":[dx,dy]},

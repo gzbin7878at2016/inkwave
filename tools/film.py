@@ -1,3 +1,7 @@
+# 【中文导读】正式对局的确定性连拍拼图：读取spec，调用tools/play.mjs冻结并逐步推进游戏。
+# frames.step单位是毫秒，经debug.step按60Hz推进；wait仅给浏览器完成截帧，不推进冻结的模拟。
+# 用Pillow裁剪、缩放和加标签，输出路径由命令指定；采样临时目录按进程隔离。
+# 依赖Node截帧工具和Pillow，当前临时路径/浏览器默认值带macOS假设，跨平台需另验证。
 # Build a deterministic filmstrip: python3 tools/film.py <spec.json> <out.png> [url]
 # spec: {"setup": "js", "frames": [{"do": "js before stepping", "step": ms, "label": "run 1"} ...], "crop": [x0,y0,x1,y1], "cols": 4}
 import json, sys, subprocess, os

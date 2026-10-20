@@ -1,3 +1,7 @@
+// 【中文导读】批量Boss实验台截帧：一个浏览器顺序处理多份job，输出单图和按固定步进拼接的序列图。
+// job.go是实验台参数，eval为可信页面脚本；shot与film生成不同产物，frame步进单位以job契约为准。
+// 输出目录会创建并写图；失败、信号或正常完成都应关闭浏览器，避免后台仍持续渲染。
+// 当前默认Chrome路径面向macOS，工具语法通过不代表已经在Windows完成实际截帧。
 // Boss-lab capture: ONE headless Chrome, a list of jobs → stills + filmstrips. Always closes the browser.
 // usage: node tools/boss-lab.film.mjs <jobs.json | inline-json> [--out /private/tmp/boss/art] [--w 1600 --h 900]
 // job: { name, go: {preset, t, cam, phase, light, q, ...}, shot?: true, film?: {n, dt, cols, w, h}, eval?: "js" }

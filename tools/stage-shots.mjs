@@ -1,3 +1,7 @@
+// 【中文导读】地图选择页宣传图生成器：按地图/昼夜启动真实场景，隐藏角色与UI后截取WebGL画布。
+// 固定机位和世界时间，清墨水、弹道与特效；双倍超采样用于图片质量，不代表实际游戏渲染成本。
+// --only/--time限制范围，输出目录可能是正式assets/stages；试拍用--scratch或指定测试路径。
+// 截图生成会写图像文件；当前平台浏览器依赖需先满足，不应为补注释顺手重生成全部资产。
 // Stage-select art: one hero shot per stage × time of day, rendered from the REAL game — attract mode
 // booted on the stage, every actor hidden, ink / projectiles / FX cleared, a static cinematic camera, a fixed world
 // clock — then captured straight from the WebGL canvas (no DOM UI) at 2× supersampling and saved as WebP.

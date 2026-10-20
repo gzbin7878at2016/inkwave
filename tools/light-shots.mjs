@@ -1,3 +1,7 @@
+// 【中文导读】灯光A/B测量：固定地图、昼夜、机位、角色位置和种子墨迹后截图比较。
+// 真实游戏页面被冻结，时钟与场景状态受控，避免把随机天气或动画差异误当灯光变化。
+// --perf的读回会同步GPU，是特殊测量开销，不能直接等同正常玩家每帧CPU耗时。
+// 输出PNG和可选perf.json；保持画质、视口与设备相同才有可比较性，结束后释放浏览器。
 // Lighting audit renders: fixed cameras × stages × times from the REAL game (attract mode, loop frozen, bots frozen,
 // a few kids placed on fixed marks, seeded ink, pinned world clock) → PNGs for before/after comparison, plus a perf
 // probe per stage/time (GPU-synced frame time via debug.step + a 1-px readback, draw calls, triangles).

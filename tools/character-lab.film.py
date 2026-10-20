@@ -1,3 +1,7 @@
+# 【中文导读】角色实验台连拍工具：spec可来自文件或JSON，先lab.go冻结场景，再逐帧执行动作和采样。
+# frames.step按本工具契约使用秒，与正式游戏film.py的毫秒参数不同，传值前必须区分。
+# 通过Node工具获取页面图，再用Pillow按crop/cols等参数拼图；输出不是实时录屏视频。
+# setup/do为可信页面代码，使用相同姿态、机位和画质才能比较模型或动画修改。
 # Character-lab filmstrip: python3 tools/character-lab.film.py <spec.json | inline json> <out.png>
 # spec: {"q": "&lod=hero", "go": {lab.go options}, "setup": "js after go", "frames": [{"do": "js", "step": seconds, "label": "…"}],
 #        "crop": [x0, y0, x1, y1], "cols": 4, "w": 1280, "h": 720, "tile": 360}

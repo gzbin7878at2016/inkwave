@@ -1,3 +1,7 @@
+// 【中文导读】无头浏览器单图截取工具，按URL、输出路径、视口和可选页面脚本采样。
+// --eval和--evalAfter分别用于截图前不同阶段的设置；等待时间是浏览器墙钟，不是游戏步进。
+// 记录页面告警/错误方便排查白屏，成功写PNG不等于游戏无错误。
+// 当前Chrome路径和ANGLE/Metal选项面向macOS；其他平台需先明确浏览器及GPU后端再运行。
 // Headless screenshot/audit helper.
 // usage: node tools/shot.mjs <url> <out.png> [--w 1600] [--h 900] [--wait 2500] [--eval "js expr"] [--evalAfter "js"] [--waitAfter 1000]
 // Prints console errors/warnings from the page. Uses the system Chrome with GPU (ANGLE/Metal) so WebGL renders.
