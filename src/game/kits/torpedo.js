@@ -58,6 +58,7 @@ const HP = smoothProfile([[0.0105, -0.086], [0.016, -0.081], [0.022, -0.072], [0
 const FIN = { R: 0.0331, z0: -0.016, n: 4, span: 1.8 };        // fin arc radius, root front z, count, unfold swing (rad)
 const PROP_AT = new V3(0, YC, -0.0895);
 
+// 模型拆成壳体、折叠翼与桨；手持版合并，世界版保留可动零件。
 function buildTorpedo() {
   const { Parts, C, M, latheZ, torus, at, decal, squidShape, chevrons, wrapZ, profR, led, gripSleeve } = GEO_KIT;
   const P = new Parts(), I = new Parts(), L = new Parts();
@@ -128,6 +129,7 @@ function finAz(k) { return Math.PI / 4 + k * Math.PI / 2 - 0.47; }
 function finPivot(k) { const a = finAz(k); return new V3(Math.cos(a) * FIN.R, YC + Math.sin(a) * FIN.R, FIN.z0); }
 // a curved fin: an arc of the hull's cylinder (radius FIN.R), root along +Z at azimuth finAz(0), running round the hull
 // (counter-clockwise seen from the nose) — folded it lies flush; turning it clockwise about its root swings it out
+// 生成单片翼的局部几何，其他翼按轴向方位复用。
 function finGeometry() {
   const { wrapZ } = GEO_KIT;
   const s = new THREE.Shape();                       // x = back along the hull from the root front, y = round the hull
@@ -143,6 +145,7 @@ function finGeometry() {
   return wrapZ(mergeVertices(g, 1e-6), FIN.R, finAz(0), FIN.z0, YC);
 }
 // fin k folded, in prop space (for the held prop)
+// 应用翼的方位和材质属性，保持与墨色合并几何的属性布局一致。
 function finAt(fin, k) {
   const g = fin.clone();
   g.translate(0, -YC, 0).rotateZ(finAz(k) - finAz(0)).translate(0, YC, 0);
@@ -156,6 +159,7 @@ function finAt(fin, k) {
 // =============================================================================================== world rig
 // per torpedo (its lens brightens as it locks and launches)
 function glowMat(team) { return new THREE.MeshStandardMaterial({ color: 0x111111, emissive: G.teamColors[team].clone(), emissiveIntensity: 1.2, roughness: 0.3 }); }
+// 装配翼轴、桨轴与发光镜头，保存引用供状态表现驱动。
 function buildRig(team) {
   const d = getSubDef('torpedo');
   const col = G.teamColors[team];
@@ -182,6 +186,7 @@ function buildRig(team) {
   outer.userData = { model, fins, prop, glow: gm };
   return outer;
 }
+// 把展开量、桨转角和发光状态写入可动零件，不决定锁敌或命中。
 function poseRig(t) {
   const U = t.mesh.userData, k = t.fin;
   for (const f of U.fins) f.rotation.z = -FIN.span * k;
@@ -209,6 +214,7 @@ const RING_FS = `
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }`;
+// 创建目标脚下锁定提示圈，其变换独立于鱼雷本体。
 function makeRing(team) {
   const mat = new THREE.ShaderMaterial({
     uniforms: { uColor: { value: G.teamColors[team].clone() }, uTime: { value: 0 }, uAlpha: { value: 0 } },
@@ -224,6 +230,7 @@ function makeRing(team) {
 // droplets: glossy team-ink blobs, one instanced draw
 const MAX_DROPS = 96;
 let dropMesh = null;
+// 延迟创建有数量上限的墨滴实例化网格，降低派生墨滴绘制开销。
 function dropsMesh() {
   if (dropMesh && dropMesh.parent) return dropMesh;
   if (!dropMesh) {
@@ -247,6 +254,7 @@ function locked(t) { return t.state === 'unfold' || t.state === 'launch'; }
 function live(t) { return t.state !== 'dead'; }
 
 // 生成投掷并记录初始位置速度；已有存活鱼雷时由使用门禁拒绝再次投掷。
+// 按投掷初始条件生成鱼雷并同步；脚下补墨由拥有者产生。
 function use(subs, a, sub) {
   const pos = a.pos.clone(); pos.y += 1.35;
   const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new V3());
@@ -264,6 +272,7 @@ function use(subs, a, sub) {
 // Online, a remote player's torpedo is a ghost: it flies the same arc, but its owner decides the rest — records
 // [3, gid, foe nid, x, y, z] the lock, [4, gid, x, y, z, dx, dy, dz, speed] its swim (10 a second, dead-reckoned in
 // between), [1, gid, x, y, z, full] the burst, [2, gid, shot] an end without one. Hits on a ghost go to its owner.
+// 初始化耐久、目标和展开状态，gid 对应后续锁定、采样及结束事件。
 function spawn(subs, a, sub, pos, vel, ghost, gid) {
   const mesh = buildRig(a.team);
   const scene = sceneOf(subs);
@@ -282,6 +291,7 @@ function spawn(subs, a, sub, pos, vel, ghost, gid) {
 }
 const byNid = (n) => (n >= 0 ? G.actors.find((e) => e.nid === n) || null : null);
 const own = (gid) => list.find((t) => !t.ghost && t.gid === gid && live(t));
+// 按操作码接收远端创建、锁定、飞行采样和结束，不自行重选权威结果。
 function ghost(a, d) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
@@ -303,12 +313,14 @@ function ghost(a, d) {
   else if (op === 2) { if (d[2]) destroy(t); else fizzle(t); }
 }
 
+// 将模型 Z 轴对齐运动方向，再叠加自身滚转。
 function orient(t, dir) {
   _q.setFromUnitVectors(ZAX, _v3.copy(dir).normalize());
   t.mesh.quaternion.copy(_q);
   t.mesh.rotateZ(t.roll);
 }
 
+// 运动拆成约 1/60 秒以内的子步；拥有者每 0.1 秒同步追踪姿态，表现每帧更新。
 function tick(dt) {
   if (!list.length && !drops.length) return;
   for (let i = list.length - 1; i >= 0; i--) {
@@ -340,6 +352,7 @@ function tick(dt) {
 }
 
 // ---- in flight: gravity arc; locks onto a foe in range, bursts small on touching anything first
+// 未锁定时按重力飞行，碰物体先小爆裂；达到布防时间才搜索目标。
 function fly(t, h) {
   const s = t.sub;
   t.prev.copy(t.pos);
@@ -390,6 +403,7 @@ function startLock(t, e) {
   if (e) emit('sub:arm', { kind: 'torpedo', pos: t.pos.clone(), team: t.team, radius: t.sub.radius, target: e, actor: t.owner });
 }
 // ---- locked: hovers, fins swing out, turns to face the foe
+// 锁定后悬停展翼并朝目标转向，完成展开后才进入加速追踪。
 function unfold(t, h) {
   const s = t.sub;
   if (!t.ghost && (!t.target || !t.target.alive)) t.target = findTarget(t, s.lockRange * 1.4) || t.target;
@@ -407,6 +421,7 @@ function unfold(t, h) {
   }
 }
 // ---- launched: swims at the foe, speeding up, homing gently; bursts on a foe, a wall or the floor
+// 拥有者限制加速度和转向角速度，逐段检查碰撞；远端使用采样外推。
 function launch(t, h) {
   const s = t.sub;
   if (t.ghost) return swim(t, h);
@@ -432,6 +447,7 @@ function launch(t, h) {
   if (t.t > s.launchLife) burst(t, true);
 }
 // a ghost's swim: dead-reckoned from its owner's last report, eased onto it
+// 以最后收到的位置、方向与速度外推，再平滑靠拢，减轻采样间跳动。
 function swim(t, h) {
   const N = t.net;
   t.prev.copy(t.pos);
@@ -444,6 +460,7 @@ function swim(t, h) {
   t.speed = N.s;
 }
 // any foe's body along this step
+// 检测本步线段与敌方胶囊，命中后把位置移回接触参数对应点。
 function touchFoe(t) {
   for (const e of G.actors) {
     if (e.team === t.team || !e.alive) continue;
@@ -455,6 +472,7 @@ function touchFoe(t) {
   return null;
 }
 // enemy curtains, shields, sprinklers, beacons, bubbles … count as surfaces (the probe does no damage)
+// 以零伤害探测装置和护盾是否挡住鱼雷，爆炸伤害随后统一结算。
 function touchDevice(t) {
   if (G.subs?.blockShot(t.prev, t.pos, t.team, 0)) return true;
   if (G.specials?.shotHit?.(t.prev, t.pos, t.team, 0, t.owner)) return true;
@@ -462,6 +480,7 @@ function touchDevice(t) {
 }
 // Locked form vs lethal bombs (the Drip Curtain rule): an enemy bomb that touches it goes off right there (and its
 // blast then sets the torpedo off too, through damageArea)
+// 锁定形态可触发接触的本机敌方炸弹；远端炸弹由其拥有者决定。
 function lethalContact(t) {
   const P = G.projectiles;
   // (only this client's own bombs and subs: a remote player's are set off on its owner's screen)
@@ -520,6 +539,7 @@ function burst(t, full) {
   if (full) spawnDrops(t, c);
 }
 // shot down (or out of the world): gone without a blast
+// 被击落走无害摧毁路径，shot 标记供网络结束事件区分。
 function destroy(t) {
   if (!live(t)) return;
   t.state = 'dead'; t.shot = true;
@@ -530,11 +550,13 @@ function destroy(t) {
   }
   emit('sub:destroyed', { kind: 'torpedo', pos: t.pos.clone(), team: t.team });
 }
+// 入水或失效只消失并播放落水表现，不造成爆炸伤害。
 function fizzle(t) {
   if (!live(t)) return;
   t.state = 'dead';
   if (nearCam(t.pos, 40)) { G.fx?.waterPlop?.(t.pos, 0.4); }
 }
+// 静默回放不扣血，远端受击转发拥有者，由拥有者决定击落。
 function hurt(t, dmg) {
   if (!live(t) || !(dmg > 0) || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
   t.flash = 1;
@@ -544,6 +566,7 @@ function hurt(t, dmg) {
 }
 
 // ---- droplets: fly out of a locked burst, ink where they land, 12 a hit, three hits per foe at most
+// 完整爆炸派生墨滴，共享本次爆炸命中计数，限制每名敌人的受击总次数。
 function spawnDrops(t, c) {
   const s = t.sub, rec = { hits: new Map() };
   const base = Math.random() * Math.PI * 2;
@@ -556,6 +579,7 @@ function spawnDrops(t, c) {
       size: 0.075 + Math.random() * 0.035, dmg: s.dropDamage, cap: s.dropHits, paint: s.dropPaint });
   }
 }
+// 更新墨滴并写实例矩阵；删除时用末尾替换，避免移动整个数组。
 function tickDrops(dt) {
   if (!drops.length) { if (dropMesh) dropMesh.count = 0; return; }
   const M = dropsMesh();
@@ -577,6 +601,7 @@ function tickDrops(dt) {
   if (M.instanceColor) M.instanceColor.needsUpdate = true;
 }
 // one droplet's step → true when it's done
+// 墨滴按重力和线段碰撞推进；命中上限来自共享记录，触地涂墨后结束。
 function dropStep(d, dt) {
   {
     d.age += dt;
@@ -613,6 +638,7 @@ function dropStep(d, dt) {
 }
 
 // ---- per-frame look: fold/unfold, spin, glow, lock ring, trail, whirr
+// 按飞行、展开与发射状态驱动翼、桨、发光、锁定圈及循环音。
 function visuals(t, dt) {
   const s = t.sub;
   if (t.state === 'fly') {
@@ -655,12 +681,14 @@ function visuals(t, dt) {
   }
   if (t.whirr) t.whirr.set({ pos: t.pos, pitch: t.state === 'launch' ? 1 + t.speed / 10 : t.state === 'unfold' ? 0.8 + 0.6 * clamp(t.t / s.unfoldTime, 0, 1) : 0.8, volume: t.state === 'fly' ? 0.3 : 0.55 });
 }
+// 撤下实例，释放独立材质、圈与声音；共享模型几何继续复用。
 function dispose(t) {
   if (t.mesh) { t.scene.remove(t.mesh); t.mesh.userData.glow?.dispose(); t.mesh = null; }
   if (t.ring) { t.scene.remove(t.ring); t.ring.geometry.dispose(); t.ring.material.dispose(); t.ring = null; }
   if (t.whirr) { t.whirr.stop(0.12); t.whirr = null; }
 }
 // 换局时同时清鱼雷本体、锁定标记和派生墨滴，不能只删主网格留下伤害对象。
+// 换局清空鱼雷和墨滴，并复位实例化网格显示数量。
 function clearAll() {
   for (const t of list) { t.state = 'dead'; dispose(t); }
   list.length = 0; drops.length = 0;
@@ -668,11 +696,13 @@ function clearAll() {
 }
 
 // ---- shoot-down: enemy shots / beams / blasts
+// 求点在线段上的最近参数，供射击拦截检测使用。
 function closestOnSeg(a, b, p, out) {
   _v3.subVectors(b, a); const L2 = _v3.lengthSq();
   const k = L2 > 1e-9 ? clamp(_v.subVectors(p, a).dot(_v3) / L2, 0, 1) : 0;
   return out.copy(a).addScaledVector(_v3, k);
 }
+// 敌方弹道命中可射击鱼雷时扣耐久并吸收投射物。
 function blockShot(prev, pos, team, dmg) {
   for (const t of list) {
     if (!live(t) || t.team === team) continue;
@@ -683,6 +713,7 @@ function blockShot(prev, pos, team, dmg) {
   }
   return false;
 }
+// 射线检查可击落鱼雷，返回可能缩短的射程。
 function blockRay(from, dir, len, team, dmg) {
   let best = len, hitT = null;
   for (const t of list) {
@@ -700,6 +731,7 @@ function blockRay(from, dir, len, team, dmg) {
 }
 // a blast went off: enemy torpedoes caught in it — locked ones treat a lethal blast like a Drip Curtain (they go off
 // at once), anything else takes the damage (20 shoots one down)
+// 遍历爆炸范围内敌方鱼雷，具体受损或引爆交给 areaHit。
 function damageArea(c, radius, dmg, team) {
   for (const t of list.slice()) {
     if (!live(t) || t.team === team) continue;
@@ -716,6 +748,7 @@ KIT_GHOSTS.torpedoArea = { netHurt(gid, dmg) { const t = own(gid); if (t) areaHi
 
 // ---- query hook for bots (bots.js shoots down / sidesteps enemy Torpedoes): one stable descriptor per torpedo, getters
 // read its live state (see kits/registry.js `threats`). Read-only: nothing here changes how the torpedo behaves.
+// 缓存只读威胁描述，getter 读取实时状态，供 Bot 决定躲避或击落。
 function threatOf(t) {
   if (t.thr) return t.thr;
   const s = t.sub, v = new V3();

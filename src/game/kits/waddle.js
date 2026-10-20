@@ -50,6 +50,7 @@ const L = 0.012;                                   // the body sits this much hi
 const HIP = [new V3(0.03, 0.058, 0.004), new V3(-0.03, 0.058, 0.004)];
 const LAMP = new V3(0, 0.2195, 0);
 const lift = (pts) => pts.map(([r, y]) => [r, y + L]);
+// 生成身体、面罩、传感眼、天线与提手；提示灯按手持或世界模型需要装配。
 function waddleBody(withLamp) {
   const P = new Parts(), I = new Parts();
   const bowlP = smoothProfile(lift([[0.022, 0.0365], [0.045, 0.044], [0.058, 0.058], [0.0635, 0.077], [0.0645, 0.094]]), 8);
@@ -86,6 +87,7 @@ function waddleBody(withLamp) {
 }
 function lampGeo() { return superEllipsoid(0.0074, 0.0074, 0.0074, 1, 1, 12, 8); }
 // one leg at rest (s = +1 right / −1 left): hip ball, shin, a big cream foot with a rubber sole
+// 按左右侧生成短腿，世界实例保留独立转轴做交替步行。
 function waddleLeg(s) {
   const P = new Parts(), h = HIP[s > 0 ? 0 : 1];
   P.add(at(superEllipsoid(0.0115, 0.0115, 0.0115, 1, 1, 12, 8), h.x, h.y, h.z), C.dark, M.gloss);
@@ -101,6 +103,7 @@ registerSubModel('waddle', () => {
     grip: { pos: new V3(0, 0.1 + L, -0.089), handZ: new V3(0, -1, 0), handY: new V3(-0.3, -0.1, -1) } };
 });
 let WG = null;   // world geometry (legs re-centred on their hips, lamp separate), built once
+// 缓存世界模型几何，避免每次投掷重建身体和腿。
 function worldGeo() {
   if (!WG) {
     const b = waddleBody(false);
@@ -109,6 +112,7 @@ function worldGeo() {
   return WG;
 }
 // outer (at the feet, yaw = heading) → rock (waddle roll about the feet) → tilt (tumble about the middle) → model
+// 装配倾斜、摇摆与腿节点，提示灯使用实例独立材质。
 function makeMesh(team) {
   const g = worldGeo(), col = G.teamColors[team];
   const outer = new THREE.Group(), rock = new THREE.Group(), tilt = new THREE.Group(), model = new THREE.Group();
@@ -148,6 +152,7 @@ const RING_FS = `
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }`;
+// 圈的参数控制展开、扫描和锁定收拢，圈本身不搜索目标。
 function makeRing(col, alpha = 1) {
   const mat = new THREE.ShaderMaterial({
     uniforms: { uColor: { value: col.clone() }, uTime: { value: 0 }, uAlpha: { value: alpha }, uGrow: { value: 0 }, uLock: { value: 0 }, uSweep: { value: 1 } },
@@ -247,6 +252,7 @@ SFX.waddle_walk = {
 // ================================================================================================= the bomb
 // Bots lob it at their foe: the aim pitch that lands a throw (throwVelocity: pitch + 0.28 rad, +1.5 m/s up, released
 // 1.35 m up, gravity 24) d m out and dy above the thrower's feet; null if it can't reach (as bots.js lobPitch).
+// 枚举仰角估计落点，误差过大返回 null。
 function lobPitch(d, dy, speed) {
   let best = null, be = Infinity;
   for (let p = -0.5; p <= 0.75; p += 0.025) {
@@ -257,6 +263,7 @@ function lobPitch(d, dy, speed) {
   }
   return be < 1.2 ? best : null;
 }
+// 预判敌人位置并缩短落点，留出落地后的行走距离。
 function botLob(a, sub, short) {
   const b = a.bot, t = b?.target;
   if (!t || !t.alive || b.mode !== 'fight') return;
@@ -266,6 +273,7 @@ function botLob(a, sub, short) {
   a.aimYaw = Math.atan2(tx - a.pos.x, tz - a.pos.z); a.aimPitch = p;
 }
 const items = [];
+// 取抛物线初始条件创建实例并同步，Bot 可先调整投掷角度。
 function use(subs, a, sub) {
   if (a.bot) botLob(a, sub, 2);         // land it just short of the foe: it walks the rest
   const pos = a.pos.clone(); pos.y += 1.35;
@@ -279,6 +287,7 @@ function use(subs, a, sub) {
 // off by itself — its owner's records drive it: [3, gid, foe nid, x, y, z] a lock, [4, gid, x, y, z, heading, foe nid]
 // its walk (10 a second), [1, gid, x, y, z] the blast, [2, gid, popped] an end without one. Hits on a ghost go to the
 // owner (netHurt).
+// 初始化飞行、导航、追踪与进度检测状态，gid 索引后续网络事件。
 function spawn(a, sub, pos, vel, ghost, gid) {
   const m = makeMesh(a.team);
   m.outer.position.copy(pos).setY(pos.y - MID);
@@ -292,6 +301,7 @@ function spawn(a, sub, pos, vel, ghost, gid) {
   return it;
 }
 const byNid = (n) => (n >= 0 ? G.actors.find((e) => e.nid === n) || null : null);
+// 远端按拥有者的锁定、位置与结束记录回放，不自行选敌或决定爆炸。
 function ghost(a, d) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
@@ -318,6 +328,7 @@ function near(p, r) { const c = G.rig?.gameCam || G.camera; return !!c && c.posi
 function credit(it, area) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
 const alive = (e) => e && e.alive && !e.superJumpState;
 // the nearest foe inside the circle (horizontal senseRadius, within senseUp above / below)
+// 按水平半径和高差选最近敌人，排除死亡及超级跳跃中的角色。
 function scan(it, R) {
   let best = null, bd = Infinity;
   for (const e of G.actors) {
@@ -330,6 +341,7 @@ function scan(it, R) {
 }
 
 // ---- flight: arcs like the other thrown subs; floors stop it, walls and ceilings bounce it
+// 碰地进入感知，碰墙或顶则反弹减速，沉入水下无害消失。
 function fly(it, dt) {
   it.vel.y -= GRAV * dt;
   _v.copy(it.pos);
@@ -346,10 +358,12 @@ function fly(it, dt) {
   it.m.outer.position.copy(it.pos).setY(it.pos.y - MID);
   it.m.tilt.rotation.x += it.spin.x * dt; it.m.tilt.rotation.z += it.spin.z * dt;
 }
+// 仅播放小型消失音并标记死亡，不生成爆炸。
 function plop(it) {
   if (near(it.pos, 40)) G.audio?.play('splat_small', { pos: it.pos, volume: 0.5, pitch: 0.7 });
   it.state = 'dead';
 }
+// 落地清速度和倾斜，建立贴地感知圈并切等待状态。
 function land(it, h) {
   const s = it.sub;
   it.pos.copy(h.point);
@@ -383,6 +397,7 @@ function sense(it, dt) {
   if (it.blinked && near(it.pos, 30)) G.audio?.play('bomb_beep', { pos: it.pos, volume: 0.3 + 0.35 * k, pitch: 1.05 + 0.3 * k });
   if (it.t >= s.fuse && !it.ghost) { it.why = 'fuse'; blast(it); }
 }
+// 保存目标进入短暂唤醒，广播目标编号与位置供远端对齐。
 function lock(it, tgt) {
   if (!it.ghost) netRec(it.owner, 'waddle', [3, it.gid, tgt?.nid ?? -1, r2(it.pos.x), r2(it.pos.y), r2(it.pos.z)]);
   it.target = tgt; it.state = 'wake'; it.t = 0; it.ringT = 0; it.repath = 0;
@@ -394,6 +409,7 @@ function lock(it, tgt) {
   emit('sub:lock', { kind: 'waddle', pos: it.pos.clone(), team: it.team, actor: it.owner, target: tgt });
 }
 // ---- waking: a little hop on the spot to face its foe ("!"), then off it goes
+// 短跳转向敌人，结束后开启行走及卡住进度检测。
 function wake(it, dt) {
   const T = it.target, M_ = it.m;
   if (alive(T)) it.heading += clamp(angleDiff(it.heading, Math.atan2(T.pos.x - it.pos.x, T.pos.z - it.pos.z)), -14 * dt, 14 * dt);
@@ -418,6 +434,7 @@ function repath(it) {
   if (p && p.length > 1) { it.path = p; it.pi = 1; }
 }
 // where to head: the foe itself when close on the same level (or with no route), else the next node on the route
+// 近处同层直接追敌，否则沿导航路径逐个节点前进。
 function goal(it) {
   const T = it.target, nav = G.nav;
   const dh = Math.hypot(T.pos.x - it.pos.x, T.pos.z - it.pos.z), dy = T.pos.y - it.pos.y;
@@ -431,6 +448,7 @@ function goal(it) {
   _goal.set(n.x, n.y, n.z);
   return n;
 }
+// 拥有者决定追踪与爆炸，每 0.35 秒重算路线，每 0.1 秒发送姿态。
 function walk(it, dt) {
   if (it.ghost) return follow(it, dt);
   const s = it.sub;
@@ -478,6 +496,7 @@ function walk(it, dt) {
   look(it, dt, moved, T);
 }
 // a ghost's walk: eased onto its owner's reported spot and heading
+// 远端平滑靠拢拥有者位置和航向，实测距离仅驱动步态表现。
 function follow(it, dt) {
   const N = it.net;
   let moved = 0;
@@ -490,6 +509,7 @@ function follow(it, dt) {
   }
   look(it, dt, moved, alive(it.target) ? it.target : null);
 }
+// 按移动距离更新交替脚步、侧摆、前倾、灯光及循环音。
 function look(it, dt, moved, T) {
   const s = it.sub, M_ = it.m;
   // ---- look: the waddle (alternating feet, a side-to-side roll, a forward lean), beacon blinking, noise
@@ -508,6 +528,7 @@ function look(it, dt, moved, T) {
 }
 // one step on the flat: slide along walls, snap onto the ground (steps ≤ 0.45 m), never onto open water
 // 步行推进要配合地面、台阶与落差检测，动作表现不能跳过物理约束。
+// 先沿墙滑动再查地面；无地面则停，落差切下落，正常地形贴地。
 function stepWalk(it, dt, spd) {
   const hx = Math.sin(it.heading), hz = Math.cos(it.heading), step = spd * dt;
   let mx = hx * step, mz = hz * step;
@@ -531,6 +552,7 @@ function stepWalk(it, dt, spd) {
   it.pos.set(nx, gy, nz);
   return moved;
 }
+// 离台后受重力下落，落地恢复寻路，跌入水下无害消失。
 function fallStep(it, dt) {
   const x0 = it.pos.x, z0 = it.pos.z, y0 = it.pos.y;
   it.vel.y -= GRAV * dt;
@@ -547,6 +569,7 @@ function fallStep(it, dt) {
   it.m.outer.position.copy(it.pos);
   return Math.hypot(it.pos.x - x0, it.pos.z - z0);
 }
+// 台阶节点建立半秒跳跃，保存起终点并前移路径索引。
 function startHop(it, node) {
   it.hop = { t: 0, dur: 0.5, x0: it.pos.x, y0: it.pos.y, z0: it.pos.z, x1: node.x, y1: node.y, z1: node.z };
   it.heading = Math.atan2(node.x - it.pos.x, node.z - it.pos.z);
@@ -554,6 +577,7 @@ function startHop(it, node) {
   if (near(it.pos, 30)) G.audio?.play('waddle_hop', { pos: it.pos, volume: 0.6 });
 }
 // a hop up a step: rises first, then over (horizontal eased in), landing on the node
+// 先抬高再缓入水平位移，落点到达后清跳跃并重算路线。
 function hopStep(it, dt) {
   const H = it.hop, x0 = it.pos.x, z0 = it.pos.z;
   H.t += dt;
@@ -564,11 +588,13 @@ function hopStep(it, dt) {
   return Math.hypot(it.pos.x - x0, it.pos.z - z0);
 }
 
+// 按周期短闪，暴露本帧新闪标记供提示音去重。
 function blinkLamp(it, dt, period, bright) {
   it.blink -= dt; it.blinked = false;
   if (it.blink <= 0) { it.blink = period; it.blinked = true; }
   it.m.lampMat.emissiveIntensity = it.blink > period - 0.08 ? bright : 0.25;
 }
+// 近镜头时建立步行循环音，离远后停止以节约声源。
 function noise(it, pitch) {
   it.noisy = true;
   if (near(it.pos, 42) && G.audio) {
@@ -576,8 +602,10 @@ function noise(it, pitch) {
     it.loop.set({ pos: it.pos, pitch });
   } else if (it.loop) { it.loop.stop(0.15); it.loop = null; }
 }
+// 清发声标记并平滑停止循环，供静止与销毁共用。
 function hush(it) { it.noisy = false; if (it.loop) { it.loop.stop(0.1); it.loop = null; } }
 
+// 主动爆炸统一处理涂地、视线伤害、装置伤害及网络结束事件。
 function blast(it) {
   if (it.state === 'dead') return;
   const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team];
@@ -620,6 +648,7 @@ function hurt(it, dmg) {
   if (it.hp > 0 || it.ghost) return;
   pop(it);
 }
+// 被打掉仅碎裂并标记死亡，与主动爆炸范围伤害分开。
 function pop(it) {
   _c.copy(it.pos); _c.y += 0.22;
   if (near(_c, 40)) {
@@ -640,6 +669,7 @@ function dispose(it) {
 }
 
 // the ring: open while sensing; on a lock it flashes and closes in on the bomb; gone once it's walking
+// 感知时展开雷达圈，锁定后收拢淡出并释放圈的独立材质。
 function ringFx(it, dt) {
   const R = it.ring;
   if (!R) return;
@@ -656,6 +686,7 @@ function ringFx(it, dt) {
 
 // aiming preview: the sensing circle around the throw arc's landing ring
 let preview = null;
+// 在抛物线落点周围显示感知半径，停止瞄准时隐藏。
 function previewFx() {
   const a = G.local, P = G.projectiles;
   const show = !!(a && a.alive && a.weaponRunner?.aimingSub && a.sub?.kind === 'waddle' && P?.arcRing?.visible);
@@ -671,6 +702,7 @@ function previewFx() {
 
 // ---- query hook for bots (bots.js dodges / shoots enemy Waddles): one stable descriptor per bomb, getters read its
 // live state (see kits/registry.js `threats`). Read-only: nothing here changes how the bomb behaves.
+// 只读威胁对象以 getter 提供状态、速度及剩余追踪时间，不改变炸弹行为。
 function threatOf(it) {
   if (it.thr) return it.thr;
   const s = it.sub, v = new V3();
