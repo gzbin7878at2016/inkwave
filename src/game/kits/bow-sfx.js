@@ -14,6 +14,7 @@
 import { SFX } from '../../audio/audio.js';
 import { mtof, pts, sweep } from '../../audio/music.js';
 
+// 导入时把配方登记到共享 SFX 表，不会在模块加载时立即播放声音。
 const def = (name, o) => { SFX[name] = o; };
 
 // 拉弓循环叠加摩擦噪声与弦的低音，蓄力变化通过句柄更新，松手后由调用方释放。
@@ -21,6 +22,7 @@ def('bow_draw', {
   gain: 0.3, max: 3, jitter: 0, reverb: 0.04, oneShot: 1.1,
   loop(v, p) {
     const T = v.t;
+    // 带通噪声用方波低频调制切分，模拟受力弓臂的黏滑吱声。
     // stick-slip creak: band-passed noise chopped by a square LFO (rate rises with the load)
     const cr = v.gain(0.3, v.out), crBp = v.filter('bandpass', 700 * p, 4, cr);
     v.noise('pink', T, null, crBp);
@@ -33,6 +35,7 @@ def('bow_draw', {
     const air = v.gain(0.05, v.out);
     v.noise('white', T, null, v.filter('highpass', 5200, 0.7, air));
     return {
+      // 循环音通过平滑调参跟随充能，复用已有振荡器，避免每帧新建声源。
       pitch(q, now) {
         const k = 0.04;
         lf.osc.frequency.setTargetAtTime(9 + 16 * q, now, k); crBp.frequency.setTargetAtTime(420 + 520 * q, now, k);
@@ -43,6 +46,7 @@ def('bow_draw', {
   },
 });
 
+// 第一档提示把短木敲和单个琴音叠加，音色与满档双铃音区分。
 def('bow_ring1', {
   gain: 0.3, max: 2, jitter: 0, reverb: 0.14,
   build(v, p) {
@@ -55,6 +59,7 @@ def('bow_ring1', {
   },
 });
 
+// 满档提示用前后两个高音及弦光泽噪声，给出明确充能完成反馈。
 def('bow_full', {
   gain: 0.28, max: 2, jitter: 0, reverb: 0.22,
   build(v, p) {
@@ -73,6 +78,7 @@ def('bow_loose', {
   gain: 0.58, max: 4, jitter: 0.03, reverb: 0.14,
   build(v, p) {
     const T = v.t;
+    // 松弦音包络先快起后衰减，叠加多个略偏离整数倍的分音模拟弦震动。
     // twang: a plucked string, pitch sags as it rings out
     const tw = v.gain(0, v.out), lp = v.filter('lowpass', 2600 * p, 1.2, tw);
     pts(tw.gain, T, [[0, 0], [0.003, 0.7], [0.05, 0.32], [0.24, 0]]);
@@ -90,6 +96,7 @@ def('bow_loose', {
   },
 });
 
+// 箭插入表面时叠加冲击和箭杆余震，minGap 限制密集命中的声音堆叠。
 def('bow_thunk', {
   gain: 0.5, max: 6, jitter: 0.06, reverb: 0.08, minGap: 0.03,
   build(v, p) {
@@ -106,6 +113,7 @@ def('bow_thunk', {
   },
 });
 
+// 待爆提示只合成短高音，播放间隔由玩法层控制，本配方不计引信时间。
 def('bow_tick', {
   gain: 0.32, max: 8, jitter: 0.02, reverb: 0.06,
   build(v, p) {

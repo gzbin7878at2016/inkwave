@@ -179,7 +179,7 @@ bars[小节].ev[16分音符] 事件表(编译期就把循环点/riser/跨小节�
 
 ## 4. 武器自带音效:模块副作用注册
 
-`kits/bow-sfx.js` 展示了一种干净的协作模式([bow-sfx.js:5-17](../src/game/kits/bow-sfx.js#L5)):
+`kits/bow-sfx.js` 展示了一种干净的协作模式([bow-sfx.js:5-18](../src/game/kits/bow-sfx.js#L5)):
 
 ```js
 import { SFX } from '../../audio/audio.js';
@@ -198,7 +198,7 @@ main.js import './game/kits/index.js'
 kit 逻辑里 G.audio.play('bow_loose', …) 按名播放 【bow.js:146】
 ```
 
-拉弓是个**循环声**(`loop` 返回 `{pitch(q,now)}` 句柄):按住鼠标期间持续响,松手时实时把频率/增益往上推再释放([bow-sfx.js:20-44](../src/game/kits/bow-sfx.js#L20))。
+拉弓是个**循环声**(`loop` 返回 `{pitch(q,now)}` 句柄):按住鼠标期间持续响,松手时实时把频率/增益往上推再释放([bow-sfx.js:21-47](../src/game/kits/bow-sfx.js#L21))。
 
 ---
 

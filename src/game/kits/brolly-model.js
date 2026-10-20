@@ -42,6 +42,7 @@ const TEAM_GORE = (k) => (k & 1) === 1;       // odd gores wear the team ink
 const CREAM = '#f4efe4', CREAM_HEM = '#e0d4bd', WHITE = '#ffffff', WHITE_HEM = '#cfcfcf', HANDLE = '#c08a58', HANDLE_DK = '#8a5a33';
 
 // gore-local point on the dome: crown at the origin, axis +Z, gore centred on +Y, azimuth ps toward +X
+// 由球面角求伞片局部点，off 控制沿曲面内外厚度偏移。
 function gp(th, ps, off, out = new V3()) {
   const r = RS + off;
   return out.set(r * Math.sin(th) * Math.sin(ps), r * Math.sin(th) * Math.cos(ps), -RS + r * Math.cos(th));
@@ -50,6 +51,7 @@ const sag = (th, ps) => -0.022 * (th / TH) * Math.cos(ps * (Math.PI / 2) / GW); 
 const thEnd = (ps) => TH * (1 - 0.075 * Math.cos(ps * (Math.PI / 2) / GW));              // scalloped rim
 
 /** Thin sheet from a parametric surface: outer + inner skins (smooth) and flat side walls. pt(u, v, inner, out). */
+// 用参数网格生成双层薄片，并沿边界补侧壁，保持伞布有厚度。
 function sheet(ni, nj, pt) {
   const W = nj + 1, outer = [], inner = [], v = new V3();
   for (let i = 0; i <= ni; i++) for (let j = 0; j <= nj; j++) {
@@ -85,6 +87,7 @@ function sheet(ni, nj, pt) {
 }
 
 /** One gore (gore-local frame): fabric, hem band, rib along its +ps edge, rib tip bead (+ the squid print on gore 0). */
+// 在单片伞布坐标系中生成布面、骨条与装饰，随后再旋到对应方位。
 function goreLocal(P, k) {
   const team = TEAM_GORE(k);
   const fab = team ? WHITE : CREAM, hem = team ? WHITE_HEM : CREAM_HEM;
@@ -113,6 +116,7 @@ function goreLocal(P, k) {
 }
 
 /** A jagged tear across a gore (damage stages); both skins, dark. Gore-local frame. */
+// 以固定种子生成不规则破损边缘，供两个耐久阶段选择显示。
 function tearLocal(P, th0, th1, ps0, ps1, seed) {
   let s = seed >>> 0; const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
   const n = 7, w = 0.011, pts = [];
@@ -141,6 +145,7 @@ const TEARS = [
 
 // gore frame ↔ weapon (or canopy) space: rotation about +Z by the gore's azimuth; the furled fold in the gore frame
 const goreRot = (k) => new THREE.Matrix4().makeRotationZ(-k * (Math.PI * 2 / NG));
+// 折叠矩阵在伞片自身坐标内组合绕 X 轴折转和三个方向缩放。
 function foldMatrix(a, sx, sy, sz, out = new THREE.Matrix4()) {
   const c = Math.cos(a), s = Math.sin(a);
   // Rx(a) · diag(sx, sy, sz)
@@ -170,6 +175,7 @@ export function canopyOpenGeo() {
   return _openGeo;
 }
 
+// 整枪按握把原点生成，八片伞布以收拢姿态注册为可动部件。
 function buildBrolly() {
   const P = new Parts(), I = new Parts(), T = new Parts(), RUN = new Parts(), LAMP = new Parts();
   // ---- crook handle: a pistol grip wrapped round the right fist's handle axis, curling forward into an umbrella J
@@ -254,6 +260,7 @@ const _lampOk = new THREE.Color('#3dff7a'), _lampMid = new THREE.Color('#ffc21a'
 const easeOutBack = (t) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2; };
 
 /** Per-instance fabric materials (vertex colour × team / white; emissive = hit flash + low-hp flicker). */
+// 队伍伞布与白伞布分别配置清漆和光泽；实例材质供透明与受击表现独立更新。
 export function makeFabric(color, team) {
   return new THREE.MeshPhysicalMaterial({ color: color.clone(), vertexColors: true, roughness: team ? 0.32 : 0.5, metalness: 0, clearcoat: team ? 0.7 : 0.25, clearcoatRoughness: 0.12,
     sheen: 0.5, sheenRoughness: 0.45, sheenColor: team ? color.clone().lerp(_w, 0.5) : new THREE.Color('#ffffff'), emissive: 0x000000, name: team ? 'iw-brolly-ink' : 'iw-brolly-cream' });
@@ -261,12 +268,14 @@ export function makeFabric(color, team) {
 
 // the canopy is big enough to matter to the AO / depth-normal passes (small parts sit those out: see character.js
 // partGate) — always draw it, whatever pass is running
+// 伞面参与深度、法线与遮蔽等渲染通道，渲染前恢复完整绘制范围。
 function drawAlways(renderer, scene, camera, geometry) { geometry.drawRange.count = Infinity; }
 
 // 为一个手持实例准备可动部件和材质状态，避免不同角色开伞时互相覆盖。
 function initInstance(w, st) {
   const d = w.def, local = !!(st.runner && st.runner.a && st.runner.a.isLocal);
   const S = { gores: [], tears: [[], []], col: new THREE.Color().copy(st.color), inkMat: makeFabric(st.color, true), creamMat: makeFabric(_w, false), local };
+  // 本地开伞会半透明，减轻肩后视角遮挡；其他角色伞面保持实体表现。
   // your own canopy turns see-through as it opens (it would otherwise fill the over-the-shoulder view)
   if (local) for (const m of [S.inkMat, S.creamMat]) m.transparent = true;
   const crown = new V3(0, AY, CROWN_Z);
@@ -300,6 +309,7 @@ function initInstance(w, st) {
   return S;
 }
 let _strutGeo = null;
+// 撑杆单位几何只构建一次，运行时通过矩阵缩放到当前两端之间。
 function strutGeo() {
   if (_strutGeo) return _strutGeo;
   const P = new Parts(); P.add(lathe([[0, 0], [1, 0], [1, 1], [0, 1]], 6), C.gunmetal, M.metal);
@@ -314,6 +324,7 @@ export function animateBrolly(w, st) {
   const dt = Math.min(0.1, Math.max(0, st.dt || 0)), t = st.t || 0;
   const S = w.bs || (w.bs = initInstance(w, st));
   const open = k ? k.open : 0, grow = k ? k.grow : 1;
+  // 远档合并模型只有收拢形态；开伞、再生或消失时必须保留实时部件。
   // LOD: the merged far mesh is the furled brolly — anything else (open, regrowing, gone) keeps the live parts
   const near = st.near !== false || open > 0.004 || grow < 0.999;
   if (near !== w.near) {
@@ -327,6 +338,7 @@ export function animateBrolly(w, st) {
   if (!S.col.equals(st.color)) { S.col.copy(st.color); S.inkMat.color.copy(st.color); S.inkMat.sheenColor.copy(st.color).lerp(_w, 0.5); }
   for (const G of S.gores) if (G.mesh.material !== G.mat) G.mesh.material = G.mat;
   if (!near) return;
+  // 每片矩阵先撤销建模时折叠，再应用当前折叠、方位和冠部平移，避免绕错枢轴。
   // ---- gores: fold angle / squash from the (eased, overshooting) openness; hit recoil; regrowth scale from the crown
   const eo = open <= 0 ? 0 : open >= 1 ? 1 : (k && k.opening ? easeOutBack(open) : open * open * (3 - 2 * open));
   const flutter = open > 0.9 ? 0.012 * Math.sin(t * 13.7) : 0, kick = k ? k.shake || 0 : 0;
@@ -340,6 +352,7 @@ export function animateBrolly(w, st) {
     G.g.matrix.copy(_M); G.g.matrixWorldNeedsUpdate = true;
     G.g.visible = grow > 0.002;
   }
+  // 撑杆每帧连接滑环与变换后的伞骨锚点，随开合改变方向和长度。
   // struts: runner collar → rib (both where they are this frame)
   if (S.struts) {
     const rz = RUNNER_Z0 + (RUNNER_Z1 - RUNNER_Z0) * Math.min(1, Math.max(0, eo)), show = grow > 0.05;
@@ -354,6 +367,7 @@ export function animateBrolly(w, st) {
       u.m.matrix.makeBasis(_sx, _sy, _sz).setPosition(_sa); u.m.matrixWorldNeedsUpdate = true;
     }
   }
+  // 伞面存在且耐久低于 66%/33% 时分级显示破损，再生未完成时抑制残留破口。
   // tears by hp stage (only while the canopy is there)
   const hpf = k ? k.hp / k.hpMax : 1, have = grow > 0.5;
   for (const m of S.tears[0]) m.visible = have && hpf < 0.66;
@@ -365,6 +379,7 @@ export function animateBrolly(w, st) {
     w.trig = (w.trig || 0) + (want - (w.trig || 0)) * (1 - Math.exp(-(want ? 40 : 20) * dt));
     P.trigger.rotation.x = 0.42 * w.trig;
   }
+  // 灯光按生命从绿到黄到红，破损或发射后改为随再生进度闪烁的蓝灯。
   // status lamp: hp green → amber → red; off (broken / launched) with a blue blink while it regrows
   if (P.lamp) {
     const m = P.lamp.userData.mesh.material;
@@ -382,10 +397,12 @@ export function animateBrolly(w, st) {
   const flick = low ? (Math.sin(t * 37) * Math.sin(t * 23.3) > 0.2 ? 0.35 : 0) : 0;
   S.inkMat.emissive.copy(S.col).multiplyScalar(0.5 * fl + flick).lerp(_w, fl * 0.5);
   S.creamMat.emissive.setRGB(1, 1, 1).multiplyScalar(0.45 * fl + flick * 0.6);
+  // 本地伞面透明后关闭深度写入，接近全不透明时恢复，减少半透明遮挡问题。
   if (S.local) {
     const op = 1 - 0.56 * Math.min(1, Math.max(0, open));
     for (const m of [S.inkMat, S.creamMat]) { m.opacity = op; m.depthWrite = op > 0.99; }
   }
 }
 
+// 对外提供完整模型配方；注册和玩法状态在伞枪 kit 中负责。
 export function brollyDef() { return buildBrolly(); }

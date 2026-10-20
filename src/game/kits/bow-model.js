@@ -34,13 +34,16 @@ const ROOT_U = new V3(0, 0.165, 0.118), ROOT_L = new V3(0, -0.19, 0.118); // lim
 const ARROW = 0.5;                   // nocked arrow length (nock → tip)
 const INK = C.white;                 // (ink parts ignore the vertex colour; the team gloss material paints them)
 
+// 对扫掠工具封装统一半径和截面扁率，供弓身细长部件复用。
 function sweepY(pts, r, flat, extra = {}) {
   return sweep(pts.map((p) => new V3(p[0], p[1], p[2])), { seg: 22, radial: 12, capSteps: 3, radius: r, flat, outward: (P, o) => o.set(1, 0, 0), ...extra }).geo;
 }
+// 把合并几何、复制的局部枢轴及材质类别打包为可动部件定义。
 function part(P, pivot, mat = 'body', lamp = null) { return { src: P.build(), pivot: pivot.clone(), mat, lamp }; }
 
 // one limb (sign +1 upper, -1 lower): the centreline leaves the riser pocket, bends back toward the archer and curls
 // away again at the tip (the recurve); the string touches the belly where the curl starts (TIP_*)
+// 同一控制点按正负号生成上下弓臂，保持两端反曲轮廓对称。
 function limbPts(sign) {
   const y0 = sign > 0 ? ROOT_U.y : ROOT_L.y;
   const prof = [[0, 0.118], [0.06, 0.104], [0.115, 0.07], [0.16, 0.032], [0.196, 0.0105], [0.217, 0.0052], [0.234, 0.013], [0.247, 0.036]];
@@ -93,6 +96,7 @@ function buildBow() {
     LB.add(at(cap, 0, tip[1] + sign * 0.001, tip[2] + 0.001), C.cream, M.gloss);
     LB.add(at(superEllipsoid(0.0108, 0.0022, 0.0072, 0.6, 0.6, 8, 4), 0, tip[1] - sign * 0.009, tip[2] - 0.004), C.dark, M.satin);
   }
+  // 上下两段弦分别从搭箭点连到弓臂尖端，后续动画独立更新长度与方向。
   // ---- string (two halves from the nock to the tips) — cream bowstring, dark centre serving, brass nock beads
   for (const [S, tip, s] of [[SU, TIP_U, 1], [SL, TIP_L, -1]]) {
     const L = Math.abs(tip.y);
@@ -102,6 +106,7 @@ function buildBow() {
     S.add(sv, C.darker, M.rubber);
     S.add(at(superEllipsoid(0.0038, 0.0028, 0.0038, 1, 1, 8, 5), 0, s * 0.012, 0), '#d8a640', M.metal);
   }
+  // 搭在弓上的三支箭属于手持表现，松弦后隐藏，空中弹道由玩法模块创建。
   // ---- three nocked ink arrows fanned in the bow's plane: ink shafts, glowing ink-bulb heads, fletching + nocks
   for (const a of [FAN, 0, -FAN]) {
     const sh = latheZ([[0, -0.004], [0.0052, -0.004], [0.0052, ARROW - 0.06], [0, ARROW - 0.06]], 8); sh.rotateX(-a); AR.add(sh, INK);
@@ -134,6 +139,7 @@ function buildBow() {
     gripL: { pos: new V3(0, -0.047, B - 0.001), handZ: new V3(0, 1, 0), handY: new V3(0, -0.12, -1) },
   };
 }
+// 把半径剖面样条等距采样，并将半径钳到非负以避免翻面。
 function _smooth(ctrl, n = 14) {
   const c = new THREE.SplineCurve(ctrl.map(([r, y]) => new THREE.Vector2(r, y)));
   return c.getSpacedPoints(n).map((p) => [Math.max(0, p.x), p.y]);
@@ -142,6 +148,7 @@ function _smooth(ctrl, n = 14) {
 // ---------------------------------------------------------------------------------------------- animation
 const _v = new V3(), _v2 = new V3(), UPV = new V3(0, 1, 0), DNV = new V3(0, -1, 0), _white = new THREE.Color(1, 1, 1);
 const RING1 = WEAPONS.bow?.ring1 ?? 0.45;
+// 绕弓臂根部旋转尖端静置坐标，给弦端点提供弯曲后的实际位置。
 function tipAt(tip, root, th, out) {
   const dy = tip.y - root.y, dz = tip.z - root.z, c = Math.cos(th), s = Math.sin(th);
   return out.set(tip.x, root.y + dy * c - dz * s, root.z + dy * s + dz * c);
@@ -163,6 +170,7 @@ function animateBow(w, st) {
   const hand = Math.max(0, w.bowDraw ?? 0);
   const drawing = R ? !!R.charging : (st.charge || 0) > 0.01;
   const c = R ? (R.charge || 0) : (st.charge || 0);
+  // 角色握弦手后移时反向补偿整弓位置，让世界中的弓身和左手保持稳定。
   // the bow rides forward by the fist's draw (so it stays put in the world)
   w.off.position.copy(s.rest).addScaledVector(s.ax, d.drawLen * hand);
   // string: rides the fist while drawing; loosed, it snaps home and rings, then waits for the fist to come back
@@ -170,6 +178,7 @@ function animateBow(w, st) {
   if (rel < s.lastRel - 1e-4) { s.loose = true; s.strV = 0; }
   s.lastRel = rel;
   if (drawing) s.loose = false;
+  // 松弦后用欠阻尼弹簧的解析解推进回弹；振幅和手部归位满足阈值才结束。
   if (s.loose) {
     const om = Math.PI * 2 * 15, z = 0.3;   // exact underdamped spring toward 0
     const wd = om * Math.sqrt(1 - z * z), e = Math.exp(-z * om * dt), co = Math.cos(wd * dt), sn = Math.sin(wd * dt);
@@ -187,11 +196,13 @@ function animateBow(w, st) {
   const tu = tipAt(TIP_U, ROOT_U, -phi, new V3()), tl = tipAt(TIP_L, ROOT_L, phi, new V3());
   aimString(P.stringU, nock, tu, UPV, Math.abs(TIP_U.y));
   aimString(P.stringL, nock, tl, DNV, Math.abs(TIP_L.y));
+  // 松弦后的短间隔先隐藏三箭，再渐进显示下一组；不会重复发射玩法弹体。
   // nocked arrows: gone on the release (they're flying), a fresh trio nocks in a beat later
   const show = drawing ? 1 : rel < 0.3 ? 0 : Math.min(1, (rel - 0.3) / 0.12);
   for (const g of [P.arrows, P.heads, P.fletch]) {
     g.position.copy(nock); g.scale.setScalar(Math.max(0.001, show)); g.visible = show > 0.01;
   }
+  // 灯环与箭头发光读取共享充能阈值，保持第一档和满档提示一致。
   // glow: heads brighten at each ring; the riser's rings light in turn (coil material)
   const ring = c >= 0.999 ? 2 : c >= RING1 ? 1 : 0;
   const want = drawing ? 0.35 + 1.4 * c + (ring >= 1 ? 1.4 : 0) + (ring === 2 ? 2.2 + 0.9 * Math.sin(t * 30) : 0) : 0.35;
