@@ -1,3 +1,9 @@
+// 【中文导读】Cloudflare Worker + Durable Object 房间中继，每个房间码对应一个独立 Room。
+// 服务器只管理连接、成员、房主选举与消息转发，不模拟物理、判定命中或计算涂地比分。
+// 游戏负载 b|/s| 原样转发，只有服务器控制消息才解析 JSON；不要误把转发层当作权威游戏服务器。
+// PROTO 必须与客户端一致，Origin 白名单限制网页来源；白名单不是用户身份认证。
+// 房主是最早加入且仍存活的成员，离开时统一广播新 host；重复关闭/报错需幂等处理。
+// 比赛与大厅使用不同静默阈值，自动 ping/pong 时间也计入活跃，避免休眠房间误踢健康连接。
 // INKWAVE online relay (Cloudflare Worker + Durable Object).
 //
 //   GET /room/<CODE>?name=<name>&create=1&v=<proto>   (WebSocket upgrade) → the Room object for that code
@@ -29,6 +35,7 @@ const SILENT_MATCH = 20000, SILENT_LOBBY = 150000, SWEEP = 4000;   // a heavy tr
 const CODE = /^[A-Z0-9]{4,8}$/;
 
 export default {
+  // Worker入口先校验路径、升级握手和Origin，再按房间码路由到 Durable Object。
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok', { headers: { 'access-control-allow-origin': '*' } });
@@ -59,6 +66,7 @@ export class Room extends DurableObject {
   }
   host() { const ms = this.members(); return ms.length ? ms[0].a.id : null; }
 
+  // Room握手检查协议、重名房间、人数和比赛锁；只有通过后才登记成员并广播加入。
   async fetch(req) {
     const url = new URL(req.url);
     const pair = new WebSocketPair();
@@ -89,6 +97,7 @@ export class Room extends DurableObject {
   }
 
   // liveness sweep (only while the room has members)
+  // 周期清扫静默连接；取最近消息、加入和平台自动回包时间的最大值作为活跃依据。
   async alarm() {
     const now = Date.now(), limit = this.locked ? SILENT_MATCH : SILENT_LOBBY;
     for (const m of this.members()) {
@@ -98,6 +107,7 @@ export class Room extends DurableObject {
     if (this.members().length) await this.ctx.storage.setAlarm(Date.now() + SWEEP);
   }
 
+  // 先做大小/速率预算，再按包头广播或定向转发；超限关闭也走统一成员离开处理。
   async webSocketMessage(ws, msg) {
     if (typeof msg !== 'string') return;
     const me = ws.deserializeAttachment();
@@ -132,6 +142,7 @@ export class Room extends DurableObject {
   async webSocketClose(ws) { this._gone(ws); }
   async webSocketError(ws) { this._gone(ws); }
 
+  // 统一处理close/error/超时；gone标记防止重复广播，最后一个成员离开后解除房间锁。
   _gone(ws) {
     this.seen.delete(ws); this.rate.delete(ws);
     const a = ws.deserializeAttachment();
