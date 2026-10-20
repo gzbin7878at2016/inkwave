@@ -23,6 +23,7 @@ const GRID = 1;
 // 槽位、材质名与生成函数须保持配套；未使用槽位由纹理库按既有兜底处理。
 export const SURFACES = [
   {
+    // 槽 40：花岗岩小石块地面，立面重定向工程砖；alpha 通道保存底色覆盖而非透明度。
     slot: 40, name: 'setts', onWall: 41,
     mat: {
       detail: 0.6, scale: 2.0, tint: true, mask: true, alpha: false, mode: GRID, sym: 1, hr: [-0.016, 0.006], ao: 0.55,
@@ -80,6 +81,7 @@ export const SURFACES = [
     },
   },
   {
+    // 槽 41：英式砌法工程砖，逐皮交替长砖与丁砖，叠加玻化亮面、盐霜和潮湿。
     slot: 41, name: 'engbrick', onTop: 40,
     mat: {
       detail: 0.55, scale: 1.8, tint: true, mask: true, alpha: false, mode: GRID, sym: 1, hr: [-0.009, 0.001], ao: 0.5,
@@ -127,6 +129,7 @@ export const SURFACES = [
     },
   },
   {
+    // 槽 42：坡面横向防滑石肋与铺石；纹理高度不替代实际坡道碰撞。
     slot: 42, name: 'hoofsteps', onWall: 41,
     mat: {
       detail: 0.5, scale: 1.8, stair: [0.45, 4, 0.55, 3], tint: true, mask: true, alpha: false, mode: GRID, sym: 1, hr: [-0.016, 0.03], ao: 0.4,

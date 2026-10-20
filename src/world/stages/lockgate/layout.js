@@ -38,10 +38,13 @@ const wall = (o = {}) => brick({ roof: true, ...o });
 
 // ---- the diagonal frame: s along u = (c, c) (south-west → north-east), t along v = (-c, c) (toward Bravo's bank)
 const c = Math.SQRT1_2;
+// 运河斜坐标 s/t 旋转 45 度转世界 x/z，后面的盒体与坡面共用此入口。
 const W = (s, t) => [c * (s - t), c * (s + t)];                          // frame → world (x, z)
 // box in the frame: s0…s1 along u, t0…t1 along v → turned piece (local x along u)
+// 斜坐标范围先求中心，再生成转向盒体；宽高参数仍按局部轴解释。
 const D = (s0, s1, t0, t1, y0, y1, o) => { const [x, z] = W((s0 + s1) / 2, (t0 + t1) / 2); return O(x, z, s1 - s0, t1 - t0, y0, y1, -45, o); };
 // ramp in the frame: low / high points given as [s, y, t]
+// 坡面两端各自转为世界坐标，Y 高度保留，避免斜桥和坡面朝向不一致。
 const DR = (lo, hi, width, o) => { const [lx, lz] = W(lo[0], lo[2]), [hx, hz] = W(hi[0], hi[2]); return R([lx, lo[1], lz], [hx, hi[1], hz], width, o); };
 const nU = [c, 0, c], nV = [-c, 0, c];                                   // frame normals (for murals / noPaint)
 const neg = (n) => n.map((k) => -k);
@@ -65,6 +68,7 @@ const LOCKGATE = {
   // stage-select picture: from over lock W's south side, across the humpback bridge + moored boats to ANCHOR MILLS
   art: { from: [-24, 14, -12], look: [8, 0, 4], fov: 66 },
   single: [],
+  // 以下只定义一队半场，另一侧由布局装配旋转复制；中心结构需检查是否重复。
   half: [
     // ================= canal: towpath quay, lock E (both sides; lock W is its twin), basins, drained chamber, boats
     D(-16.4, 17.85, -HW - TOW, -HW, -3, 0.15, { tag: 'towpath', color: LG.lockside, pattern: PATTERN.brick }),
@@ -82,6 +86,7 @@ const LOCKGATE = {
     D(3.3, 11.1, -2.57, -0.47, -2.6, -0.7, { tag: 'boat-b-hull', color: LG.hull, pattern: PATTERN.hullpaint }),
     D(4.6, 10.4, -4.62, -2.72, -0.7, 0.25, { tag: 'boat-a-hold', color: '#2c3a31', pattern: PATTERN.rubber }),
     D(4.3, 10.1, -2.47, -0.57, -0.7, 0.25, { tag: 'boat-b-cabin', color: '#2f4a3c', pattern: PATTERN.hullpaint, mural: [{ n: nV, id: 4 }] }),
+    // 闸室用宽实坡连接上下闸门，避免窄坑或悬梯下楔形空间卡住 Bot。
     // gate walkways (lower gates x 16.5, upper gates x 24.5); one broad maintenance stair fills the drained chamber from the
     // lower gate up to the upper gates (two scaffold handrails split it into three flights). Solid: a narrow pit or the
     // wedge under a free-spanning flight is somewhere bots get pinned.
@@ -95,6 +100,7 @@ const LOCKGATE = {
     D(-2.2, 2.2, -8.4, -7, 0, 3.0, { tag: 'bridge-abutment', color: LG.setts, pattern: SURF.setts, noPaint: [nV] }),
     DR([0, 0, -15.2], [0, 3.0, -8.4], 4.4, { tag: 'bridge-ramp', color: LG.setts, pattern: SURF.hoofsteps }),
     DR([0, 3.0, -7], [0, 3.3, 0], 4.4, { tag: 'bridge-crest', thin: true, thickness: 0.5, color: LG.setts, pattern: SURF.setts }),
+    // 桥侧墙可爬墨，顶沿可站但不涂墨、不进导航；perch 与 noNav 是不同规则。
     // parapets: the outer brick walls are inkable (swim up them from the street onto the bridge) and reach the ground
     // along the approaches; the tops are walkable, never-inked perches (+8 cm: feet in the stone coping, the level top
     // hidden inside it) that routes never run along — nobody slides off them any more
@@ -114,6 +120,7 @@ const LOCKGATE = {
     // raised flagged apron along the chamfered south-west corner (hides the stepped setts edge)
     D(-39.6, -38.1, -11.3, -1.41, -0.6, 0.15, { tag: 'apron', color: LG.quay, pattern: PATTERN.pavers }),
 
+    // 出生货台与三条上台路径共同构建，出生点高度须与台面保持一致。
     // ================= spawn: the loading stage in front of LOCKGATE WHARF (x -5 … 13)
     B(-12, 22, 0, 4.6, -46, -45.4, wall({ tag: 'warehouse-front' })),
     B(-5, 13, 0, 2.2, -45.4, -38.4, brick({ tag: 'spawn-stage' })),
@@ -137,6 +144,7 @@ const LOCKGATE = {
     B(-14.5, -12.5, 2.45, 2.6, -31.5, -27, { tag: 'outshut-roof', color: LG.leads, pattern: PATTERN.asphalt }),
     R([-24.5, 0, -27.5], [-24.5, 1.3, -21], 3, { tag: 'horse-ramp', color: LG.setts, pattern: SURF.hoofsteps }),
 
+    // 办公室屋顶露台有明确上楼梯，和标记 roof 的禁入建筑顶部区分。
     // ================= centre-west: canal company office, roof terrace (2.6) reached by an iron stair
     B(-8, -1.5, 0, 2.45, -26, -18, brick({ tag: 'office' })),
     B(-8, -1.5, 2.45, 2.6, -26, -18, { tag: 'office-roof', color: LG.leads, pattern: PATTERN.asphalt }),

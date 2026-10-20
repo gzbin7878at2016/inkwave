@@ -20,9 +20,12 @@ export const MURAL_IDS = { livery: 4, shedSign: 5, westAd: 6, eastAd: 7 };
 
 const CREAM = '#efe3c2', GREEN = '#2f4a3c', RED = '#8e2f2a', YELLOW = '#e2b54b', BLACK = '#1f2226';
 
+// 建立圆角矩形路径，填色与描边交给调用方。
 function rr(g, x, y, w, h, r) { g.beginPath(); g.roundRect(x, y, w, h, r); }
+// 测文字宽度后逐步缩小字号，保持招牌文字在指定宽度内。
 function fitFont(g, s, maxW, px, fontFn) { let p = px; g.font = fontFn(p); while (g.measureText(s).width > maxW && p > 8) { p -= 2; g.font = fontFn(p); } return p; }
 // sign-writer's shaded letters: drop shade down-right, a thin outline, then the face
+// 先画右下阴影和细描边，再画正面色，模拟手绘招牌的立体字。
 function shaded(g, s, x, y, px, fontFn, face, shade, outline, maxW) {
   const p = fitFont(g, s, maxW, px, fontFn);
   g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
@@ -31,14 +34,17 @@ function shaded(g, s, x, y, px, fontFn, face, shade, outline, maxW) {
   if (outline) { g.lineWidth = Math.max(2, p * 0.06); g.strokeStyle = outline; g.strokeText(s, x, y); }
   g.fillStyle = face; g.fillText(s, x, y);
 }
+// 用花瓣与中心图案组成装饰花朵，局部位置尺寸由调用方传入。
 function rose(g, x, y, r, c) {
   g.fillStyle = c;
   for (let k = 0; k < 5; k++) { const a = (k / 5) * Math.PI * 2; g.beginPath(); g.arc(x + Math.cos(a) * r * 0.55, y + Math.sin(a) * r * 0.55, r * 0.55, 0, Math.PI * 2); g.fill(); }
   g.fillStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.arc(x - r * 0.2, y - r * 0.25, r * 0.35, 0, Math.PI * 2); g.fill();
   g.fillStyle = YELLOW; g.beginPath(); g.arc(x, y, r * 0.28, 0, Math.PI * 2); g.fill();
 }
+// 用 save/restore 隔离叶片的平移旋转，避免影响后续图集绘制。
 function leaf(g, x, y, r, a) { g.save(); g.translate(x, y); g.rotate(a); g.fillStyle = '#4f7a3a'; g.beginPath(); g.ellipse(0, 0, r, r * 0.45, 0, 0, Math.PI * 2); g.fill(); g.restore(); }
 // weather a painted area: pale speckle, scrubbed streaks (ghost signs lose paint in vertical runs)
+// 固定种子生成浅色斑点与纵向擦痕，让旧招牌可复现且不会每次加载随机变化。
 function weather(g, x, y, w, h, seed, amount) {
   let s = seed * 9301 + 49297;
   const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
@@ -49,9 +55,11 @@ function weather(g, x, y, w, h, seed, amount) {
 }
 
 // 在当前地图分配的图集区域绘制并返回条目；地图局部编号与共享编号0至3分开。
+// 只在本地图分配区域 R 内绘制并返回贴面表；图集像素与世界米制尺寸分开。
 export function drawMurals(g, R, kit) {
   const out = [];
   const font = kit.font, fontB = kit.fontB;
+  // 编号 4 对应船舱侧面涂装，横向沿船首到船尾，需与布局面方向相符。
   // ---- 4: PERSEVERANCE cabin side, 5.8 x 0.95 m (u runs bow → stern) at 240 px/m
   {
     const x = R.x, y = R.y, w = 1392, h = 228, ppm = 240;
@@ -72,6 +80,7 @@ export function drawMurals(g, R, kit) {
     g.fillStyle = YELLOW; g.fillRect(x, y + h - 0.1 * ppm, w, 4); g.fillStyle = RED; g.fillRect(x, y + h - 0.08 * ppm, w, 0.08 * ppm);
     out.push({ id: 4, x, y, w, h, m: [5.8, 0.95], fx: [0.35, 0.3] });
   }
+  // 编号 5 是货棚端面的旧商号招牌，风化效果只影响外观。
   // ---- 5: J. BARGE & SONS ghost sign on the transit shed's yard end (sign band 9.4 x 0.9 m, placed on the face)
   {
     const X = R.x, Y = R.y + 240, Wd = 1520, Hd = 160, x = X + 8, y = Y + 8, w = Wd - 16, h = Hd - 16;
@@ -81,6 +90,7 @@ export function drawMurals(g, R, kit) {
     weather(g, x, y, w, h, 5, 1.2);
     out.push({ id: 5, x: X, y: Y, w: Wd, h: Hd, place: [0.2, 9.6, 3.66, 1.0], fx: [1, 1] });
   }
+  // 编号 6 绘制后院凹墙上的墨水广告。
   // ---- 6: SQUIDLEY'S INKS advert on the notch wall of the back yard (6.8 x 2.4 m)
   {
     const X = R.x + 1030, Y = R.y + 410, Wd = 1016, Hd = 374, x = X + 8, y = Y + 8, w = Wd - 16, h = Hd - 16;
@@ -93,6 +103,7 @@ export function drawMurals(g, R, kit) {
     weather(g, x, y, w, h, 11, 1.6);
     out.push({ id: 6, x: X, y: Y, w: Wd, h: Hd, place: [0.3, 6.8, 1.3, 2.5], fx: [1, 1] });
   }
+  // 编号 7 绘制东边界墙的运河公司长招牌。
   // ---- 7: CANAL CARRYING Co. on the east boundary wall (13 x 2.2 m)
   {
     const X = R.x, Y = R.y + 700, Wd = 1016, Hd = 190, x = X + 8, y = Y + 8, w = Wd - 16, h = Hd - 16;
