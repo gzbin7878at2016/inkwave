@@ -99,7 +99,7 @@ trigger('hit')   →  按受击方向给方向性冲量;累计 3 次进 stagger(
 
 ## 4. 人形 ⇄ 鱿鱼:一次对齐时间的"pop"
 
-- 由 `intent.squid` 决定(与开火竞争,最近按键赢,[actor.js:314-322](../src/game/actor.js#L314));
+- 由 `intent.squid` 决定(与开火竞争,最近按键赢,[actor.js:348-351](../src/game/actor.js#L348-L351));
 - 切换是 0.45 秒的缩放动画:人形 scaleY/scaleXZ 走 Catmull-Rom 曲线缩没,鱿鱼反向出现,双方可见性阈值 0.001([character.js:1767](../src/game/character.js#L1767));
 - **中途反向不打断**:`_formEnter`(:1774)从当前缩放进度接续时间线,就像视频播放器拖进度条而不是重播;
 - 鱿鱼⇄游泳⇄爬墙之间不切(无 pop);鱿鱼自己的蠕动由 `_updateSquid`(:4332)程序化生成:干地小跳、海豚弧线、游动波动、爬墙扭动,连眨眼都有。

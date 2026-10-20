@@ -28,7 +28,7 @@
 ② 材质工厂    按风格建 9 种材质               character.js:669-681
      │  (skin/cloth/hair/dark/eye/fill/squid/squidGhost/glow)
      ▼
-③ 几何构建    共享缓存 getKidShared(lod)      character-geo.js:1893
+③ 几何构建    共享缓存 getKidShared(lod)      character-geo.js:1867
      │  皮肤/衣服/眼睛/墨罐按 lod|bodyLevel 缓存;
      │  发型 getHairStyle(st, lod) 键 = hair.hat.brows.lod.quality
      ▼
@@ -88,7 +88,7 @@
 
 ### 2.2 逆绑定矩阵 = 纯平移
 
-[RIG 里](../docs/RIG.zh-CN.md)说骨骼静置朝向恒为单位矩阵,于是([character-geo.js:1914](../src/game/character-geo.js#L1914)):
+[RIG 里](../docs/RIG.zh-CN.md)说骨骼静置朝向恒为单位矩阵,于是([getBoneInverses](../src/game/character-geo.js#L1908-L1911)):
 
 > 逆绑定矩阵 = `translate(-rest)` ——没有旋转参与,装配和调试都极大简化。
 
@@ -108,15 +108,15 @@ Builder.add(geo, {
 
 ## 3. LOD:三档 + 屏幕抖动交叉淡化
 
-[character-lod.js](../src/game/character-lod.js)(154 行)做了两件大事:
+[character-lod.js](../src/game/character-lod.js)负责三件事:按屏幕尺寸选档、生成远档几何、注入切档抖动材质。
 
 ### 3.1 按"屏幕高度"选档
 
-不是按距离,是按**角色在屏幕上占多少像素**(`LOD_QUALITY` :18-23):本地玩家视角里自己永远 hero 档,远处敌人在你屏幕上只剩 78px 时切 far 档。带 ±12% 迟滞防边界抖动(:26-34)。屏幕高度由**实际绘制该角色的相机**经 `onBeforeRender` 钩子回填([character.js:675-683](../src/game/character.js#L675))——菜单展示台、实验室相机天然可用。
+不是按距离,是按**角色在屏幕上占多少像素**([LOD_QUALITY](../src/game/character-lod.js#L42-L48))。本地玩家采用独立的 `heroLocal` 阈值,并非永远 hero:low 档用 Infinity 禁用 hero;high 档的 far 基础阈值为 78px,其他画质不同。[pickTier](../src/game/character-lod.js#L53-L60)加入 ±12% 迟滞防边界抖动。屏幕高度由**实际绘制该角色的相机**经 [_camHook](../src/game/character.js#L684-L690)回填,挂接点是 [onBeforeRender](../src/game/character.js#L1110)——菜单展示台、实验室相机天然可用。
 
 ### 3.2 far 档:bone-aware 顶点聚类减面
 
-`clusterDecimate`(:70-134)把顶点聚类成簇,**簇键 = 网格格 + 主导骨 + 材质 id**:同一根骨影响的顶点才会被合并,关节弯折处不起网;代表点取簇心最近顶点(表面不缩水),法线取平均。由目标三角数反推格尺寸,迭代 3 次逼近(硬目标:皮肤 2600 / 衣 3800 / 发 2000 / 眼 260,[character.js:172](../src/game/character.js#L172))。
+[clusterDecimate](../src/game/character-lod.js#L110)把顶点聚类成簇,**簇键 = 网格格 + 主导骨 + 材质 id**:同一根骨影响的顶点才会被合并,关节弯折处不起网;代表点取簇心最近顶点(表面不缩水),法线取平均。由目标三角数反推格尺寸,迭代 3 次逼近(硬目标:皮肤 2600 / 衣 3800 / 发 2000 / 眼 260,[FAR_TRIS](../src/game/character.js#L160))。
 
 ### 3.3 切换不"pop":screen-door 抖动
 
@@ -129,15 +129,15 @@ Builder.add(geo, {
 ```
 Match 构造                                    【match.js:87(单机) / :109(联机)】
    └─► new Actor({ ..., CharacterClass })     外观:Locker 存档(玩家)/ randomStyle(Bot)
-        └─► Actor 构造                        【actor.js:49,59】
+        └─► Actor 构造                        【actor.js:62,88-91】
              └─► new Character({style, color, weapon…})
                   └─► character.root 挂进场景 【match.js:99】
 
 每帧:
-Actor.update(dt)                意图/物理/伤害   【actor.js:272】
-   └─► _finishFrame() 填 AnimState a            【actor.js:1018-1048】
+Actor.update(dt)                意图/物理/伤害   【actor.js:301】
+   └─► _finishFrame() 填 AnimState a            【actor.js:1153-1202】
         (a.form / a.charge / a.rolling / a.ink / a.hp …)
-        └─► ch.update(dt, a)              【actor.js:1050】★唯一驱动入口
+        └─► ch.update(dt, a)              【actor.js:1202】★唯一驱动入口
              └─► 见 RIG 篇:姿态/弹簧/IK/表情/头发
 ```
 
@@ -153,10 +153,10 @@ Actor.update(dt)                意图/物理/伤害   【actor.js:272】
 |---|---|---|
 | 零贴图材质 | 顶点语义 + shader 现场画图案 | [character-mats.js:1-38](../src/game/character-mats.js#L1) |
 | 权重即回调 | 不写权重贴图,建模代码直接算 | [character-geo.js:519](../src/game/character-geo.js#L519) |
-| 几何共享缓存 | 皮肤/衣服按 `lod\|bodyLevel` 缓存,同风格角色不重复建 | [character-geo.js:1893](../src/game/character-geo.js#L1893) |
+| 几何共享缓存 | 皮肤/衣服按 `lod\|bodyLevel` 缓存,同风格角色不重复建 | [getKidShared](../src/game/character-geo.js#L1867-L1883) |
 | 骨架共享 | 三档 LOD 网格绑同一副 Skeleton,一次 update 全驱动 | [character.js:1091-1115](../src/game/character.js#L1091) |
-| 三角预算 | far 档硬目标 + 聚类迭代 ≤1.12×;lab 有审计工具 | [character.js:172](../src/game/character.js#L172)、[character-lod.js:197](../src/game/character-lod.js#L197) |
-| 生命分级 | far 档不跑表情/眨眼/呼吸,头发半速 | [character.js:1578-1581](../src/game/character.js#L1578) |
+| 三角预算 | far 档硬目标 + 聚类迭代 ≤1.12×;lab 有审计工具 | [FAR_TRIS](../src/game/character.js#L160)、[character-lod.js:197](../src/game/character-lod.js#L197) |
+| 生命分级 | far 档不跑表情/眨眼/呼吸,头发半速 | [lifeLv](../src/game/character.js#L1572-L1575) |
 | 身高 | KID_H = 1.32 m,默认 FOV 下约占视口 28% | [character-lod.js:31-41](../src/game/character-lod.js#L31) |
 
 ---
