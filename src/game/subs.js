@@ -33,10 +33,12 @@ const _res = { t: 0, dist: 0 };
 const GRAV = 24;
 const SUB_SCALE = 1.9;         // prop models are built at hand scale; in the world they read at the splat bomb's size
 
+// 音效和碎片表现按镜头距离裁剪；此判断不负责裁剪伤害或涂地规则。
 function nearCam(p, r = 30) { return G.camera && G.camera.position.distanceToSquared(p) < r * r; }
 
 // ------------------------------------------------------------------------------------------------ curtain shader
 // A sheet of falling ink: scrolling vertical streaks, thicker at the top where it pours from, ragged bottom edge.
+// 墨帘着色器只控制流动条纹、透明边缘和生命衰减外观，拦截逻辑由 CPU 单独计算。
 const CURTAIN_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 const CURTAIN_FS = `
   uniform vec3 uColor; uniform float uTime; uniform float uLife; varying vec2 vUv;
@@ -54,9 +56,11 @@ const CURTAIN_FS = `
     gl_FragColor = vec4(c, a);
   }`;
 
+// 注册网络表现回放入口，通过当前全局副武器系统处理远端记录。
 KIT_GHOSTS.subs = { ghost: (a, d) => G.subs?.netGhost(a, d) };
 
 export class SubSystem {
+  // 创建共享云团几何；订阅主人被击倒和跳跃落地事件，处理喷头移除及信标消耗。
   constructor(scene) {
     this.scene = scene;
     this.items = [];
@@ -66,6 +70,7 @@ export class SubSystem {
     on('superjump:land', ({ actor }) => this._landedOnBeacon(actor));
   }
 
+  // 换局时直接释放所有实例并清理 kit；不逐个触发销毁音效或爆炸。
   clear() {
     for (const it of this.items) this._dispose(it);
     this.items.length = 0;
@@ -84,6 +89,7 @@ export class SubSystem {
     emit('sub:use', { actor: a, kind: sub.kind });
   }
   // a thrown sub in flight (ghost: a remote player's, online — see netGhost)
+  // 创建飞行实例并复制位置、速度，避免复用向量被后续计算覆盖；gid 用于联机事件对应。
   _throw(a, sub, pos, vel, ghost, gid = 0) {
     const mesh = this._prop(sub.kind, a.team);
     mesh.position.copy(pos);
@@ -99,6 +105,7 @@ export class SubSystem {
     return it;
   }
 
+  // 向下找可放置表面，拒绝禁入屋顶、栏杆和高处停靠面；超出数量上限时处理最旧装置。
   _place(a, sub) {
     const g = G.physics.raycast(_v.copy(a.pos).setY(a.pos.y + 0.4), DOWN, 3, _hit);
     if (!g.hit) return; { const gb = G.level.blocks[g.block]; if (gb && (gb.roof || gb.rail || gb.perch)) return; }   // nothing gets planted on an off-limits roof, a railing or a crane perch
@@ -110,6 +117,7 @@ export class SubSystem {
     emit('sub:use', { actor: a, kind: sub.kind, pos: it.pos.clone() });
   }
   // a placed device (mine / beacon) on the floor at pos (g: the floor hit, for the ink under it; ghost: see netGhost)
+  // 将模型朝上方向对齐地面法线，保存涂色面坐标、耐久和信标使用次数。
   _plant(a, sub, pos, normal, yaw, g, ghost, gid = 0) {
     const mesh = this._prop(sub.kind, a.team);
     mesh.position.copy(pos);
@@ -125,6 +133,7 @@ export class SubSystem {
   }
 
   // prop meshes: an outer node (world transform) → inner (offset while flying so it tumbles about its middle) → model
+  // 三层节点分别处理世界姿态、飞行旋转中心偏移和模型缩放；共享几何不在实例内复制。
   _prop(kind, team) {
     const d = getSubDef(kind);
     if (d._top == null) { d.body.computeBoundingBox(); d._top = d.body.boundingBox.max.y; }
@@ -148,6 +157,7 @@ export class SubSystem {
     return outer;
   }
   // lit parts (scan orb band, beacon lamp): team colour that glows a little
+  // 按队伍缓存发光材质，避免为每个信标或扫描球重复创建相同材质。
   _glowMat(team) {
     this._glow = this._glow || [];
     if (!this._glow[team]) {
@@ -165,15 +175,18 @@ export class SubSystem {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       it.age += dt; it.t += dt;
+      // 回放远端对象时临时静默网络输出；finally 保证异常也能恢复静默计数。
       const gm = it.ghost && nm;   // (a ghost's splats are its owner's to send; its hits are dropped as a remote's)
       if (gm) nm.mute++;
       try { this._step(it, dt); } finally { if (gm) nm.mute--; }
+      // 死亡实例由统一更新入口发送结束记录并释放；倒序删除防止漏更新相邻对象。
       if (it.state === 'dead') {
         if (!it.ghost && it.gid) netRec(it.owner, 'subs', [2, it.gid]);
         this._dispose(it); items.splice(i, 1);
       }
     }
   }
+  // state 决定本帧唯一行为入口；各处理函数负责设置下一状态与重置阶段计时。
   _step(it, dt) {
     {
       switch (it.state) {
@@ -200,6 +213,7 @@ export class SubSystem {
   netGhost(a, d) {
     if (!Array.isArray(d)) return;
     const [op, gid] = d;
+    // 操作码 2 结束远端实例并补相应表现；操作码 0/1 分别创建投掷或放置实例。
     if (op === 2) {
       const it = this.items.find((x) => x.ghost && x.gid === gid && x.state !== 'dead');
       if (!it) return;
@@ -210,6 +224,7 @@ export class SubSystem {
       return;
     }
     const sub = SUBS[d[2]];
+    // 重复 gid 的创建记录直接忽略，避免同一远端装置被重复生成。
     if (!sub || this.items.some((x) => x.gid === gid)) return;
     if (op === 0) this._throw(a, sub, _v.set(d[3], d[4], d[5]), _v2.set(d[6], d[7], d[8]), true, gid);
     else if (op === 1) {
@@ -219,6 +234,7 @@ export class SubSystem {
     }
   }
   // the owner's side of a hit on one of its devices, made on another screen
+  // 仅在拥有者端按 gid 受理远端传回的伤害，由拥有者决定装置是否销毁。
   netHurt(gid, dmg) {
     const it = this.items.find((x) => !x.ghost && x.gid === gid && x.state !== 'dead');
     if (it) this._hurt(it, dmg);
@@ -230,6 +246,7 @@ export class SubSystem {
     it.vel.y -= GRAV * dt;
     _v.copy(it.pos);
     it.pos.addScaledVector(it.vel, dt);
+    // 爆裂弹和毒雾弹检查移动线段与角色胶囊的距离，避免高速飞行跨过角色漏判。
     // direct hits on enemies (pellet pops on them, murk bomb poisons them for the whole mist)
     if (it.kind === 'burst' || it.kind === 'mist') {
       for (const e of G.actors) {
@@ -242,6 +259,7 @@ export class SubSystem {
         }
       }
     }
+    // 扫描球与毒雾可在空中到时展开；其余种类等待碰撞后按种类转入落地行为。
     // clouds burst in mid-air when their fuse runs out
     if ((it.kind === 'scan' || it.kind === 'mist') && it.age > s.fuse) { it.kind === 'scan' ? this._startCloud(it) : this._startMist(it); return; }
     const hit = G.physics.segment(_v, it.pos, _hit);
@@ -256,6 +274,7 @@ export class SubSystem {
         case 'seeker': if (floor) return this._startRun(it, hit); break;
         case 'curtain': if (floor) return this._startCurtain(it, hit); break;
       }
+      // 追踪弹和墨帘撞墙时反弹并衰减速度，直到找到能进入地面状态的碰撞。
       // bounce (seeker / curtain off walls, until they find a floor)
       it.pos.copy(hit.point).addScaledVector(n, 0.12);
       const vn = it.vel.dot(n);
@@ -266,6 +285,7 @@ export class SubSystem {
     it.mesh.rotation.x += it.spinV.x * dt; it.mesh.rotation.z += it.spinV.y * dt;
   }
 
+  // 保存接触法线和涂色坐标，取消飞行中心偏移；新喷头替换同一玩家已有喷头。
   _stick(it, hit, state, fuse) {
     it.state = state; it.t = 0; it.fuse = fuse; it.beepT = 0;
     it.normal = hit.normal.clone();
@@ -285,6 +305,7 @@ export class SubSystem {
   }
 
   // ---- cling charge: stuck, blinking faster, then a wide blast
+  // 黏附炸弹随引信缩短加快提示并膨胀，到时爆炸后交给统一入口回收。
   _stuck(it, dt) {
     it.beepT -= dt;
     const k = clamp(it.t / it.fuse, 0, 1);
@@ -298,6 +319,7 @@ export class SubSystem {
   }
 
   // ---- skitter bomb: lands, scuttles after the nearest enemy laying a swimmable trail, bursts on reaching them
+  // 追踪弹落地后建立水平航向，并重置轨迹距离、卡住计时及冲刺锁定状态。
   _startRun(it, hit) {
     it.state = 'run'; it.t = 0;
     it.pos.copy(hit.point);
@@ -306,6 +328,7 @@ export class SubSystem {
     it.mesh.userData.inner.position.y = 0;
     it.mesh.rotation.set(0, it.heading, 0);
   }
+  // 目标为空或已死亡时重新搜索范围内最近敌人；转向受最大角速度限制。
   _run(it, dt) {
     const s = it.sub;
     if (!it.target || !it.target.alive) {
@@ -325,6 +348,7 @@ export class SubSystem {
     if (it.target) {
       const tg = it.target, dx = tg.pos.x - it.pos.x, dz = tg.pos.z - it.pos.z, dist = Math.hypot(dx, dz);
       let d = Math.atan2(dx, dz) - it.heading; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2;
+      // 近距离且对准时锁定直线冲刺，保留侧闪躲避空间；越过目标后恢复转向。
       if (!it.dash && dist < s.commitDist && Math.abs(d) < 0.35) it.dash = true;
       else if (it.dash && (Math.abs(d) > Math.PI / 2 || dist > s.commitDist + 1)) it.dash = false;
       if (!it.dash) {
@@ -343,6 +367,7 @@ export class SubSystem {
     } else {
       it.stuckT = Math.max(0, it.stuckT - dt);
       const nx = it.pos.x + hx * step, nz = it.pos.z + hz * step;
+      // 沿地面高度前进；无地面则消失，按行进距离间隔铺墨，避免按帧铺墨造成密度变化。
       const gy = G.level.groundHeight(nx, nz, it.pos.y + 0.6);
       if (gy === -Infinity) { it.state = 'dead'; if (nearCam(it.pos)) G.fx?.burst(it.pos, UP, G.teamColors[it.team], { count: 10, speed: 3, size: 0.08 }); return; }
       it.pos.set(nx, gy, nz);
@@ -352,6 +377,7 @@ export class SubSystem {
     it.mesh.position.copy(it.pos);
     it.mesh.rotation.set(0, it.heading, 0);
     it.mesh.userData.inner.position.y = Math.abs(Math.sin(it.t * 26)) * 0.025;
+    // 抵达目标、超过寿命或持续卡墙均触发爆炸，防止追踪弹长期滞留。
     const reached = it.target && it.target.pos.distanceTo(it.pos) < s.triggerDist;
     if (reached || it.t > s.life || it.stuckT > 0.6) {
       this._blast(it, _v.copy(it.pos).setY(it.pos.y + 0.2), s.radius, s.damageMax, s.damageMin, s.paintRadius, UP);
@@ -360,6 +386,7 @@ export class SubSystem {
   }
 
   // ---- echo orb: a sensing cloud that tags enemies it touches (tracked for the thrower's team)
+  // 扫描球展开后隐藏投掷物并创建云团；tagged 集合让同一敌人只被此次扫描标记一次。
   _startCloud(it) {
     it.state = 'cloud'; it.t = 0;
     it.mesh.visible = false;
@@ -371,6 +398,7 @@ export class SubSystem {
     if (nearCam(it.pos, 40)) G.audio?.play('special_activate', { pos: it.pos, volume: 0.45, pitch: 1.6 });
     emit('sub:cloud', { kind: 'scan', pos: it.pos.clone(), team: it.team, radius: it.sub.radius });
   }
+  // 先扩大扫描半径再淡出；角色判定使用增长中的逻辑半径，命中后施加追踪状态。
   _cloud(it, dt) {
     const s = it.sub;
     const grow = clamp(it.t / 0.25, 0, 1), fade = clamp((it.t - s.cloudTime * 0.5) / (s.cloudTime * 0.5), 0, 1);
@@ -387,6 +415,7 @@ export class SubSystem {
   }
 
   // ---- murk bomb: a poison mist (no damage) — slows and drains ink while inside; a direct hit lasts the whole mist
+  // 毒雾以多个共享几何实例组成；直击敌人获得整段雾寿命的中毒效果。
   _startMist(it) {
     it.state = 'mist'; it.t = 0;
     it.mesh.visible = false;
@@ -406,6 +435,7 @@ export class SubSystem {
     if (nearCam(it.pos, 40)) G.audio?.play('enemy_ink_sizzle', { pos: it.pos, volume: 0.7, pitch: 0.7 });
     emit('sub:cloud', { kind: 'mist', pos: it.pos.clone(), team: it.team, radius: it.sub.radius });
   }
+  // 区域内敌人持续刷新短时中毒，离开后自然衰减；此处不直接造成生命伤害。
   _mist(it, dt) {
     const s = it.sub;
     const grow = clamp(it.t / 0.4, 0, 1), fade = clamp((it.t - (s.mistTime - 0.8)) / 0.8, 0, 1);
@@ -423,6 +453,7 @@ export class SubSystem {
   }
 
   // ---- drip curtain: a sheet of falling ink across the throw line; blocks enemy players and shots
+  // 按投掷方向建立法线和横向切线，创建专属幕布几何及材质，供拦截计算与显示共用朝向。
   _startCurtain(it, hit) {
     const s = it.sub;
     it.state = 'curtain'; it.t = 0; it.hp = s.hp;
@@ -443,6 +474,7 @@ export class SubSystem {
     if (nearCam(it.pos, 40)) G.audio?.play('swim_splash', { pos: it.pos, volume: 0.8, pitch: 0.8 });
     emit('sub:land', { kind: 'curtain', pos: it.pos.clone(), team: it.team, radius: s.width / 2 });
   }
+  // 耐久随时间衰减并驱动透明度；展开高度只影响初始表现，耗尽后转死亡状态。
   _curtain(it, dt) {
     const s = it.sub;
     it.hp -= s.decay * dt;
@@ -454,6 +486,7 @@ export class SubSystem {
   }
 
   // ---- twirl sprinkler: stuck to a surface, spraying pulses of droplets around itself (weaker after a while)
+  // 喷头持续转动，衰弱后降低喷射频率；远端表现不再生成水滴，水滴由拥有者同步。
   _spray(it, dt) {
     const s = it.sub;
     it.pulseT -= dt;
@@ -463,6 +496,7 @@ export class SubSystem {
     if (it.pulseT > 0 || it.ghost) return;   // (a ghost's drops: its owner's arrive as ghost rounds)
     it.pulseT = s.pulse * (it.t < s.sprayFade ? 1 : 2);
     const n = it.normal;
+    // 在安装表面构造正交切线基，使墙上和地面上的喷头都能向表面外侧扇形喷射。
     // a tangent frame on the mounting surface; drops fan out around it, lobbed away from the surface
     const t1 = _v2.set(1, 0, 0); if (Math.abs(n.x) > 0.9) t1.set(0, 0, 1);
     t1.addScaledVector(n, -t1.dot(n)).normalize();
@@ -479,6 +513,7 @@ export class SubSystem {
   }
 
   // ---- lurk mine: hidden in its owner's ink; an enemy coming close sets it off (damage + tracking)
+  // 地雷触发由拥有者判定；己方墨迹中对敌方隐藏，布防后检测敌人并启动延迟引信。
   _mine(it, dt) {
     if (it.ghost) return;   // (a remote player's mine goes off when its owner says: netGhost)
     const s = it.sub;
@@ -503,6 +538,7 @@ export class SubSystem {
       }
     }
   }
+  // 地雷爆炸同时涂地、伤害和追踪；距离及视线检查防止穿墙影响角色。
   _mineBlast(it) {
     if (it.state === 'dead') return;
     const s = it.sub, c = _v.copy(it.pos).setY(it.pos.y + 0.3).clone();
@@ -521,17 +557,21 @@ export class SubSystem {
   }
 
   // ---- hop beacon: a super-jump point for the team (two uses)
+  // 信标空闲时仅推进模型旋转；可跳目标筛选与使用次数分别由下列接口处理。
   _beacon(it, dt) {
     const spin = it.mesh.userData.spin;
     if (spin) spin.rotation.y += dt * 1.5;
   }
+  // 仅返回同队且仍处于有效信标状态的实例，供地图选择落点。
   beaconsFor(team) { return this.items.filter((it) => it.kind === 'beacon' && it.state === 'beacon' && it.team === team); }
+  // 先验证队伍和信标状态，跳跃成功才记录目标信标，留待实际落地时扣次数。
   jumpToBeacon(actor, b) {
     if (!b || b.state !== 'beacon' || b.team !== actor.team) return false;
     const ok = actor.superJump(b.pos.clone());
     if (ok) actor._jumpBeacon = b;
     return ok;
   }
+  // 落地时清除角色的临时引用；扣减次数，携带信标副武器者使用后直接消耗该信标。
   _landedOnBeacon(actor) {
     const b = actor._jumpBeacon;
     if (!b) return;
@@ -543,12 +583,14 @@ export class SubSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- effects
+  // 同一追踪队伍重复命中只延长有效期；新追踪关系才广播状态提示。
   track(e, team, time) {
     const st = e.status;
     const fresh = !(st.track > 0 && st.trackTeam === team);
     st.track = Math.max(st.trackTeam === team ? st.track : 0, time); st.trackTeam = team;
     if (fresh) emit('actor:tracked', { actor: e, team });
   }
+  // 中毒时长取较大值，重复刷新不叠加时长；首次进入状态才广播提示。
   poison(e, time) {
     const fresh = !(e.status.poison > 0);
     e.status.poison = Math.max(e.status.poison, time);
@@ -569,12 +611,14 @@ export class SubSystem {
       _v3.copy(e.pos); _v3.y += 0.7;
       const d = _v3.distanceTo(center);
       if (d > radius || !G.physics.los(_v2.copy(center).addScaledVector(n || UP, 0.3), _v3)) continue;
+      // 爆炸伤害按距离二次衰减，近处接近最大伤害，边缘接近最小伤害。
       const k = 1 - clamp((d - 0.8) / (radius - 0.8), 0, 1);
       G.projectiles.applyHit(it.owner, e, lerp(dmgMin, dmgMax, k * k), it.kind);
     }
     this.damageArea(center, radius, 60, it.team);
     G.boss?.splash(it.owner, center, radius, dmgMax, dmgMin, it.kind);   // Boss Battle
   }
+  // 直击对象单独结算并跳过溅射循环，避免同一爆裂弹对其重复叠加两种伤害。
   _pelletBlast(it, direct, at) {
     const s = it.sub, c = (at || it.pos).clone();
     this._paint(it, _v2.copy(c).setY(c.y + 0.2), s.paintRadius);
@@ -591,6 +635,7 @@ export class SubSystem {
     this.damageArea(c, s.radius, 25, it.team);
     G.boss?.splash(it.owner, c, s.radius, s.directDamage, s.splashDamage, 'burst');   // Boss Battle
   }
+  // 中心墨迹外再补随机小墨点，累计实际新增面积后统一计入投掷者贡献。
   _paint(it, c, r) {
     let area = G.paint.splat(c, r, it.team, { seed: Math.random() });
     for (let k = 0; k < 4; k++) {
@@ -599,11 +644,14 @@ export class SubSystem {
     }
     this._credit(it, area);
   }
+  // 装置下方少量偏移后铺墨，避免采样点陷入接触表面。
   _paintUnder(it, r) { this._credit(it, G.paint.splat(_v3.copy(it.pos).setY(it.pos.y + 0.2), r, it.team, { seed: Math.random() })); }
   // turf for the thrower; ink from a special (Bomb Barrage throws) never charges the special meter
+  // 大招期间投出的副武器只增加涂地统计，不反过来给大招槽充能。
   _credit(it, area) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
 
   // ---------------------------------------------------------------------------------------------- blocking + damage
+  // 静默回放不重复扣耐久；命中远端装置时转发给拥有者，墨帘额外更新本地衰减表现。
   _hurt(it, dmg) {
     if (it.state === 'dead' || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
     if (it.ghost) {   // a remote player's device: its owner's copy takes the hit (and says when it's gone)
@@ -616,6 +664,7 @@ export class SubSystem {
     if (it.hp <= 0) this._destroy(it);
   }
   // an enemy shot segment: curtains absorb it (and lose hp); devices it touches are damaged
+  // 先询问 kit，再检测敌方墨帘平面或装置胶囊；返回 true 表示该段弹道已被吸收。
   blockShot(prev, pos, team, dmg) {
     for (const R of [MAIN_KITS, SUB_KITS]) for (const k in R) if (R[k].blockShot?.(prev, pos, team, dmg)) return true;   // kit shields / shoot-able bombs
     for (const it of this.items) {
@@ -624,6 +673,7 @@ export class SubSystem {
         const s = it.sub;
         const a = _v.copy(prev).sub(it.pos).dot(it.n), b = _v2.copy(pos).sub(it.pos).dot(it.n);
         if ((a > 0) === (b > 0)) continue;
+        // 线段必须穿过墨帘平面且交点位于宽高范围内，才扣耐久并阻断投射物。
         const f = a / (a - b);
         _v3.lerpVectors(prev, pos, f).sub(it.pos);
         if (Math.abs(_v3.dot(it.tan)) > s.width / 2 || _v3.y < -0.2 || _v3.y > s.height) continue;
@@ -640,6 +690,7 @@ export class SubSystem {
     }
     return false;
   }
+  // 连续射线按距离选最近墨帘；只伤害最终命中的墨帘，并返回截断后的射程。
   blockRay(from, dir, len, team, dmg) {
     for (const R of [MAIN_KITS, SUB_KITS]) for (const k in R) if (R[k].blockRay) len = Math.min(len, R[k].blockRay(from, dir, len, team, dmg));   // kit shields
     let best = len, hitIt = null;
@@ -657,6 +708,7 @@ export class SubSystem {
     if (hitIt) this._hurt(hitIt, dmg * hitIt.sub.shotMul);
     return best;
   }
+  // 范围爆炸转交大招和 kit 装置，再伤害范围内的敌方墨帘、喷头、信标。
   damageArea(c, radius, dmg, team) {
     if (netMuted()) return;   // a ghost's blast: the owner's own blast hurts devices (netHurt carries it to theirs)
     G.specials?.areaHit(c, radius, dmg, team);
@@ -667,6 +719,7 @@ export class SubSystem {
     }
   }
   // enemy players can't walk (or swim) through a curtain: push them back out to the side they're on
+  // 敌方角色进入墨帘厚度范围时沿原所在侧推出，并消除继续穿入的法向速度。
   blockActor(a) {
     for (const it of this.items) {
       if (it.state !== 'curtain' || it.team === a.team) continue;
@@ -681,6 +734,7 @@ export class SubSystem {
     }
   }
 
+  // 普通销毁只播放碎裂与音效并标记死亡；不等同于地雷或炸弹的伤害爆炸。
   _destroy(it) {
     if (it.state === 'dead') return;
     const c = _v.copy(it.pos).addScaledVector(it.normal || UP, 0.2);
