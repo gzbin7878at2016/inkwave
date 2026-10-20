@@ -1,3 +1,7 @@
+// 【中文导读】Lockgate 的三种程序化表面：石块铺地、工程砖和带防滑横肋的马道。
+// SURF 绑定本地图预留的 PATTERN 槽位，layout 使用它选择纹理，不能与其他地图随意交换编号。
+// SURFACES.mat 是 texlib 烘焙配方；onWall/onTop 可把墙面与顶面重定向到不同图案。
+// 以下 shader 字符串在启动时生成纹理；scale/detail 等属于外观尺度，不改变地图碰撞。
 // Lockgate Canals — stage surface materials (texlib layers), on this stage's three reserved PATTERN slots.
 //
 // SURF maps your names to the slot ids; use them in layout.js as `pattern: SURF.<name>`. SURFACES lists what each
@@ -16,6 +20,7 @@ export const SURF = { setts: 40, engbrick: 41, hoofsteps: 42 };
 
 const GRID = 1;
 
+// 槽位、材质名与生成函数须保持配套；未使用槽位由纹理库按既有兜底处理。
 export const SURFACES = [
   {
     slot: 40, name: 'setts', onWall: 41,

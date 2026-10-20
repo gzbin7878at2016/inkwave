@@ -1,3 +1,7 @@
+// 【中文导读】Lockgate 的墙面标识与图集绘制，供布局面的 mural id 引用。
+// 只在传入的像素区域 R 内画 Canvas，返回图集矩形与世界尺寸；像素坐标和米制面尺寸不可混用。
+// 法线 n 决定贴哪一面，顶面的 u 轴与世界 x 方向相反，贴图朝向需按 level 面坐标约定。
+// 图像边缘保留透明区，风化/缺口由 fx 参数控制；这里不改变碰撞或墨水归属。
 // Lockgate Canals — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
 // drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
@@ -44,6 +48,7 @@ function weather(g, x, y, w, h, seed, amount) {
   g.restore();
 }
 
+// 在当前地图分配的图集区域绘制并返回条目；地图局部编号与共享编号0至3分开。
 export function drawMurals(g, R, kit) {
   const out = [];
   const font = kit.font, fontB = kit.fontB;

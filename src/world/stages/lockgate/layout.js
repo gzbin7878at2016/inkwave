@@ -1,3 +1,8 @@
+// 【中文导读】Lockgate 运河地图布局：半场几何、出生点、倾斜河道和闸室的空间数据。
+// B/R/O 来自 mapkit，分别按各自契约描述方块、坡面与旋转构件；布局由装配层旋转复制成两队场地。
+// 干闸室虽然低于海面，但地板方块遮住水并提供安全接触；真正的河道仍按落水规则处理。
+// roof/noPaint 等字段是玩法约束，不只是外观；修改闸门或屋顶高度时需同时检查通行与可涂面。
+// W 把沿运河的斜坐标换成世界 x/z，装饰和碰撞必须共用该变换，避免45度河岸错位。
 // Lockgate Canals — stage layout (src/world/stages/lockgate/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
@@ -156,4 +161,5 @@ const LOCKGATE = {
   decor: { lamps: [], palms: [], flags: [[-4, 2.4, -44.8], [12, 2.4, -44.8]] },
 };
 
+// 导出完整半场布局供地图注册表装配；不要在此手工追加另一队的旋转副本。
 export const LAYOUT = LOCKGATE;
