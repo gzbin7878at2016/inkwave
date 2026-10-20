@@ -1,3 +1,7 @@
+// 【中文导读】弓的程序化模型、部件动画和图标；命中与弹道逻辑位于 bow.js。
+// 武器原点是右手所握的弦上搭箭点，+Z 为箭飞行方向、+Y 向上，角色右侧为 -X。
+// 拉弓时角色右手后移，模型反向补偿弓体位置，使左手与弓身保持稳定；不能只移动弦而不补偿整体。
+// 蓄力环和箭头发光由已有武器状态驱动；本模块不自行累加蓄力或消耗墨水。
 // Tideline Bow — procedural recurve bow held by squidkids, its part animation and its loadout / HUD icon.
 //
 // Weapon space (see character-weapons.js): the ORIGIN is the nock on the string, held in the right fist (gripR);
@@ -43,6 +47,7 @@ function limbPts(sign) {
   return prof.map(([dy, z]) => [0, y0 + sign * dy, z]);
 }
 
+// 构建弓体、弓臂、弦和搭箭等可动部件，并保留后续动画需要的局部枢轴。
 function buildBow() {
   const P = new Parts(), I = new Parts(), GL = new Parts();
   const LU = new Parts(), LUI = new Parts(), LL = new Parts(), LLI = new Parts();
@@ -141,10 +146,12 @@ function tipAt(tip, root, th, out) {
   const dy = tip.y - root.y, dz = tip.z - root.z, c = Math.cos(th), s = Math.sin(th);
   return out.set(tip.x, root.y + dy * c - dz * s, root.z + dy * s + dz * c);
 }
+// 根据搭箭点与弓臂端点更新弦的姿态和长度，保持几何端点与手部动画一致。
 function aimString(g, nock, tip, dirRest, L) {
   _v2.subVectors(tip, nock); const len = _v2.length() || 1e-4;
   g.position.copy(nock); g.quaternion.setFromUnitVectors(dirRest, _v2.multiplyScalar(1 / len)); g.scale.set(1, len / L, 1);
 }
+// 读取当前蓄力与释放状态，驱动弓臂弯曲、弦回弹、搭箭显隐及灯环，不处理伤害。
 function animateBow(w, st) {
   const d = w.def, P = w.parts, t = st.t, dt = Math.min(0.1, Math.max(0, st.dt || 0));
   let s = w.bw;

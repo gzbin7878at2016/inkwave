@@ -1,3 +1,8 @@
+// 【中文导读】伞枪模型：伞轴、握把、喷口和八片可折叠伞布的建模与动画。
+// 握把中心为原点，+Z 向前、+Y 向上、角色右为 -X；发射伞面的空间另以伞冠为原点。
+// 伞布以收拢姿态建模，展示和远档模型可直接使用；运行时按 kit 状态施加每片的折叠矩阵。
+// 开伞、损坏、再生和伞面发射的状态由 brolly.js 决定，模型层只表现这些状态。
+// 共享几何与每实例动画状态分开，不要在一把伞动画时修改其他实例的基础几何。
 // Canopy Brolly — procedural model + part animation (registered from kits/brolly.js).
 // Weapon space (see character-weapons.js): grip centre at the origin, +Z = forward, +Y = up, character's right = -X.
 // Layout along the shaft: crook handle + pistol grip (right hand) · receiver with a team-ink canister · foregrip
@@ -148,6 +153,7 @@ const FOLD0 = (k) => foldMatrix(foldA(k), FOLD_SX * (k & 1 ? 1 : 1.08), FOLD_S, 
 let _openGeo = null;
 /** The open canopy in canopy space (crown at the origin, axis +Z): { ink, cream } merged gore geometries (vertex
  *  coloured: multiply by the team colour / white) + the hub stub (plastic). For the launched canopy. */
+// 生成已撑开的伞面几何，供发射后的世界实体使用；坐标基准与手持整枪不同。
 export function canopyOpenGeo() {
   if (_openGeo) return _openGeo;
   const ink = [], cream = [];
@@ -257,6 +263,7 @@ export function makeFabric(color, team) {
 // partGate) — always draw it, whatever pass is running
 function drawAlways(renderer, scene, camera, geometry) { geometry.drawRange.count = Infinity; }
 
+// 为一个手持实例准备可动部件和材质状态，避免不同角色开伞时互相覆盖。
 function initInstance(w, st) {
   const d = w.def, local = !!(st.runner && st.runner.a && st.runner.a.isLocal);
   const S = { gores: [], tears: [[], []], col: new THREE.Color().copy(st.color), inkMat: makeFabric(st.color, true), creamMat: makeFabric(_w, false), local };
@@ -301,6 +308,7 @@ function strutGeo() {
 const _sa = new V3(), _sb = new V3(), _sx = new V3(), _sy = new V3(), _sz = new V3(), _ZA = new V3(0, 0, 1);
 
 /** animate(w, st) for registerWeaponModel: drives the canopy from the runner's kit (st.runner.kit, see kits/brolly.js). */
+// 按 open/grow/hp 等状态更新伞布折叠与显隐，不能用动画完成时机替代玩法状态机。
 export function animateBrolly(w, st) {
   const P = w.parts || {}, R = st.runner, k = R && R.kit && R.kit.brolly ? R.kit : null;
   const dt = Math.min(0.1, Math.max(0, st.dt || 0)), t = st.t || 0;

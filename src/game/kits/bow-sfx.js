@@ -1,3 +1,7 @@
+// 【中文导读】弓的音效配方注册：拉弓循环、两段充能提示、松弦、箭命中与延时爆墨。
+// 导入本文件会向 SFX 表登记配方；实际播放与停止由 bow.js 和音频引擎负责。
+// 循环返回 pitch 控制句柄，用蓄力程度更新频率和增益；不应每帧重新创建一个拉弓声音。
+// 所有声音用 Web Audio 合成；voice 的释放、并发上限及空间音处理沿用音频引擎约定。
 // Tideline Bow sounds (kits/bow.js plays them). Same format as audio.js's def() calls: build(v, pitch) for one-shots,
 // loop(v, pitch) → { pitch(q, now) } for loops. All synthesized.
 //   bow_draw   loop   limbs creaking under load + a rising string hum; pitch 0.6 (slack) … 1.5 (full draw)
@@ -12,6 +16,7 @@ import { mtof, pts, sweep } from '../../audio/music.js';
 
 const def = (name, o) => { SFX[name] = o; };
 
+// 拉弓循环叠加摩擦噪声与弦的低音，蓄力变化通过句柄更新，松手后由调用方释放。
 def('bow_draw', {
   gain: 0.3, max: 3, jitter: 0, reverb: 0.04, oneShot: 1.1,
   loop(v, p) {
@@ -63,6 +68,7 @@ def('bow_full', {
   },
 });
 
+// 松弦为一次性瞬态，合成弦响、箭掠过和墨水声；音高随蓄力表现变化。
 def('bow_loose', {
   gain: 0.58, max: 4, jitter: 0.03, reverb: 0.14,
   build(v, p) {
@@ -109,6 +115,7 @@ def('bow_tick', {
   },
 });
 
+// 插地箭的爆墨声与主爆破武器区分，避免小范围连爆听起来像大范围炸弹。
 def('bow_burst', {
   gain: 0.5, max: 6, jitter: 0.05, reverb: 0.2, minGap: 0.02,
   build(v, p) {
