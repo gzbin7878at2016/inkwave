@@ -25,6 +25,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { installMobileGpuSafety } from '../platform/mobileGpu.js';
 import { QUALITY } from '../config.js';
 import { G } from './ctx.js';
 
@@ -119,6 +120,7 @@ export class Renderer {
     // smoke test and dev tools) turns them back on so a broken shader still fails loudly.
     r.debug.checkShaderErrors = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shadercheck');
     globalThis.inkwaveDiagnostics?.attachRenderer(r); // 诊断APK在首次编译时保存原始GLSL错误，桌面入口不启用。
+    if (globalThis.inkwaveMobile) this.mobileSafety = r.mobileGpu = installMobileGpuSafety(r);
     r.outputColorSpace = THREE.SRGBColorSpace;
     r.toneMapping = THREE.NeutralToneMapping;
     r.toneMappingExposure = 1.0;
@@ -164,7 +166,9 @@ export class Renderer {
     r.setSize(w, h);
     // effective MSAA sample count (also read by the showcase for its private target)
     this.samples = this.appleGPU ? 0 : q.msaa || 0;
-    const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: this.samples });
+    if (this.mobileSafety) this.samples = Math.min(this.samples, r.capabilities.maxSamples);
+    const targetType = this.mobileSafety && !this.mobileSafety.state.caps.floatColor ? THREE.UnsignedByteType : THREE.HalfFloatType;
+    const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: targetType, samples: this.samples });
     const comp = (this.composer = new EffectComposer(r, rt));
     comp.setPixelRatio(pr);
     comp.setSize(w, h);

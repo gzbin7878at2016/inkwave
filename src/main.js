@@ -29,6 +29,7 @@ import { Level } from './world/level.js';
 import { MAP_LAYOUTS } from './world/maps.js';
 import { PaintSystem } from './world/paint.js';
 import { createLevelMaterial, setLevelLamps } from './world/levelMaterial.js';
+import { createMobileLevelMaterial } from './world/mobileLevelMaterial.js';
 import { SwimWake } from './fx/swimWake.js';
 import { Decor } from './world/decor.js';
 import { createMuralTexture } from './world/murals.js';
@@ -323,16 +324,18 @@ class Game {
     const level = (G.level = new Level(layoutFor(MAP_LAYOUTS[layoutId], mode), colliders));
     G.physics = new Physics(level);
     const lightmap = await this._loadLightmap(level, worldKey);
-    G.paint = new PaintSystem(G.renderer, level, { atlasSize: q.paintAtlas, maxDensity: q.paintAtlas >= 4096 ? 30 : 18 });
+    const paintSize = window.inkwaveMobile ? Math.min(q.paintAtlas, 2048, G.renderer.capabilities.maxTextureSize) : q.paintAtlas;
+    G.paint = new PaintSystem(G.renderer, level, { atlasSize: paintSize, maxDensity: paintSize >= 4096 ? 30 : 18 });
     this.murals.userData.setStage?.(layoutId);   // stage decals (murals.js) before the material reads the table
-    this.levelMat = createLevelMaterial(G.paint.texture, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
+    const surfaceFactory = window.inkwaveMobile ? createMobileLevelMaterial : createLevelMaterial;
+    this.levelMat = surfaceFactory(G.paint.texture, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
     (this.swimWake || (this.swimWake = new SwimWake())).reset();
     this.levelMesh = new THREE.Mesh(level.buildGeometry(G.paint.size), this.levelMat);
     this.levelMesh.castShadow = true; this.levelMesh.receiveShadow = true;
     this.levelMesh.name = 'level';
     scene.add(this.levelMesh);
     // grates: same surface shader, cut-out holes, no ink (they cast no shadow; the mesh is too fine for the shadow map)
-    this.grateMat = createLevelMaterial(G.paint.texture, G.paint.size, this.murals, { grate: true, lightmap, texlib: this.texlib });
+    this.grateMat = surfaceFactory(G.paint.texture, G.paint.size, this.murals, { grate: true, lightmap, texlib: this.texlib });
     const gg = level.buildGeometry(G.paint.size, (b) => b.grate);
     this.grateMesh = new THREE.Mesh(gg, this.grateMat);
     this.grateMesh.receiveShadow = true; this.grateMesh.visible = gg.index.count > 0;
@@ -1308,6 +1311,7 @@ class Game {
     if (this.settings.quality !== 'low' || (this._frameN & 1)) sm.needsUpdate = true;
     if (!this._skipRender) {
       if (!setUp) this.R.render();
+      this.R.mobileSafety?.recover(this);
       if (this.showcase.mode) sm.needsUpdate = true;
       this.showcase.render();
     }

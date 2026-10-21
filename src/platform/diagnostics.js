@@ -42,9 +42,10 @@ export function installDiagnostics(nativePlugin) {
     if (!game || !G) return { bootComplete: false };
     const p = G.paint, m = game.match;
     const texture = t => t ? { width: t.image?.width, height: t.image?.height, depth: t.image?.depth, type: t.type, format: t.format, version: t.version } : null;
-    const material = mat => mat ? { type: mat.type, visible: mat.visible, defines: mat.defines, paintMatches: mat.userData?.uniforms?.uPaint?.value === p?.texture } : null;
+    const material = mat => mat ? { type: mat.type, visible: mat.visible, mobileTier: mat.userData?.mobileTier, defines: mat.defines, paintMatches: mat.userData?.uniforms?.uPaint?.value === p?.texture } : null;
     return {
       bootComplete: true, mode: G.mode, mapId: game.mapDef?.id, worldKey: game.worldKey, matchState: m?.state, practice: !!m?.practice,
+      mobileGpu: game.R.mobileSafety?.state,
       settings: { quality: game.settings.quality, shadows: game.settings.shadows, bloom: game.settings.bloom, fpsCap: game.settings.fpsCap },
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
       level: { faces: G.level?.faces?.length, visible: game.levelMesh?.visible, vertices: game.levelMesh?.geometry?.attributes?.position?.count, material: material(game.levelMat), grateMaterial: material(game.grateMat) },
