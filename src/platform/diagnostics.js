@@ -51,7 +51,14 @@ export function installDiagnostics(nativePlugin) {
       level: { faces: G.level?.faces?.length, visible: game.levelMesh?.visible, vertices: game.levelMesh?.geometry?.attributes?.position?.count, material: material(game.levelMat), grateMaterial: material(game.grateMat) },
       textures: { albedo: texture(game.texlib?.albedo), normal: texture(game.texlib?.normal), orm: texture(game.texlib?.orm), mural: texture(game.murals), lightmap: texture(game.levelMat?.userData?.uniforms?.uLight?.value) },
       paint: p ? { size: p.size, ppm: p.ppm, frame: p.frame, clock: p.clock, counts: p.counts, coverage: p.coverage(), faces: p.paintFaces.length, missingAtlas: p.paintFaces.filter(f => !f.atlas).length, textureVersion: p.texture.version } : null,
-      render: { fps: game.fps, scale: game.R.dynScale, ...game.perf, memory: { ...game.R.renderer.info.memory } },
+      // 记录真实像素尺寸而非CSS窗口，避免把低分辨率放大误判成材质错误。
+      render: { fps: game.fps, scale: game.R.dynScale, ...game.perf,
+        pixelRatio: game.R.renderer.getPixelRatio(),
+        canvas: { width: game.R.renderer.domElement.width, height: game.R.renderer.domElement.height },
+        target: game.R.composer ? { width: Math.floor(game.R.composer.renderTarget1.width), height: Math.floor(game.R.composer.renderTarget1.height) } : null,
+        antialias: game.R.mobileAA ? 'FXAA' : game.R.samples ? `MSAA ${game.R.samples}x` : game.R.composer?.passes.some(pass => pass.constructor.name === 'SMAAPass') ? 'SMAA' : 'none',
+        fxaaTexel: game.R.mobileAA?.uniforms.resolution.value.toArray(),
+        memory: { ...game.R.renderer.info.memory } },
     };
   }
 

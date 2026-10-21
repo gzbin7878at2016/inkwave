@@ -23,6 +23,65 @@ try {
     }, limit);
     await page.goto('http://localhost:8490/dist-mobile/?map=tidewater');
     await page.waitForFunction(() => window.__inkwave?.mobile, { timeout: 120000 });
+    // 真正经过后处理链读取斜边像素，防止只有FXAA开关而没有实际改善画面。
+    if (limit === 256) {
+      const aa = await page.evaluate(async () => {
+        const THREE = await import('/node_modules/three/build/three.module.js');
+        const g = __inkwave, R = g.R, r = R.renderer;
+        g.debug.freeze();
+        const scene = new THREE.Scene(); scene.background = new THREE.Color(0x000000);
+        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); camera.position.z = 2;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, 1,-0.61,0, -0.71,1,0], 3));
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff }); scene.add(new THREE.Mesh(geometry, material));
+        const oldScene = R.renderPass.scene, oldCamera = R.renderPass.camera, oldExtra = R.extraPass?.enabled;
+        try {
+          R.renderPass.scene = scene; R.renderPass.camera = camera;
+          if (R.extraPass) R.extraPass.enabled = false;
+          const draw = enabled => {
+            R.mobileAA.enabled = enabled; R.render();
+            const pixels = new Uint8Array(r.domElement.width * r.domElement.height * 4);
+            const gl = r.getContext(); gl.readPixels(0, 0, r.domElement.width, r.domElement.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+            return pixels;
+          };
+          const off = draw(false), on = draw(true);
+          let changed = 0, softened = 0;
+          for (let i = 0; i < on.length; i += 4) {
+            if (Math.abs(on[i] - off[i]) > 3) changed++;
+            if (off[i] < 5 && on[i] > 10 && on[i] < 220) softened++;
+          }
+          return { changed, softened, density: r.getPixelRatio(), samples: R.samples };
+        } finally {
+          R.mobileAA.enabled = true; R.renderPass.scene = oldScene; R.renderPass.camera = oldCamera;
+          if (R.extraPass) R.extraPass.enabled = oldExtra;
+          geometry.dispose(); material.dispose(); g.debug.unfreeze();
+        }
+      });
+      assert.ok(aa.changed > 50 && aa.softened > 20, 'FXAA必须实际平滑黑白斜边');
+      assert.equal(aa.density, 1); assert.equal(aa.samples, 0);
+      // 非整数缩放、窗口改变和画质重建后采样步长必须始终对应实际像素。
+      await page.setViewport({ width: 991, height: 463, hasTouch: true, isMobile: true });
+      const sizing = await page.evaluate(() => {
+        const g = __inkwave, R = g.R;
+        g.debug.freeze(); R.resize(); R.setDynamicScale(0.875);
+        const scaled = inkwaveDiagnostics.report().current.scene.render;
+        R.applySettings({ ...g.settings, quality: 'medium' });
+        const medium = { fxaa: !!R.mobileAA, samples: R.samples };
+        R.applySettings({ ...g.settings, quality: 'low' });
+        const low = inkwaveDiagnostics.report().current.scene.render;
+        g.debug.unfreeze(); return { scaled, medium, low };
+      });
+      for (const state of [sizing.scaled, sizing.low]) {
+        assert.equal(state.antialias, 'FXAA'); assert.deepEqual(state.canvas, state.target);
+        assert.ok(Math.abs(state.fxaaTexel[0] - 1 / state.canvas.width) < 1e-9);
+        assert.ok(Math.abs(state.fxaaTexel[1] - 1 / state.canvas.height) < 1e-9);
+      }
+      assert.equal(sizing.scaled.pixelRatio, 0.875); assert.equal(sizing.low.pixelRatio, 1);
+      assert.equal(sizing.medium.fxaa, false); assert.ok(sizing.medium.samples > 0);
+      await page.setViewport({ width: 1000, height: 464, hasTouch: true, isMobile: true });
+      report.antialias = { aa, sizing };
+      console.log('通过：FXAA真实斜边像素、1.0密度、动态缩放/窗口/画质切换与日志尺寸');
+    }
     const inspect = () => page.evaluate(() => {
       const game = __inkwave, gl = game.R.renderer.getContext();
       const programs = game.R.renderer.info.programs.filter(p => p.name.startsWith('inkwave-mobile-')).map(p => {

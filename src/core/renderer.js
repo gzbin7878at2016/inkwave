@@ -25,11 +25,21 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { installMobileGpuSafety } from '../platform/mobileGpu.js';
 import { QUALITY } from '../config.js';
 import { G } from './ctx.js';
 
 const BLOOM = [0.28, 0.45, 2.4];   // default bloom: strength, radius, HDR threshold
+
+// 手机低档只提高渲染密度，保留低档阴影/粒子预算；不改共享QUALITY与PC参数。
+const MOBILE_LOW = { ...QUALITY.low, pixelRatio: 1.0 };
+
+// Composer传入真实目标像素尺寸；窗口、DPR、动态分辨率改变后都必须同步FXAA采样步长。
+class MobileFXAAPass extends ShaderPass {
+  constructor() { super(FXAAShader); }
+  setSize(width, height) { this.uniforms.resolution.value.set(1 / Math.max(1, Math.floor(width)), 1 / Math.max(1, Math.floor(height))); }
+}
 
 // 【自定义调色 shader】60 行 GLSL ≈ UE4 里 PostProcess Volume 一整个面板的手写等价物。
 // 处理顺序(与代码对应):曝光 → 饱和度/vibrance(已饱和的队伍墨几乎不动,只提灰部)→
@@ -134,13 +144,18 @@ export class Renderer {
     this.container = container;
     this.scene = null; this.camera = null;
     this.settings = settings;
-    this.q = QUALITY[settings.quality] || QUALITY.high;
+    this.q = this._qualityPreset(settings);
     this._w = 0; this._h = 0;
   }
 
   setScene(scene, camera) {
     this.scene = scene; this.camera = camera;
     this._buildComposer();
+  }
+
+  _qualityPreset(settings) {
+    const q = QUALITY[settings.quality] || QUALITY.high;
+    return this.mobileSafety && q === QUALITY.low ? MOBILE_LOW : q;
   }
 
   // 【搭建后处理链】渲染目标与 pass 的顺序就是首行注释那张图,逐个说:
@@ -158,6 +173,7 @@ export class Renderer {
   // 画质档/阴影开关变化时整个链由 applySettings() 重建。
   _buildComposer() {
     const r = this.renderer, q = this.q;
+    this.mobileAA?.dispose(); this.mobileAA = null;
     if (this.composer) { this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose(); }
     this.dynScale = this.dynScale || 1;
     const pr = Math.min(window.devicePixelRatio || 1, q.pixelRatio) * this.dynScale;
@@ -196,7 +212,11 @@ export class Renderer {
     if (this.extraPass) comp.addPass(this.extraPass);
     comp.addPass(new OutputPass());
     // SMAA stands in for MSAA where MSAA was skipped; it runs on the tone-mapped sRGB image
-    if (q.msaa && !this.samples) comp.addPass(new SMAAPass());
+    // 手机无MSAA时使用一遍FXAA；有MSAA则沿用它，避免叠加多套抗锯齿成本。
+    if (this.mobileSafety && !this.samples) {
+      this.mobileAA = new MobileFXAAPass();
+      comp.addPass(this.mobileAA);
+    } else if (q.msaa && !this.samples) comp.addPass(new SMAAPass());
     r.shadowMap.enabled = this.settings.shadows !== false;
     this._w = w; this._h = h;
     this.grade.uniforms.uAspect.value = w / h;
@@ -213,7 +233,7 @@ export class Renderer {
   applySettings(settings) {
     const prevQ = this.q;
     this.settings = settings;
-    this.q = QUALITY[settings.quality] || QUALITY.high;
+    this.q = this._qualityPreset(settings);
     const shadowChanged = this.renderer.shadowMap.enabled !== (settings.shadows !== false);
     if (prevQ !== this.q || shadowChanged) {
       if (prevQ !== this.q) this.dynScale = 1;
