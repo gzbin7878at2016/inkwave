@@ -7,8 +7,8 @@ android {
         applicationId "com.demoink.inkwave"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
-        versionName "1.1.0-android-test.5-visual"
+        versionCode 6
+        versionName "1.1.0-android-test.6-hd60"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

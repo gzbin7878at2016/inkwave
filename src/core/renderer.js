@@ -166,7 +166,7 @@ export class Renderer {
 
   _qualityPreset(settings) {
     const q = QUALITY[settings.quality] || QUALITY.high;
-    return this.mobileSafety ? (MOBILE_VISUAL[settings.mobileVisual] || MOBILE_VISUAL.clear)[settings.quality in QUALITY ? settings.quality : 'high'] : q;
+    return this.mobileSafety ? (MOBILE_VISUAL[settings.mobileVisual] || MOBILE_VISUAL.hd)[settings.quality in QUALITY ? settings.quality : 'high'] : q;
   }
 
   // 【搭建后处理链】渲染目标与 pass 的顺序就是首行注释那张图,逐个说:

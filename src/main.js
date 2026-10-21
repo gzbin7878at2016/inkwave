@@ -94,9 +94,14 @@ class Game {
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
     // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
-    // 手机首启保守档：减少填充、阴影与后处理开销；以后尊重玩家保存的设置。
-    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'clear', shadows: false, bloom: false, fpsCap: 30, showFps: true } : DEFAULT_SETTINGS;
+    // 手机默认60帧目标/2倍高清；几何预算仍为低档，避免连带开启昂贵阴影和AO。
+    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'hd', mobileDynamicResolution: false, shadows: false, bloom: false, fpsCap: 60, showFps: true } : DEFAULT_SETTINGS;
     this.settings = G.settings = loadJSON('inkwave.settings', defaults);
+    // 一次性升级旧APK设置，否则旧版保存的30帧/清晰档会覆盖新默认；之后保留玩家手动选择。
+    if (window.inkwaveMobile && this.settings.mobileDefaultsVersion !== 1) {
+      Object.assign(this.settings, { fpsCap: 60, mobileVisual: 'hd', mobileDynamicResolution: false, mobileDefaultsVersion: 1 });
+      saveJSON('inkwave.settings', this.settings);
+    }
     setLang(this.settings.lang || 'en');   // before any menu renders (src/i18n/strings.js)
     document.title = t('INKWAVE — Turf Riot');
     // desktop app: the window's fullscreen state is owned by the native shell; mirror it into settings for the menu
@@ -491,6 +496,10 @@ class Game {
     saveJSON('inkwave.settings', this.settings);
     if ('lang' in partial) { setLang(partial.lang); document.title = t('INKWAVE — Turf Riot'); this._rebuildHud(); }
     if ('quality' in partial || 'shadows' in partial || 'bloom' in partial || (window.inkwaveMobile && 'mobileVisual' in partial)) this.R?.applySettings(this.settings);
+    if (window.inkwaveMobile && 'mobileDynamicResolution' in partial) {
+      this._dyn = null;
+      if (!partial.mobileDynamicResolution) this.R?.setDynamicScale(1);
+    }
     if ('fullscreen' in partial && window.inkwaveNative) window.inkwaveNative.setFullScreen(!!partial.fullscreen);
     if ('master' in partial || 'music' in partial || 'sfx' in partial) this._applyAudioVolumes();
     if ('colorblind' in partial && G.mode !== 'match') this._setPalette(this._pickPalette());
@@ -1203,6 +1212,8 @@ class Game {
   // 【动态分辨率】4 秒窗口内平均帧时超过目标的 112% → 渲染精度降一档;回升需要稳定 12 秒且最多两次,
   // 防止画面尺寸来回"呼吸"造成闪烁。掉帧自保的核心思想:宁可略糊,不可卡。
   _dynRes(dt) {
+    // 固定高清时不为追帧偷偷降低像素密度；玩家明确勾选自动降低清晰度才启用。
+    if (window.inkwaveMobile && this.settings.mobileDynamicResolution === false) return;
     if (dt <= 0 || dt > 0.25) return;
     const d = this._dyn || (this._dyn = { acc: 0, n: 0, t: 0, fast: 0, ups: 0 });
     d.acc += dt; d.n++; d.t += dt;

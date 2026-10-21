@@ -19,7 +19,7 @@ try {
   await page.waitForFunction(() => window.__inkwave?.mobile && window.inkwaveDiagnostics, { timeout: 120000 });
   const baseline = await page.evaluate(() => inkwaveDiagnostics.report());
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 5);
+  assert.equal(baseline.current.build.versionCode, 6);
   assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);
@@ -59,11 +59,16 @@ try {
   assert.ok(exported.current.events.some(e => e.category === 'fetch-http-error'));
   console.log('通过：日志文件下载、JSON解析、警告与资源HTTP错误');
 
+  // 一次迁移后允许玩家改回省电/30帧；重启不能每次强制覆盖选择。
+  await page.evaluate(() => __inkwave._setSettings({ fpsCap: 30, mobileVisual: 'battery', mobileDynamicResolution: true }));
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__inkwave?.mobile, { timeout: 120000 });
   const restored = await page.evaluate(() => inkwaveDiagnostics.report());
   assert.ok(restored.previous.shaderFailures.length > 0);
   assert.equal(restored.current.shaderFailures.length, 0);
   assert.ok(restored.current.programs.filter(p => p.isPaintSurface).every(p => p.linked));
+  assert.equal(restored.current.scene.settings.fpsCap, 30);
+  assert.equal(restored.current.scene.settings.mobileVisual, 'battery');
+  assert.equal(restored.current.scene.settings.mobileDynamicResolution, true);
   console.log('通过：上一运行错误持久化、重新启动地面正常编译');
 } finally { await browser.close(); }

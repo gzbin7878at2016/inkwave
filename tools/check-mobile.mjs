@@ -12,6 +12,10 @@ const results = [];
 const passed = text => { results.push(text); console.log(`通过：${text}`); };
 try {
   const page = await browser.newPage();
+  // 模拟覆盖安装旧版：新默认需迁移一次，同时保留触控等无关设置。
+  await page.evaluateOnNewDocument(() => {
+    if (!localStorage.getItem('inkwave.settings')) localStorage.setItem('inkwave.settings', JSON.stringify({ quality: 'low', fpsCap: 30, mobileVisual: 'clear', touchSensitivity: 1.7 }));
+  });
   await page.setCacheEnabled(false); // 本地重复构建时避免入口与散列块混用旧 HTTP 缓存。
   // APK 资源来自本地：用浏览器拦截所有外站请求，验证单机不依赖外部 CDN。
   await page.setRequestInterception(true);
@@ -27,6 +31,8 @@ try {
   await page.goto(process.env.MOBILE_TEST_URL || 'http://localhost:8490/dist-mobile/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__inkwave?.mobile, { timeout: 120000 });
   assert.equal(await page.evaluate(() => __inkwave.settings.quality), 'low');
+  const migrated = await page.evaluate(() => ({ fps: __inkwave.settings.fpsCap, visual: __inkwave.settings.mobileVisual, dynamic: __inkwave.settings.mobileDynamicResolution, sensitivity: __inkwave.settings.touchSensitivity, version: __inkwave.settings.mobileDefaultsVersion }));
+  assert.deepEqual(migrated, { fps: 60, visual: 'hd', dynamic: false, sensitivity: 1.7, version: 1 });
   const graphics = await page.evaluate(() => inkwaveDiagnostics.report().current);
   assert.equal(graphics.shaderFailures.length, 0, '不能把着色器失败当成页面正常启动');
   assert.ok(graphics.programs.some(p => p.isPaintSurface && p.linked), '可涂墨地面程序必须链接成功');
@@ -82,6 +88,10 @@ try {
   await page.click('[data-mobile="tune"]');
   await page.$eval('#mobile-dialog input[type="checkbox"]', e => { e.checked = true; e.dispatchEvent(new Event('change')); });
   assert.equal(await page.$eval('#mobile-controls', e => e.classList.contains('mobile-left')), true);
+  for (const enabled of [true, false]) {
+    await page.$eval('[aria-label="自动降低清晰度"]', (e, value) => { e.checked = value; e.dispatchEvent(new Event('change')); }, enabled);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('inkwave.settings')).mobileDynamicResolution), enabled);
+  }
   // 从真实设置控件切换三档，并核对持久化与即时重建，而非仅直接调用渲染器。
   for (const visual of ['battery', 'hd', 'clear']) {
     await page.select('[aria-label="画面清晰度"]', visual);

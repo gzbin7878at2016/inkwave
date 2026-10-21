@@ -107,18 +107,21 @@ export function installMobile(game) {
       <label>左手瞄准布局 <input type="checkbox" ${game.settings.touchLeftHanded ? 'checked' : ''}></label>
       <label>目标帧率 <select><option value="30">30（省电）</option><option value="60">60（更流畅）</option></select></label>
       <label>画面清晰度 <select aria-label="画面清晰度"><option value="battery">省电 · 1倍 / FXAA</option><option value="clear">清晰 · 1.5倍 / SMAA（推荐）</option><option value="hd">高清 · 2倍 / SMAA（更耗电）</option></select></label>
-      <small>清晰度优先，发热或掉帧可切回省电。实际分辨率受设备与动态降档限制。</small>
+      <label>自动降低清晰度 <input aria-label="自动降低清晰度" type="checkbox" ${game.settings.mobileDynamicResolution ? 'checked' : ''}></label>
+      <small>默认60帧目标、2倍高清。勾选自动降低清晰度后，掉帧时允许降低分辨率；发热可切省电。</small>
       <button>保存并返回</button>`;
     const sliders = dialog.querySelectorAll('input');
     sliders[0].oninput = () => { game.settings.touchSensitivity = +sliders[0].value; save(); };
     sliders[1].oninput = () => { game.settings.touchButtonScale = +sliders[1].value; applySize(); save(); };
     sliders[2].onchange = () => { game.settings.touchLeftHanded = sliders[2].checked; applySize(); save(); };
-    const fps = dialog.querySelector('select'); fps.value = String(game.settings.fpsCap || 30);
+    const fps = dialog.querySelector('select'); fps.value = String(game.settings.fpsCap || 60);
     fps.onchange = () => { game.settings.fpsCap = +fps.value; save(); };
     // 清晰度在当前对局即时重建后处理，不重开地图；持久保存，升级时旧设置默认清晰档。
     const visual = dialog.querySelector('[aria-label="画面清晰度"]');
-    visual.value = game.settings.mobileVisual || 'clear';
+    visual.value = game.settings.mobileVisual || 'hd';
     visual.onchange = () => game._setSettings({ mobileVisual: visual.value });
+    const dynamic = dialog.querySelector('[aria-label="自动降低清晰度"]');
+    dynamic.onchange = () => game._setSettings({ mobileDynamicResolution: dynamic.checked });
     dialog.querySelector('button').onclick = () => { dialog.hidden = true; if (game.match?.paused) game.resume(); };
   };
   const applySize = () => {

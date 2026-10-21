@@ -58,7 +58,7 @@ try {
         }
       });
       assert.ok(aa.changed > 50 && aa.softened > 20, 'SMAA必须实际平滑黑白斜边');
-      assert.equal(aa.density, 1.5); assert.equal(aa.samples, 0);
+      assert.equal(aa.density, 2); assert.equal(aa.samples, 0);
       // 非整数缩放、窗口改变和画质重建后采样步长必须始终对应实际像素。
       await page.setViewport({ width: 991, height: 463, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
       const sizing = await page.evaluate(() => {
@@ -76,7 +76,7 @@ try {
         assert.ok(Math.abs(state.smaaTexel[0] - 1 / state.canvas.width) < 1e-9);
         assert.ok(Math.abs(state.smaaTexel[1] - 1 / state.canvas.height) < 1e-9);
       }
-      assert.equal(sizing.scaled.pixelRatio, 1.3125); assert.equal(sizing.low.pixelRatio, 1.5);
+      assert.equal(sizing.scaled.pixelRatio, 1.75); assert.equal(sizing.low.pixelRatio, 2);
       assert.equal(sizing.medium.fxaa, false); assert.ok(sizing.medium.samples > 0);
       const profiles = await page.evaluate(() => {
         const R = __inkwave.R, states = [];
@@ -91,9 +91,26 @@ try {
       assert.deepEqual(profiles.states.map(s => s.antialias), ['FXAA', 'SMAA', 'SMAA']);
       assert.deepEqual(profiles.states.map(s => s.pixelRatio), [1, 2, 1.5]);
       assert.equal(profiles.floor, 1);
+      const policy = await page.evaluate(() => {
+        const g = __inkwave, R = g.R, previousMatch = g.match;
+        g.debug.freeze(); R.applySettings(g.settings); R.setDynamicScale(1); g._dyn = null;
+        try {
+          g.match = { state: 'playing', attract: false };
+          for (let i = 0; i < 90; i++) g._dynRes(0.1);
+          const fixed = R.dynScale;
+          g._setSettings({ mobileDynamicResolution: true });
+          for (let i = 0; i < 90; i++) g._dynRes(0.1);
+          const adaptive = R.dynScale;
+          g._setSettings({ mobileDynamicResolution: false });
+          for (let i = 0; i < 90; i++) g._dynRes(0.1);
+          return { fixed, adaptive, restored: R.dynScale, render: inkwaveDiagnostics.report().current.scene.render };
+        } finally { g.match = previousMatch; g._dyn = null; g.debug.unfreeze(); }
+      });
+      assert.equal(policy.fixed, 1); assert.ok(policy.adaptive < 1); assert.equal(policy.restored, 1);
+      assert.equal(policy.render.pixelRatio, 2); assert.equal(policy.render.resolutionPolicy, 'fixed');
       await page.setViewport({ width: 1000, height: 464, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
-      report.antialias = { aa, sizing, profiles };
-      console.log('通过：SMAA真实斜边像素、1.5密度、动态缩放/窗口/画质切换与日志尺寸');
+      report.antialias = { aa, sizing, profiles, policy };
+      console.log('通过：SMAA真实斜边像素、2.0密度、动态缩放/窗口/画质切换与日志尺寸');
     }
     const inspect = () => page.evaluate(() => {
       const game = __inkwave, gl = game.R.renderer.getContext();
