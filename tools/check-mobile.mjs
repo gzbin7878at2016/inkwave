@@ -22,10 +22,14 @@ try {
   });
   await page.setViewport({ width: 900, height: 420, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   page.on('pageerror', e => { errors.push(e.message); console.error('页面异常：', e.message); });
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('response', r => { if (r.status() >= 400 && r.url().includes('localhost')) failed.push(`${r.status()} ${r.url()}`); });
   await page.goto(process.env.MOBILE_TEST_URL || 'http://localhost:8490/dist-mobile/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__inkwave?.mobile, { timeout: 120000 });
   assert.equal(await page.evaluate(() => __inkwave.settings.quality), 'low');
+  const graphics = await page.evaluate(() => inkwaveDiagnostics.report().current);
+  assert.equal(graphics.shaderFailures.length, 0, '不能把着色器失败当成页面正常启动');
+  assert.ok(graphics.programs.some(p => p.isPaintSurface && p.linked), '可涂墨地面程序必须链接成功');
   passed('禁止外站请求后移动产物启动、低画质首启');
   await page.evaluate(() => __inkwave.startPractice({ mapId: __inkwave.mapDef.id }));
   await page.waitForFunction(() => __inkwave.input.touch.enabled, { timeout: 120000 });

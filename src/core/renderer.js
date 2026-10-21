@@ -118,6 +118,7 @@ export class Renderer {
     // result): a mid-game compile then stalls input, netcode and all. Players run without them; ?shadercheck (the
     // smoke test and dev tools) turns them back on so a broken shader still fails loudly.
     r.debug.checkShaderErrors = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shadercheck');
+    globalThis.inkwaveDiagnostics?.attachRenderer(r); // 诊断APK在首次编译时保存原始GLSL错误，桌面入口不启用。
     r.outputColorSpace = THREE.SRGBColorSpace;
     r.toneMapping = THREE.NeutralToneMapping;
     r.toneMappingExposure = 1.0;

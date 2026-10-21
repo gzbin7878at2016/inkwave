@@ -17,6 +17,8 @@ export function installMobile(game) {
   const panel = document.createElement('div'); panel.id = 'mobile-panel';
   panel.innerHTML = `<button data-mobile="practice">触屏练习</button><button data-mobile="tune">触控设置</button><button data-mobile="stats">诊断</button><button data-mobile="export">复制报告</button><span></span>`;
   document.body.append(panel);
+  const logButton = document.getElementById('mobile-log-export');
+  if (logButton) panel.append(logButton);
   const dialog = document.createElement('div'); dialog.id = 'mobile-dialog'; dialog.hidden = true;
   document.body.append(dialog);
   const info = panel.querySelector('span');
@@ -89,7 +91,7 @@ export function installMobile(game) {
   panel.querySelector('[data-mobile="practice"]').onclick = () => game.startPractice();
   panel.querySelector('[data-mobile="stats"]').onclick = () => { state.stats = !state.stats; };
   panel.querySelector('[data-mobile="export"]').onclick = async () => {
-    const report = JSON.stringify({ app: '1.1.0-android-test.1', userAgent: navigator.userAgent, viewport: [innerWidth, innerHeight, devicePixelRatio], settings: { quality: game.settings.quality, fpsCap: game.settings.fpsCap }, samples: state.samples }, null, 2);
+    const report = JSON.stringify(window.inkwaveDiagnostics?.report({ probe: true }) || { samples: state.samples }, null, 2);
     try { await navigator.clipboard.writeText(report); info.textContent = '诊断报告已复制，可粘贴保存'; }
     catch {
       resetInput(); game.pause(); message('长按文本全选并复制诊断报告', () => { dialog.hidden = true; if (game.match?.paused) game.resume(); }, '关闭');
@@ -123,6 +125,7 @@ export function installMobile(game) {
     touch, state, suspend, foreground, resume,
     recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
+      window.inkwaveDiagnostics?.tick();
       const live = G.mode === 'match' && game.match && !game.match.attract && game.match.state === 'playing' && !game.match.paused;
       touch.setEnabled(!!(live && !game.menus?.current && !state.needsResume && !state.lostContext && dialog.hidden));
       practiceButton.hidden = G.mode !== 'menu';

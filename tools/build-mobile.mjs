@@ -3,6 +3,7 @@ import { build } from 'esbuild';
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { resolve, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = resolve(root, 'dist-mobile');
@@ -18,6 +19,15 @@ async function scan(dir) {
   }
 }
 await scan(resolve(root, 'src'));
+// 诊断报告与APK共用原生版本号，避免升级后日志仍误报旧版本。
+const gradle = await readFile(resolve(root, 'android/app/build.gradle'), 'utf8');
+const stamp = {
+  version: gradle.match(/versionName\s+"([^"]+)"/)[1],
+  versionCode: Number(gradle.match(/versionCode\s+(\d+)/)[1]),
+  sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+  trackedChanges: !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).trim(),
+  diagnostics: true,
+};
 // 所有入口保留 src 层级；共享块也放在两层目录，兼容既有 ../../assets URL。
 await build({
   absWorkingDir: root, entryPoints: [...entries, 'mobile-entry.js'], outbase: root,
@@ -25,6 +35,7 @@ await build({
   entryNames: '[dir]/[name]', chunkNames: 'src/chunks/[name]-[hash]',
   alias: { 'three/addons': resolve(root, 'vendor/three/jsm'), three: resolve(root, 'vendor/three/build/three.module.js') },
   minify: false, legalComments: 'eof', logLevel: 'warning',
+  define: { __INKWAVE_BUILD__: JSON.stringify(stamp) },
 });
 for (const dir of ['assets', 'styles']) await cp(resolve(root, dir), resolve(out, dir), { recursive: true });
 // 私人音乐不打包，提供空清单以免启动产生无意义的 404。

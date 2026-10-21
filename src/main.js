@@ -126,7 +126,7 @@ class Game {
     // progress() —— 进度条推进器:记录里程碑耗时(供控制台 __inkwave.bootMarks 调试)→
     // 通知 UI 更新标签 → 等一帧(nextFrame)让浏览器把加载画面真的画出来再继续。
     // 注意:百分比是写死的里程碑,不是实测值——条条的丝滑动画在 menus.js 里做。
-    const progress = async (p, label) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); this.menus?.setLoading(p, label); await nextFrame(); };
+    const progress = async (p, label) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); globalThis.inkwaveDiagnostics?.record('boot-progress', { p, label }); this.menus?.setLoading(p, label); await nextFrame(); };
     await progress(0.05, 'Mixing ink…');
 
     // renderer / scene

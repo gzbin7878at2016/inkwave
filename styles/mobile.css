@@ -6,7 +6,7 @@
 .iw-mobile button { -webkit-tap-highlight-color: transparent; }
 #mobile-controls { position: fixed; inset: 0; z-index: 32; pointer-events: none; user-select: none; touch-action: none; }
 #mobile-controls [data-touch] { pointer-events: auto; touch-action: none; }
-#mobile-controls button, #mobile-panel button, #mobile-dialog button, #mobile-dialog select {
+#mobile-controls button, #mobile-panel button, #mobile-dialog button, #mobile-dialog select, #mobile-log-export, #mobile-log-status button {
   color: #fff; background: #211f36dd; border: 2px solid #ffffff8c; border-radius: 14px;
   font: 600 14px system-ui; min-width: 48px; min-height: 48px; padding: 5px 10px;
 }
@@ -32,6 +32,10 @@
 #mobile-panel button { min-height: 44px; font-size: 12px; }
 #mobile-panel span { position: fixed; left: max(80px, env(safe-area-inset-left)); bottom: max(4px, env(safe-area-inset-bottom)); color: #fff; background: #0009; font: 11px monospace; pointer-events: none; }
 .iw-mobile .iw-fps { top: auto; bottom: max(4px, env(safe-area-inset-bottom)); }
+#mobile-log-export { position: fixed; left: max(8px, env(safe-area-inset-left)); top: max(4px, env(safe-area-inset-top)); z-index: 90; }
+#mobile-panel #mobile-log-export { position: static; }
+#mobile-log-status { position: fixed; z-index: 100; bottom: max(8px, env(safe-area-inset-bottom)); left: 8px; right: 8px; padding: 12px; border-radius: 12px; color: white; background: #17152bef; font: 14px system-ui; overflow-wrap: anywhere; }
+#mobile-log-status button { margin-left: 12px; }
 #mobile-dialog { position: fixed; z-index: 80; inset: 8% max(10%, env(safe-area-inset-right)) 8% max(10%, env(safe-area-inset-left));
   padding: 20px; background: #161326f5; color: white; border: 2px solid white; border-radius: 18px; font: 16px system-ui; overflow-y: auto; touch-action: pan-y; }
 #mobile-dialog p { margin: 0 0 14px; }
