@@ -106,6 +106,8 @@ export function installMobile(game) {
       <label>按钮大小 <input aria-label="按钮大小" type="range" min="0.8" max="1.3" step="0.1" value="${game.settings.touchButtonScale ?? 1}"></label>
       <label>左手瞄准布局 <input type="checkbox" ${game.settings.touchLeftHanded ? 'checked' : ''}></label>
       <label>目标帧率 <select><option value="30">30（省电）</option><option value="60">60（更流畅）</option></select></label>
+      <label>画面清晰度 <select aria-label="画面清晰度"><option value="battery">省电 · 1倍 / FXAA</option><option value="clear">清晰 · 1.5倍 / SMAA（推荐）</option><option value="hd">高清 · 2倍 / SMAA（更耗电）</option></select></label>
+      <small>清晰度优先，发热或掉帧可切回省电。实际分辨率受设备与动态降档限制。</small>
       <button>保存并返回</button>`;
     const sliders = dialog.querySelectorAll('input');
     sliders[0].oninput = () => { game.settings.touchSensitivity = +sliders[0].value; save(); };
@@ -113,6 +115,10 @@ export function installMobile(game) {
     sliders[2].onchange = () => { game.settings.touchLeftHanded = sliders[2].checked; applySize(); save(); };
     const fps = dialog.querySelector('select'); fps.value = String(game.settings.fpsCap || 30);
     fps.onchange = () => { game.settings.fpsCap = +fps.value; save(); };
+    // 清晰度在当前对局即时重建后处理，不重开地图；持久保存，升级时旧设置默认清晰档。
+    const visual = dialog.querySelector('[aria-label="画面清晰度"]');
+    visual.value = game.settings.mobileVisual || 'clear';
+    visual.onchange = () => game._setSettings({ mobileVisual: visual.value });
     dialog.querySelector('button').onclick = () => { dialog.hidden = true; if (game.match?.paused) game.resume(); };
   };
   const applySize = () => {

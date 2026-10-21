@@ -8,16 +8,21 @@ export function installMobileGpuSafety(renderer) {
     arrayLayers: gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS),
     floatColor: !!gl.getExtension('EXT_color_buffer_float'),
   };
-  const state = { caps, tier: caps.fragmentVectors >= 224 && caps.textureUnits >= 8 ? 'textured' : 'basic', fallbackCount: 0, pending: false, fatal: false };
+  // 主档含环境/BRDF/ORM/AO等最多9个采样器，预留1个槽位；不足则走基础档。
+  const state = { caps, tier: caps.fragmentVectors >= 224 && caps.textureUnits >= 10 ? 'textured' : 'basic', fallbackCount: 0, pending: false, fatal: false };
   const oldError = renderer.debug.onShaderError;
   renderer.debug.checkShaderErrors = true;
   renderer.debug.onShaderError = (context, program, vertex, fragment) => {
     oldError?.(context, program, vertex, fragment);
     const source = context.getShaderSource(fragment) || '';
+    if (/SHADER_NAME SMAA(?:Edges|Weights|Blend)Shader/.test(source)) {
+      state.aaFailed = true;
+      return;
+    }
     if (source.includes('#define INKWAVE_MOBILE_SURFACE')) {
       state.pending = true;
       state.fatal = source.includes('#define INKWAVE_MOBILE_BASIC');
-    } else if (source.includes('varying vec4 vSplat') || source.includes('uniform float uDry')) {
+    } else if (source.includes('varying vec4 vSplat') || source.includes('uniform float uDry') || source.includes('SHADER_NAME FXAAShader')) {
       // 墨图集本身失败不能继续伪装成可正常游玩，进入明确的安全暂停出口。
       state.pending = true; state.fatal = true;
     }
@@ -26,6 +31,12 @@ export function installMobileGpuSafety(renderer) {
   return {
     state,
     recover(game) {
+      // SMAA驱动异常只降低抗锯齿等级，不丢地面；本次会话固定FXAA，避免反复重试。
+      if (state.aaFailed && game.R.mobileAA && !game.R.mobileAA.uniforms && !gl.isContextLost()) {
+        game.R._buildComposer();
+        globalThis.inkwaveDiagnostics?.record('mobile-aa-fallback', { antialias: 'FXAA', reason: 'SMAA编译失败' }, 'warn');
+        game.R.render();
+      }
       if (!state.pending || gl.isContextLost()) return;
       state.pending = false;
       if (state.fatal || state.fallbackCount >= 1) {
@@ -57,6 +68,6 @@ export function chooseMobileSurfaceTier(renderer, lib, requested) {
   const state = renderer?.mobileGpu?.state;
   if (requested === 'basic' || state?.tier === 'basic' || !lib) return 'basic';
   const caps = state?.caps;
-  if (caps && (lib.albedo.image.depth > caps.arrayLayers || caps.textureUnits < 8)) return 'basic';
+  if (caps && (lib.albedo.image.depth > caps.arrayLayers || caps.textureUnits < 10)) return 'basic';
   return 'textured';
 }

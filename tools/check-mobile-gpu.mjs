@@ -12,7 +12,7 @@ try {
   for (const limit of [256, 224]) {
     const page = await browser.newPage();
     await page.setCacheEnabled(false);
-    await page.setViewport({ width: 1000, height: 464, hasTouch: true, isMobile: true });
+    await page.setViewport({ width: 1000, height: 464, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
     await page.evaluateOnNewDocument(cap => {
       const original = WebGL2RenderingContext.prototype.getParameter;
       WebGL2RenderingContext.prototype.getParameter = function (name) {
@@ -57,10 +57,10 @@ try {
           geometry.dispose(); material.dispose(); g.debug.unfreeze();
         }
       });
-      assert.ok(aa.changed > 50 && aa.softened > 20, 'FXAA必须实际平滑黑白斜边');
-      assert.equal(aa.density, 1); assert.equal(aa.samples, 0);
+      assert.ok(aa.changed > 50 && aa.softened > 20, 'SMAA必须实际平滑黑白斜边');
+      assert.equal(aa.density, 1.5); assert.equal(aa.samples, 0);
       // 非整数缩放、窗口改变和画质重建后采样步长必须始终对应实际像素。
-      await page.setViewport({ width: 991, height: 463, hasTouch: true, isMobile: true });
+      await page.setViewport({ width: 991, height: 463, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
       const sizing = await page.evaluate(() => {
         const g = __inkwave, R = g.R;
         g.debug.freeze(); R.resize(); R.setDynamicScale(0.875);
@@ -72,15 +72,28 @@ try {
         g.debug.unfreeze(); return { scaled, medium, low };
       });
       for (const state of [sizing.scaled, sizing.low]) {
-        assert.equal(state.antialias, 'FXAA'); assert.deepEqual(state.canvas, state.target);
-        assert.ok(Math.abs(state.fxaaTexel[0] - 1 / state.canvas.width) < 1e-9);
-        assert.ok(Math.abs(state.fxaaTexel[1] - 1 / state.canvas.height) < 1e-9);
+        assert.equal(state.antialias, 'SMAA'); assert.deepEqual(state.canvas, state.target);
+        assert.ok(Math.abs(state.smaaTexel[0] - 1 / state.canvas.width) < 1e-9);
+        assert.ok(Math.abs(state.smaaTexel[1] - 1 / state.canvas.height) < 1e-9);
       }
-      assert.equal(sizing.scaled.pixelRatio, 0.875); assert.equal(sizing.low.pixelRatio, 1);
+      assert.equal(sizing.scaled.pixelRatio, 1.3125); assert.equal(sizing.low.pixelRatio, 1.5);
       assert.equal(sizing.medium.fxaa, false); assert.ok(sizing.medium.samples > 0);
-      await page.setViewport({ width: 1000, height: 464, hasTouch: true, isMobile: true });
-      report.antialias = { aa, sizing };
-      console.log('通过：FXAA真实斜边像素、1.0密度、动态缩放/窗口/画质切换与日志尺寸');
+      const profiles = await page.evaluate(() => {
+        const R = __inkwave.R, states = [];
+        __inkwave.debug.freeze();
+        for (const mobileVisual of ['battery', 'hd', 'clear']) {
+          R.applySettings({ ...__inkwave.settings, quality: 'low', mobileVisual });
+          states.push(inkwaveDiagnostics.report().current.scene.render);
+        }
+        R.setDynamicScale(0.1); const floor = R.renderer.getPixelRatio();
+        R.setDynamicScale(1); __inkwave.debug.unfreeze(); return { states, floor };
+      });
+      assert.deepEqual(profiles.states.map(s => s.antialias), ['FXAA', 'SMAA', 'SMAA']);
+      assert.deepEqual(profiles.states.map(s => s.pixelRatio), [1, 2, 1.5]);
+      assert.equal(profiles.floor, 1);
+      await page.setViewport({ width: 1000, height: 464, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+      report.antialias = { aa, sizing, profiles };
+      console.log('通过：SMAA真实斜边像素、1.5密度、动态缩放/窗口/画质切换与日志尺寸');
     }
     const inspect = () => page.evaluate(() => {
       const game = __inkwave, gl = game.R.renderer.getContext();
@@ -106,22 +119,29 @@ try {
       attribute('normal', [0,0,1, 0,0,1, 0,0,1, 0,0,1], 3);
       attribute('color', Array(12).fill(1), 3);
       attribute('paintUv', Array(8).fill(0.5), 2);
+      attribute('lightUv', Array(8).fill(0.5), 2);
       attribute('faceUv', [0,0, 1,0, 1,1, 0,1], 2);
       attribute('faceData', [0,1,1,1, 0,1,1,1, 0,1,1,1, 0,1,1,1], 4);
       attribute('faceFlags', [0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1], 3); geometry.setIndex([0,1,2,0,2,3]);
       const scene = new __G.scene.constructor(); scene.add(new g.levelMesh.constructor(geometry,m));
+      scene.environment = __G.scene.environment;
+      __G.scene.traverse(o => { if (o.isLight) scene.add(o.clone()); });
       const camera = __G.camera.clone(); camera.position.set(0,0,2); camera.lookAt(0,0,0);
       const target = new __G.paint.rt.constructor(16,16);
       const previous = r.getRenderTarget(), oldPaint = U.uPaint.value, oldTeam = U.uTeamA.value.clone(), oldGlow = U.uInkGlow.value;
+      const oldAO = U.uAO.value, oldLight = U.uLight.value;
+      const darkMap = new Texture(new Uint8Array([0,0,0,255]),1,1); darkMap.needsUpdate = true;
       const read = () => { r.render(scene,camera); const p = new Uint8Array(4); r.readRenderTargetPixels(target,8,8,1,1,p); return Array.from(p); };
       try {
         U.uPaint.value=texture; U.uTeamA.value.setRGB(1,0,0); U.uInkGlow.value=1;
-        r.setRenderTarget(target); const empty=read();
+        U.uAO.value=0; r.setRenderTarget(target); const empty=read();
+        U.uLight.value=darkMap; U.uAO.value=1; const occluded=read(); U.uAO.value=0;
         texture.image.data.set([0,255,128,255]); texture.needsUpdate=true; const ink=read();
-        return {empty,ink};
+        return {empty,ink,occluded};
       } finally {
         U.uPaint.value=oldPaint; U.uTeamA.value.copy(oldTeam); U.uInkGlow.value=oldGlow;
-        r.setRenderTarget(previous); texture.dispose(); geometry.dispose(); target.dispose(); g.debug.unfreeze();
+        U.uAO.value=oldAO; U.uLight.value=oldLight;
+        r.setRenderTarget(previous); darkMap.dispose(); texture.dispose(); geometry.dispose(); target.dispose(); g.debug.unfreeze();
       }
     });
     const normal = await inspect();
@@ -134,9 +154,21 @@ try {
     const paint = await page.evaluate(() => inkwaveDiagnostics.report({ probe: true }).current.paintProbe);
     assert.ok(paint.available && paint.pixels.some(p => p.rgba[3] > 0));
     const visibleInk = await checkVisibleInk();
+    assert.ok(visibleInk.occluded.slice(0,3).reduce((a,b)=>a+b,0) < visibleInk.empty.slice(0,3).reduce((a,b)=>a+b,0), '烘焙遮蔽必须实际影响材质明暗');
     assert.ok(visibleInk.ink[0] > 100 && visibleInk.ink[0] > visibleInk.ink[1] * 2 && visibleInk.ink[0] > visibleInk.ink[2] * 2, '地面着色器必须实际显示红队墨迹');
     await page.screenshot({ path: `releases/investigation/mobile-gpu-${limit}.png` });
     console.log(`通过：${limit}组上限、手机材质资源预算、地面/格栅链接和墨图集写入`);
+    if (limit === 256) {
+      await page.evaluate(() => {
+        const m = __inkwave.R.mobileAA._materialEdges;
+        m.onBeforeCompile = shader => { shader.fragmentShader += '\nintentional_mobile_smaa_failure;'; };
+        m.customProgramCacheKey = () => 'intentional-mobile-smaa-test'; m.needsUpdate = true;
+      });
+      await page.waitForFunction(() => __inkwave.R.mobileSafety.state.aaFailed && __inkwave.R.mobileAA?.uniforms, { timeout: 30000 });
+      assert.equal(await page.evaluate(() => inkwaveDiagnostics.report().current.scene.render.antialias), 'FXAA');
+      assert.equal(await page.evaluate(() => !!__inkwave.mobileSuspended), false);
+      console.log('通过：SMAA真实编译失败时自动回退FXAA，场景继续正常显示');
+    }
     // 故障仅存在测试材质实例：实际shader编译错误必须驱动生产的恢复流程。
     await page.evaluate(() => {
       const g = __inkwave, old = g.levelMat, compile = old.onBeforeCompile;

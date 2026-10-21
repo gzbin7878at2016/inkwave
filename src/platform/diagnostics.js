@@ -46,7 +46,7 @@ export function installDiagnostics(nativePlugin) {
     return {
       bootComplete: true, mode: G.mode, mapId: game.mapDef?.id, worldKey: game.worldKey, matchState: m?.state, practice: !!m?.practice,
       mobileGpu: game.R.mobileSafety?.state,
-      settings: { quality: game.settings.quality, shadows: game.settings.shadows, bloom: game.settings.bloom, fpsCap: game.settings.fpsCap },
+      settings: { quality: game.settings.quality, mobileVisual: game.settings.mobileVisual, shadows: game.settings.shadows, bloom: game.settings.bloom, fpsCap: game.settings.fpsCap },
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
       level: { faces: G.level?.faces?.length, visible: game.levelMesh?.visible, vertices: game.levelMesh?.geometry?.attributes?.position?.count, material: material(game.levelMat), grateMaterial: material(game.grateMat) },
       textures: { albedo: texture(game.texlib?.albedo), normal: texture(game.texlib?.normal), orm: texture(game.texlib?.orm), mural: texture(game.murals), lightmap: texture(game.levelMat?.userData?.uniforms?.uLight?.value) },
@@ -56,8 +56,9 @@ export function installDiagnostics(nativePlugin) {
         pixelRatio: game.R.renderer.getPixelRatio(),
         canvas: { width: game.R.renderer.domElement.width, height: game.R.renderer.domElement.height },
         target: game.R.composer ? { width: Math.floor(game.R.composer.renderTarget1.width), height: Math.floor(game.R.composer.renderTarget1.height) } : null,
-        antialias: game.R.mobileAA ? 'FXAA' : game.R.samples ? `MSAA ${game.R.samples}x` : game.R.composer?.passes.some(pass => pass.constructor.name === 'SMAAPass') ? 'SMAA' : 'none',
-        fxaaTexel: game.R.mobileAA?.uniforms.resolution.value.toArray(),
+        antialias: game.R.mobileAA ? (game.R.mobileAA.uniforms ? 'FXAA' : 'SMAA') : game.R.samples ? `MSAA ${game.R.samples}x` : game.R.composer?.passes.some(pass => pass.constructor.name === 'SMAAPass') ? 'SMAA' : 'none',
+        fxaaTexel: game.R.mobileAA?.uniforms?.resolution.value.toArray(),
+        smaaTexel: game.R.mobileAA?._materialBlend?.uniforms.resolution.value.toArray(),
         memory: { ...game.R.renderer.info.memory } },
     };
   }

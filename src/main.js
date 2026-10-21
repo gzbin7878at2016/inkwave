@@ -95,7 +95,7 @@ class Game {
     // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
     // 手机首启保守档：减少填充、阴影与后处理开销；以后尊重玩家保存的设置。
-    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', shadows: false, bloom: false, fpsCap: 30, showFps: true } : DEFAULT_SETTINGS;
+    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'clear', shadows: false, bloom: false, fpsCap: 30, showFps: true } : DEFAULT_SETTINGS;
     this.settings = G.settings = loadJSON('inkwave.settings', defaults);
     setLang(this.settings.lang || 'en');   // before any menu renders (src/i18n/strings.js)
     document.title = t('INKWAVE — Turf Riot');
@@ -490,7 +490,7 @@ class Game {
     Object.assign(this.settings, partial);
     saveJSON('inkwave.settings', this.settings);
     if ('lang' in partial) { setLang(partial.lang); document.title = t('INKWAVE — Turf Riot'); this._rebuildHud(); }
-    if ('quality' in partial || 'shadows' in partial || 'bloom' in partial) this.R?.applySettings(this.settings);
+    if ('quality' in partial || 'shadows' in partial || 'bloom' in partial || (window.inkwaveMobile && 'mobileVisual' in partial)) this.R?.applySettings(this.settings);
     if ('fullscreen' in partial && window.inkwaveNative) window.inkwaveNative.setFullScreen(!!partial.fullscreen);
     if ('master' in partial || 'music' in partial || 'sfx' in partial) this._applyAudioVolumes();
     if ('colorblind' in partial && G.mode !== 'match') this._setPalette(this._pickPalette());

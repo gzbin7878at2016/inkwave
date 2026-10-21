@@ -30,7 +30,7 @@ export function createMobileLevelMaterial(paintTexture, atlasSize, muralTexture 
     const slots = tableTexture([all.uTL.value, all.uTLt.value]);
     const murals = tableTexture([all.uMurA.value, all.uMurB.value]);
     owned.push(slots, murals);
-    Object.assign(uniforms, { uSurfaceTable: { value: slots }, uMuralTable: { value: murals }, tAlbedo: all.tAlbedo });
+    Object.assign(uniforms, { uSurfaceTable: { value: slots }, uMuralTable: { value: murals }, tAlbedo: all.tAlbedo, tOrm: all.tOrm });
   }
   template.dispose();
   mat.name = `inkwave-mobile-${tier}${opts.grate ? '-grate' : ''}`;
@@ -48,18 +48,18 @@ export function createMobileLevelMaterial(paintTexture, atlasSize, muralTexture 
   mat.onBeforeCompile = shader => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>
-attribute vec2 paintUv; attribute vec2 faceUv; attribute vec4 faceData; attribute vec3 faceFlags;
-varying vec2 mPaintUv; varying vec2 mFaceUv; varying vec4 mFaceData; varying vec3 mFaceFlags; varying vec3 mNormal;`)
+attribute vec2 paintUv; attribute vec2 faceUv; attribute vec4 faceData; attribute vec3 faceFlags; attribute vec2 lightUv;
+varying vec2 mPaintUv; varying vec2 mFaceUv; varying vec4 mFaceData; varying vec3 mFaceFlags; varying vec3 mNormal; varying vec2 mLightUv;`)
       .replace('#include <project_vertex>', `#include <project_vertex>
 mPaintUv = paintUv; mFaceUv = faceUv; mFaceData = faceData; mFaceFlags = faceFlags;
-mNormal = normalize(mat3(modelMatrix) * normal);`);
+mNormal = normalize(mat3(modelMatrix) * normal); mLightUv = lightUv;`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `#include <common>
 uniform sampler2D uPaint;
 uniform vec3 uTeamA; uniform vec3 uTeamB; uniform float uInkGlow;
-varying vec2 mPaintUv; varying vec2 mFaceUv; varying vec4 mFaceData; varying vec3 mFaceFlags; varying vec3 mNormal;
-float mInk = 0.0; float mWet = 0.0; vec3 mInkColor = vec3(0.0);
+varying vec2 mPaintUv; varying vec2 mFaceUv; varying vec4 mFaceData; varying vec3 mFaceFlags; varying vec3 mNormal; varying vec2 mLightUv;
+float mInk = 0.0; float mWet = 0.0; vec3 mInkColor = vec3(0.0); vec3 mOrm = vec3(1.0,0.82,0.0);
 ${tier === 'textured' ? `uniform highp sampler2D uSurfaceTable; uniform highp sampler2D uMuralTable;
-uniform highp sampler2DArray tAlbedo; uniform sampler2D uMural;
+uniform highp sampler2DArray tAlbedo; uniform highp sampler2DArray tOrm; uniform sampler2D uMural;
 uniform sampler2D uLight; uniform float uAO;` : ''}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 ${opts.grate ? `{
@@ -77,6 +77,7 @@ ${tier === 'textured' ? `{
   vec4 surface=texelFetch(uSurfaceTable,ivec2(slot,0),0);
   mode=texelFetch(uSurfaceTable,ivec2(slot,1),0);
   vec4 texel=texture(tAlbedo,vec3(mFaceUv*surface.y,surface.x));
+  mOrm=texture(tOrm,vec3(mFaceUv*surface.y,surface.x)).rgb;
   if(mode.x<0.5) diffuseColor.rgb=texel.rgb;
   else if(mode.x<1.5) diffuseColor.rgb*=texel.rgb;
   else diffuseColor.rgb=texel.rgb+diffuseColor.rgb*texel.a*1.25;
@@ -91,17 +92,28 @@ ${tier === 'textured' ? `{
 }` : ''}
 if(mFaceData.y>0.5) {
   vec4 paint=texture2D(uPaint,mPaintUv);
-  mInk=smoothstep(0.015,0.9,paint.a);
+  // 随屏幕覆盖率调整过渡宽度，远处墨迹边缘避免硬切；不增加图集或uniform数组。
+  float inkWidth=max(fwidth(paint.a)*0.65,0.015);
+  mInk=smoothstep(0.08-inkWidth,0.85+inkWidth,paint.a);
   float alpha=max(paint.a,0.0001);
   mWet=clamp(paint.g/alpha,0.0,1.0);
   mInkColor=mix(uTeamA,uTeamB,clamp(paint.r/alpha,0.0,1.0))*mix(0.85,1.08,clamp(paint.b/alpha,0.0,1.0));
   diffuseColor.rgb=mix(diffuseColor.rgb,mInkColor,mInk);
 }`);
     if (tier === 'textured') {
-      shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor=mix(roughnessFactor,mix(0.36,0.22,mWet),mInk);')
+      // 读取现有ORM区分石材/金属与湿墨；烘焙AO补足接触层次，不开昂贵实时AO。
+      shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor=mix(clamp(mOrm.g,0.42,0.94),mix(0.38,0.24,mWet),mInk);')
+        .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor=min(mOrm.b,0.35)*(1.0-mInk);')
+        .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal=normalize(normal-vec3(dFdx(mInk),dFdy(mInk),0.0)*0.10);')
+        .replace('#include <aomap_fragment>', `#include <aomap_fragment>
+float mobileAO=mix(1.0,mOrm.r,0.45*(1.0-mInk));
+if(uAO>0.0 && mLightUv.x>=0.0) mobileAO*=mix(1.0,texture2D(uLight,mLightUv).r,0.65*uAO);
+reflectedLight.indirectDiffuse*=mobileAO;
+reflectedLight.indirectSpecular*=mix(1.0,mobileAO,0.8);
+reflectedLight.directDiffuse*=mix(1.0,mobileAO,0.2);`)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance+=mInkColor*mInk*uInkGlow;');
     }
   };
-  mat.customProgramCacheKey = () => `inkwave-mobile-surface-v1-${tier}-${opts.grate ? 'grate' : 'solid'}`;
+  mat.customProgramCacheKey = () => `inkwave-mobile-surface-v2-${tier}-${opts.grate ? 'grate' : 'solid'}`;
   return mat;
 }

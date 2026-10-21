@@ -32,13 +32,24 @@ import { G } from './ctx.js';
 
 const BLOOM = [0.28, 0.45, 2.4];   // default bloom: strength, radius, HDR threshold
 
-// 手机低档只提高渲染密度，保留低档阴影/粒子预算；不改共享QUALITY与PC参数。
-const MOBILE_LOW = { ...QUALITY.low, pixelRatio: 1.0 };
+// 手机画面清晰度独立于几何/粒子档；高分辨率不连带打开阴影、泛光和实时AO。
+const MOBILE_VISUAL = Object.fromEntries(Object.entries({ battery: 1, clear: 1.5, hd: 2 }).map(([key, pixelRatio]) =>
+  [key, Object.fromEntries(Object.entries(QUALITY).map(([quality, q]) => [quality, { ...q, pixelRatio }]))]));
 
 // Composer传入真实目标像素尺寸；窗口、DPR、动态分辨率改变后都必须同步FXAA采样步长。
 class MobileFXAAPass extends ShaderPass {
   constructor() { super(FXAAShader); }
   setSize(width, height) { this.uniforms.resolution.value.set(1 / Math.max(1, Math.floor(width)), 1 / Math.max(1, Math.floor(height))); }
+}
+
+// SMAA避免FXAA对整幅细节的软化；中间边缘/权重图同样按真实像素取整。
+class MobileSMAAPass extends SMAAPass {
+  constructor() {
+    super();
+    // 显式命名以便诊断回调识别失败阶段，不能依赖库内部未设置的material.name。
+    for (const stage of ['Edges', 'Weights', 'Blend']) this[`_material${stage}`].name = `SMAA${stage}Shader`;
+  }
+  setSize(width, height) { super.setSize(Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))); }
 }
 
 // 【自定义调色 shader】60 行 GLSL ≈ UE4 里 PostProcess Volume 一整个面板的手写等价物。
@@ -155,7 +166,7 @@ export class Renderer {
 
   _qualityPreset(settings) {
     const q = QUALITY[settings.quality] || QUALITY.high;
-    return this.mobileSafety && q === QUALITY.low ? MOBILE_LOW : q;
+    return this.mobileSafety ? (MOBILE_VISUAL[settings.mobileVisual] || MOBILE_VISUAL.clear)[settings.quality in QUALITY ? settings.quality : 'high'] : q;
   }
 
   // 【搭建后处理链】渲染目标与 pass 的顺序就是首行注释那张图,逐个说:
@@ -210,13 +221,16 @@ export class Renderer {
     comp.addPass(this.grade);
     // optional screen-FX pass (src/fx/screenfx.js) — runs in HDR linear space before tone mapping/output
     if (this.extraPass) comp.addPass(this.extraPass);
+    // 本项目内置的SMAA在HDR线性颜色上工作，必须放在OutputPass之前。
+    const mobileSMAA = this.mobileSafety && !this.samples && this.settings.mobileVisual !== 'battery' && this.mobileSafety.state.caps.floatColor && !this.mobileSafety.state.aaFailed;
+    if (mobileSMAA) { this.mobileAA = new MobileSMAAPass(); comp.addPass(this.mobileAA); }
     comp.addPass(new OutputPass());
     // SMAA stands in for MSAA where MSAA was skipped; it runs on the tone-mapped sRGB image
     // 手机无MSAA时使用一遍FXAA；有MSAA则沿用它，避免叠加多套抗锯齿成本。
-    if (this.mobileSafety && !this.samples) {
+    if (this.mobileSafety && !this.samples && !mobileSMAA) {
       this.mobileAA = new MobileFXAAPass();
       comp.addPass(this.mobileAA);
-    } else if (q.msaa && !this.samples) comp.addPass(new SMAAPass());
+    } else if (!this.mobileSafety && q.msaa && !this.samples) comp.addPass(new SMAAPass());
     r.shadowMap.enabled = this.settings.shadows !== false;
     this._w = w; this._h = h;
     this.grade.uniforms.uAspect.value = w / h;
@@ -246,6 +260,8 @@ export class Renderer {
   // Lowest dynamic scale: never below 0.75 of CSS-pixel density, so Retina screens (preset density > 1) can give more back.
   dynFloor() {
     const base = Math.min(window.devicePixelRatio || 1, this.q.pixelRatio);
+    // 清晰/高清档允许热机降档，但不再跌破1个CSS像素密度；省电保留更低自保空间。
+    if (this.mobileSafety && this.settings.mobileVisual !== 'battery') return Math.min(1, 1 / base);
     return Math.max(0.5, Math.min(0.75, 0.75 / base));
   }
 

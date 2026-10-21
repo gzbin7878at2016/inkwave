@@ -19,8 +19,8 @@ try {
   await page.waitForFunction(() => window.__inkwave?.mobile && window.inkwaveDiagnostics, { timeout: 120000 });
   const baseline = await page.evaluate(() => inkwaveDiagnostics.report());
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 4);
-  assert.equal(baseline.current.scene.render.antialias, 'FXAA');
+  assert.equal(baseline.current.build.versionCode, 5);
+  assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);
   assert.ok(baseline.current.programs.some(p => p.isPaintSurface && p.linked));

@@ -82,6 +82,12 @@ try {
   await page.click('[data-mobile="tune"]');
   await page.$eval('#mobile-dialog input[type="checkbox"]', e => { e.checked = true; e.dispatchEvent(new Event('change')); });
   assert.equal(await page.$eval('#mobile-controls', e => e.classList.contains('mobile-left')), true);
+  // 从真实设置控件切换三档，并核对持久化与即时重建，而非仅直接调用渲染器。
+  for (const visual of ['battery', 'hd', 'clear']) {
+    await page.select('[aria-label="画面清晰度"]', visual);
+    const applied = await page.evaluate(() => ({ saved: JSON.parse(localStorage.getItem('inkwave.settings')).mobileVisual, live: __inkwave.R.q.pixelRatio }));
+    assert.equal(applied.saved, visual); assert.equal(applied.live, { battery: 1, hd: 2, clear: 1.5 }[visual]);
+  }
   await page.click('#mobile-dialog button');
   passed('左手布局切换与保存返回');
   const zonesJudge = await page.evaluate(async () => {
