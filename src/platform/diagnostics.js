@@ -20,7 +20,9 @@ function resourceURL(value) {
 export function installDiagnostics(nativePlugin) {
   if (globalThis.inkwaveDiagnostics) return globalThis.inkwaveDiagnostics;
   const started = performance.now();
-  const current = { build: BUILD, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, events: [], shaderFailures: [], gpu: null, native: null };
+  const current = { build: BUILD, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, events: [], shaderFailures: [], gpu: null, native: null,
+    startup: { stages: [], checkpoints: [{ atMs: 0, phase: 'module-import' }], completedAtMs: null },
+    responsiveness: { longTaskSupported: false, thresholdMs: 200, longTasks: [], longTaskCount: 0, maxLongTaskMs: 0, stalls: [], maxDelayMs: 0, operations: [] } };
   let previous = null, renderer = null, savedTimer = null, lastTick = 0;
   let shaderId = 0;
   const shaderSeen = new WeakSet();
@@ -36,6 +38,55 @@ export function installDiagnostics(nativePlugin) {
     }
     if (!savedTimer) savedTimer = setTimeout(persist, 1500);
   };
+
+  // 独立于每4帧CPU抽样，保留启动关键路径及超过阈值的停顿，避免P95隐藏少数超长卡顿。
+  let phase = 'module-import', phaseStarted = started;
+  const beginStage = (name, detail = {}) => {
+    const begin = performance.now();
+    return () => {
+      const stage = { name, startMs: Math.round(begin - started), durationMs: Math.round(performance.now() - begin), ...detail };
+      const stages = current.startup.completedAtMs === null ? current.startup.stages : current.responsiveness.operations;
+      stages.push(stage);
+      if (stages.length > (current.startup.completedAtMs === null ? 256 : 40)) stages.shift();
+    };
+  };
+  const startupCheckpoint = (next, label) => {
+    const now = performance.now();
+    current.startup.stages.push({ name: phase, startMs: Math.round(phaseStarted - started), durationMs: Math.round(now - phaseStarted) });
+    if (current.startup.stages.length > 256) current.startup.stages.shift();
+    current.startup.checkpoints.push({ atMs: Math.round(now - started), phase: next, label, previousPhase: phase, previousDurationMs: Math.round(now - phaseStarted) });
+    phase = next; phaseStarted = now;
+    if (current.startup.checkpoints.length > 32) current.startup.checkpoints.shift();
+  };
+  const phaseAt = atMs => current.startup.checkpoints.findLast(point => point.atMs <= atMs)?.phase || 'module-import';
+  try {
+    if (globalThis.PerformanceObserver?.supportedEntryTypes?.includes('longtask')) {
+      const observer = new PerformanceObserver(list => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration < 200) continue;
+          const atMs = Math.round(entry.startTime - started);
+          const data = current.responsiveness;
+          data.longTaskCount++; data.maxLongTaskMs = Math.max(data.maxLongTaskMs, Math.round(entry.duration));
+          data.longTasks.push({ atMs, durationMs: Math.round(entry.duration), phase: phaseAt(atMs), name: entry.name });
+          if (data.longTasks.length > 60) data.longTasks.shift();
+        }
+      });
+      observer.observe({ type: 'longtask', buffered: true });
+      current.responsiveness.longTaskSupported = true;
+    }
+  } catch { /* 老WebView无Long Tasks API时仍有心跳延迟记录 */ }
+  let heartbeatAt = performance.now(), heartbeatVisible = !document.hidden;
+  setInterval(() => {
+    const now = performance.now(), delay = now - heartbeatAt - 250;
+    if (heartbeatVisible && !document.hidden && delay >= 750) {
+      const data = current.responsiveness;
+      data.maxDelayMs = Math.max(data.maxDelayMs, Math.round(delay));
+      data.stalls.push({ fromMs: Math.round(heartbeatAt - started), toMs: Math.round(now - started), delayMs: Math.round(delay), phase: phaseAt(heartbeatAt - started), note: '前台定时器延迟，可能含调度/GPU等待，不等于系统ANR' });
+      if (data.stalls.length > 40) data.stalls.shift();
+    }
+    heartbeatAt = now; heartbeatVisible = !document.hidden;
+  }, 250);
+  document.addEventListener('visibilitychange', () => { heartbeatAt = performance.now(); heartbeatVisible = !document.hidden; });
 
   function sceneSnapshot() {
     const game = globalThis.__inkwave, G = globalThis.__G;
@@ -153,7 +204,8 @@ export function installDiagnostics(nativePlugin) {
     current: { ...current, scene: sceneSnapshot(), programs: programsSnapshot(), performanceSamples: globalThis.__inkwave?.mobile?.state?.samples?.slice(-600) || [], paintProbe: probe ? paintProbe() : undefined },
     previous,
   });
-  const manager = { record, attachRenderer, report, persist, tick() {
+  const manager = { record, attachRenderer, report, persist, beginStage, startupCheckpoint,
+    finishStartup() { startupCheckpoint('interactive'); current.startup.completedAtMs = Math.round(performance.now() - started); persist(); }, tick() {
     const now = performance.now(); if (now - lastTick < 5000) return; lastTick = now;
     // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串。
     const snapshot = sceneSnapshot(); delete snapshot.profile;

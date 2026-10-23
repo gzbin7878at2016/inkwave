@@ -1393,7 +1393,8 @@ export class Showcase {
   update(dt) {
     dt = Math.min(dt || 0, 0.1);
     this._ffFrame = this.fullFrame;   // what main.js saw at the top of this frame (it didn't draw the world if true)
-    if (!this._warmState && G.env) this._warmup();
+    // 手机菜单不抢跑整套隐藏展台预热，真正打开装备/大厅时仍按原入口创建所需内容。
+    if (!window.inkwaveMobile && !this._warmState && G.env) this._warmup();
     this._updateSet(dt);
     let mode = OVERLAY.has(this.mode) ? this.mode : null;
     if (!mode && this._out > 0) {
@@ -1771,7 +1772,10 @@ export class Showcase {
     import('./lobbySet.js').then(async (mod) => {
       if (this.lob !== L) return;
       const q = G.settings?.quality || 'high';
-      const set = new mod.LobbySet(this.r, { quality: q, texlib: G.game?.texlib || null });
+      const buildDone = globalThis.inkwaveDiagnostics?.beginStage('lobby-scene-build');
+      let set;
+      try { set = new mod.LobbySet(this.r, { quality: q, texlib: G.game?.texlib || null }); }
+      finally { buildDone?.(); }
       L.set = set; L.quality = q;
       L.scene.add(set.root);
       await set.ready;
@@ -1787,7 +1791,10 @@ export class Showcase {
       const C = set.camera;
       this._placeLook(L.cam, C.pos, C.target, C.fov, innerWidth / 2, innerHeight / 2, innerWidth, innerHeight);
       this._lobEnv(L);
-      try { if (this.r.compileAsync) await this.r.compileAsync(L.scene, L.cam); else this.r.compile(L.scene, L.cam); } catch (e) { console.warn('[showcase] lobby set warm-up', e); }
+      const compileDone = globalThis.inkwaveDiagnostics?.beginStage('lobby-shader-compile');
+      try { if (this.r.compileAsync) await this.r.compileAsync(L.scene, L.cam); else this.r.compile(L.scene, L.cam); }
+      catch (e) { console.warn('[showcase] lobby set warm-up', e); }
+      finally { compileDone?.(); }
       L.kids.remove(warm.root); warm.dispose?.();
       if (this.lob !== L) return;
       L.ready = true;

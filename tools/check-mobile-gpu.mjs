@@ -161,9 +161,17 @@ try {
         r.setRenderTarget(previous); darkMap.dispose(); texture.dispose(); geometry.dispose(); target.dispose(); g.debug.unfreeze();
       }
     });
+    // 资源预算要显式覆盖地面和格栅两种材质，不能依赖启动流程全量编译不可见网格。
+    await page.evaluate(async () => {
+      const game = __inkwave, r = game.R.renderer, target = r.getRenderTarget();
+      try {
+        r.setRenderTarget(game.R.composer.readBuffer);
+        for (const mesh of [game.levelMesh, game.grateMesh]) if (mesh) await r.compileAsync(mesh, __G.camera, __G.scene);
+      } finally { r.setRenderTarget(target); }
+    });
     const normal = await inspect();
     assert.equal(normal.tier, 'textured'); assert.equal(normal.failures, 0);
-    assert.ok(normal.programs.length >= 2 && normal.programs.every(p => p.linked && p.vectors <= 128 && p.maxArray < 24));
+    assert.ok(normal.programs.length >= 2 && normal.programs.every(p => p.linked && p.vectors <= 128 && p.maxArray < 24), JSON.stringify(normal));
     await page.evaluate(() => __inkwave.startPractice({ mapId: __inkwave.mapDef.id }));
     await page.waitForFunction(() => __inkwave.input.touch.enabled, { timeout: 120000 });
     await page.evaluate(() => { __inkwave.debug.paintRandom(40); });

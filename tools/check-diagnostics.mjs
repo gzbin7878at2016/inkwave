@@ -22,13 +22,33 @@ try {
   assert.ok(baseline.current.scene.profile.samples > 0);
   assert.ok(baseline.current.scene.profile.topCalls.some(row => row.calls > 0));
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 8);
+  assert.equal(baseline.current.build.versionCode, 9);
   assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);
   assert.ok(baseline.current.programs.some(p => p.isPaintSurface && p.linked));
   assert.equal(baseline.current.shaderFailures.length, 0);
   console.log('通过：启动前日志、GPU参数、地面程序状态、构建版本');
+
+  assert.ok(baseline.current.startup.completedAtMs > 0);
+  assert.ok(baseline.current.startup.stages.some(stage => stage.name === 'mobile-first-draw-batch'));
+  assert.equal(baseline.current.startup.stages.filter(stage => stage.name === 'startup-full-frame').length, 1);
+  assert.equal(baseline.current.startup.stages.filter(stage => stage.name === 'startup-simulation-prime').length, 2);
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  assert.equal(await page.evaluate(() => !!__inkwave.showcase.lob), false, '手机菜单不得自动创建大厅');
+  assert.equal(await page.evaluate(() => !!__inkwave.showcase._warmState), false, '手机首帧不得自动预热隐藏展台');
+  await page.evaluate(() => {
+    const done = inkwaveDiagnostics.beginStage('test-intentional-long-task');
+    const start = performance.now();
+    while (performance.now() - start < 1200) { /* 人为阻塞用于验证响应诊断，不是生产逻辑 */ }
+    done();
+  });
+  await page.waitForFunction(() => inkwaveDiagnostics.report().current.responsiveness.stalls.some(stall => stall.delayMs >= 750), { timeout: 5000 });
+  const blocking = await page.evaluate(() => inkwaveDiagnostics.report().current);
+  assert.ok(blocking.responsiveness.operations.some(stage => stage.name === 'test-intentional-long-task' && stage.durationMs >= 1100));
+  if (blocking.responsiveness.longTaskSupported) assert.ok(blocking.responsiveness.longTasks.some(task => task.durationMs >= 1100));
+  assert.ok(blocking.responsiveness.longTasks.length <= 60 && blocking.responsiveness.stalls.length <= 40);
+  console.log('通过：启动分段、手机无隐藏自动预载、真实长任务与前台响应停顿捕获');
 
   await page.evaluate(async () => {
     const game = __inkwave, material = game.levelMat.clone();

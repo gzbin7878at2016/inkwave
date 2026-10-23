@@ -314,8 +314,11 @@ export class Menus {
     const token = ++this._swapToken;
     const swap = () => {
       if (token !== this._swapToken) return;
-      this._swap(name, opts);
-      safeCall(() => this.api.onScreenChange && this.api.onScreenChange(name));
+      const finish = globalThis.inkwaveDiagnostics?.beginStage('menu-screen-change', { from: prev, to: name });
+      try {
+        this._swap(name, opts);
+        safeCall(() => this.api.onScreenChange && this.api.onScreenChange(name));
+      } finally { finish?.(); }
     };
     const wipe = opts.wipe ?? WIPES.has(`${prev}>${name}`);
     if (wipe && prev !== null && !prefersReducedMotion()) this._runWipe(swap);

@@ -25,6 +25,7 @@ import { mapTheme,
   DEFAULT_SETTINGS, QUALITY, TEAM_PALETTES, COLORBLIND_PALETTE, TEAM_NAMES, WEAPONS, WEAPON_ORDER, WEAPON_SUCCESSOR, ZONES, SUB, SUBS, SUB_ORDER, SPECIALS, SPECIAL_ORDER,
   MAPS, DIFFICULTY, PLAYER, PROGRESSION, VERSION, MATCH, OFFLINE_MAPS, mapOfflineOk, mapNoBots, mapBossOk,
 } from './config.js';
+import { warmMobileScene, warmMobilePostprocess } from './platform/mobileStartup.js';
 import { Level } from './world/level.js';
 import { MAP_LAYOUTS } from './world/maps.js';
 import { PaintSystem } from './world/paint.js';
@@ -91,6 +92,8 @@ class Game {
   // ----------------------------------------------------------------------------------------
   async boot() {
     const t0 = performance.now();
+    const diagnostics = globalThis.inkwaveDiagnostics;
+    diagnostics?.startupCheckpoint('boot-setup');
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
     // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
@@ -132,7 +135,7 @@ class Game {
     // progress() —— 进度条推进器:记录里程碑耗时(供控制台 __inkwave.bootMarks 调试)→
     // 通知 UI 更新标签 → 等一帧(nextFrame)让浏览器把加载画面真的画出来再继续。
     // 注意:百分比是写死的里程碑,不是实测值——条条的丝滑动画在 menus.js 里做。
-    const progress = async (p, label) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); globalThis.inkwaveDiagnostics?.record('boot-progress', { p, label }); this.menus?.setLoading(p, label); await nextFrame(); };
+    const progress = async (p, label) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); diagnostics?.startupCheckpoint(`loading-${Math.round(p * 100)}`, label); diagnostics?.record('boot-progress', { p, label }); this.menus?.setLoading(p, label); await nextFrame(); };
     await progress(0.05, 'Mixing ink…');
 
     // renderer / scene
@@ -228,22 +231,42 @@ class Game {
     this._setPalette(this._pickPalette());
     this._bindEvents();
     this._startAttract();
-    // warm up: compile every shader now so the first shot/splat never hitches
-    // 【预热:把卡顿消灭在加载条里】着色器是"第一次被用到"时才编译的;不处理的话,
-    // 比赛中第一颗炸弹出手瞬间 GPU 要现场编译,画面冻结几十到几百毫秒。
-    // 对策两层:① _warmup() 在屏幕外把每种特效放一遍,逼出所有惰性创建的对象与材质;
-    //          ② compileAsync 借 KHR_parallel_shader_compile 并行编译全场景着色器,
-    //            编译期间加载动画照常跑(否则浏览器冻结,进度条假死)。
+    // 首次使用才链接的材质会造成卡顿。手机分批真实绘制并让出线程；PC保留原编译流程。
+    // compileAsync没有后台线程保证，特别是设备缺少KHR_parallel_shader_compile时。
     await progress(0.85, 'Warming up…');
-    this._warmup();
-    // compile in parallel (KHR_parallel_shader_compile) so the loading screen keeps animating instead of freezing
-    try { await G.renderer.compileAsync(scene, camera); } catch { G.renderer.compile(scene, camera); }
-    for (const m of this._warmMeshes || []) { G.scene.remove(m); }
-    this._warmMeshes?.[0]?.geometry.dispose(); this._warmMeshes = null;
+    if (window.inkwaveMobile) {
+      // 保留特效池/炸弹替身准备，逐批真实绘制；不抢跑无关展台/联机大厅。
+      const finish = diagnostics?.beginStage('startup-effect-pools');
+      try { this._warmup(); } finally { finish?.(); }
+      // 先完成角色动画/LOD的首次更新，让真正将显示的网格进入分批队列。
+      // 否则预热后首个完整帧才创建/显示另一套角色材质，仍会集中阻塞。
+      const skipRender = this._skipRender;
+      try {
+        this._skipRender = true;
+        for (let i = 0; i < 2; i++) {
+          const done = diagnostics?.beginStage('startup-simulation-prime', { frame: i + 1 });
+          try { this._frame(1 / 60); } finally { done?.(); }
+          await nextFrame();
+        }
+      } finally { this._skipRender = skipRender; }
+      await warmMobilePostprocess(scene, G.renderer, this.R.composer, nextFrame, diagnostics);
+      await warmMobileScene(scene, () => this.R.render(), nextFrame, diagnostics);
+      for (const mesh of this._warmMeshes || []) G.scene.remove(mesh);
+      this._warmMeshes?.[0]?.geometry.dispose(); this._warmMeshes = null;
+    } else {
+      this._warmup();
+      // 桌面沿用原有场景编译预热。
+      try { await G.renderer.compileAsync(scene, camera); } catch { G.renderer.compile(scene, camera); }
+      for (const m of this._warmMeshes || []) { G.scene.remove(m); }
+      this._warmMeshes?.[0]?.geometry.dispose(); this._warmMeshes = null;
+    }
     await progress(0.93, 'Warming up…');
-    // 【收尾】先跑 3 帧再宣布就绪:让所有系统的"第一帧初始化"(纹理上传、首帧模拟)
-    // 发生在玩家看见标题之前,而不是标题渲染到一半突然卡一下。
-    for (let i = 0; i < 3; i++) { this._frame(1 / 60); await nextFrame(); }
+    // 手机已逐批触发首次资源使用，只做1次完整帧收尾；PC仍保留原3帧初始化。
+    for (let i = 0; i < (window.inkwaveMobile ? 1 : 3); i++) {
+      const finish = diagnostics?.beginStage('startup-full-frame', { frame: i + 1 });
+      try { this._frame(1 / 60); } finally { finish?.(); }
+      await nextFrame();
+    }
     await progress(1, 'Ready!');
     await new Promise((r) => setTimeout(r, 250));   // 停 250ms,让你看清"就绪!"(纯节奏设计)
 
@@ -253,7 +276,7 @@ class Game {
     this.menus?.show(params.has('skipTitle') ? 'main' : 'title');
     // the online hub / lobby set loads in the background once the menus are idle (no arena flash on the first visit)
     // 【后台预载大厅】菜单闲置 2.5 秒后偷偷预建联机大厅场景——第一次进大厅才不闪加载条
-    if (!params.has('autostart')) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
+    if (!window.inkwaveMobile && !params.has('autostart')) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
     this._applyAudioVolumes();
     requestAnimationFrame((t) => this._loop(t));
     if (params.has('autostart')) {
@@ -263,6 +286,7 @@ class Game {
     this.bootMs = Math.round(performance.now() - t0);
     window.__inkwave = this; // debug/audit hook
     window.__G = G;
+    diagnostics?.finishStartup();
     this.debug = {
       endMatch: (t = 0.5) => { if (this.match && !this.match.attract) this.match.time = t; },
       paintRandom: (n = 400) => { const v = new THREE.Vector3(); for (let i = 0; i < n; i++) { v.set((Math.random() - 0.5) * 48, 0.4, (Math.random() - 0.5) * 86); G.paint.splat(v, 0.8 + Math.random() * 1.4, Math.random() < 0.5 ? 0 : 1); } },
