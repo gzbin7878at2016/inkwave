@@ -6,7 +6,7 @@
 
 - 用户仓库：<https://github.com/gzbin7878at2016/inkwave>。
 - **最新工作分支：`codex/android-capacitor`。不要只拉main就开始开发。** main目前仍停在早期Android方案文档阶段，未合并本轮实现。
-- 本轮为v1.0.10手机预热第二批；前一版源码`92d3292`。本轮准确提交以`git log -1`及已核对的远端HEAD为准，APK内嵌提交与`releases/android-build-info.json`记录对应。
+- 本轮v1.0.10手机预热第二批功能提交为`0918cea`，已推送用户仓库；前一版源码`92d3292`。交付记录文档可有后续独立提交，以`git log`及远端HEAD为准；APK内嵌功能提交与`releases/android-build-info.json`对应。
 - 当前已可构建/侧载Android debug APK；最低Android10/API29，包名`com.demoink.inkwave`。test8新增[同一Wi-Fi上传日志](android/LOG-UPLOAD-test8.zh-CN.md)，真机上传已收到；已收到v1.0.9真机复测，最新v1.0.10继续处理[角色预热与开局准备](android/STARTUP-test10.zh-CN.md)。
 - 手机默认60帧目标、2倍高清、SMAA、自动降低清晰度关闭；几何预算low，阴影和泛光默认关闭。这里low不表示1倍渲染。
 - 固定高清已在真机日志确认；**稳定60帧未达成**。v1.0.9实战约34.56秒采样14～43FPS、中位31；就绪25.771秒，93%到Ready为3.625秒，但收尾完整帧仍3598ms，真实开局仍有2秒级长任务。v1.0.10将菜单演示角色排除全量预热，真实开局按角色/网格/变体串行让帧，完善就绪与取消保护。下一步上传v1.0.10启动、菜单及实际对局2～3分钟日志。
@@ -41,9 +41,9 @@ test5中用户选60/高清后，动态scale降到0.5，实际只有770×376。te
 | test7/性能第一批 | b484104 | CPU分段与真实绘制排行 | [性能第一批](android/PERFORMANCE-batch1-test7.zh-CN.md) |
 | v1.0.8 | Git版本记录 | 局域网上传、固定下载入口和版本号 | [日志上传](android/LOG-UPLOAD-test8.zh-CN.md) |
 | v1.0.9 | 92d3292 | 关闭手机自动预载、逐对象启动预热 | [启动第一批](android/STARTUP-test9.zh-CN.md) |
-| v1.0.10 | 本轮Git提交 | 角色分步预热、准备互斥与手机房间就绪握手 | [启动第二批](android/STARTUP-test10.zh-CN.md) |
+| v1.0.10 | 0918cea | 角色分步预热、准备互斥与手机房间就绪握手 | [启动第二批](android/STARTUP-test10.zh-CN.md) |
 
-本轮交付版本为`v1.0.10` / versionCode10，归档名为`releases/INKWAVE-android-test10-<源码短提交>.apk`。构建成功后会同步固定页和`INKWAVE-latest.apk`。完整源码提交、是否有跟踪文件修改、大小和SHA-256以本机`releases/android-build-info.json`为准，不能沿用旧包哈希。
+本轮交付版本为`v1.0.10` / versionCode10，归档为`releases/INKWAVE-android-test10-0918cea.apk`，21,087,357字节，源码干净。SHA-256为`ce4063dd65e08fab5f48d7a25280e4e36990a0278c53d1008019415745010b8b`；签名、354个内置网页资源、固定页及HTTP下载哈希核对均通过。完整记录在本机`releases/android-build-info.json`，真机验收待用户复测。
 
 当前电脑手机固定下载页为`http://192.168.0.109:8765/`，接收日志为`releases/logs/`；它们不通过Git同步。换电脑或局域网IP变化时按实际配置重新启动接收器并构建上传地址。
 APK与构建记录在releases中被忽略，不会随git clone下载。需要原包时单独复制并验证哈希，或在新电脑重新构建。

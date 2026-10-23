@@ -39,14 +39,14 @@ v1.0.9仍记录到`startup-full-frame`耗时3598ms，以及真实开局期间228
 
 | 验证层级 | 检查入口/内容 | 本批最终结果 |
 | --- | --- | --- |
-| 静态与确定性 | `npm run check`、`node tools/check-mobile-character-warmup.mjs`、`node tools/check-mobile-startup.mjs`、`node tools/check-mobile-preparation.mjs`；角色串行/变体/首次程序准备/取消与异常恢复、开局互斥与取消 | 通过，另含`check-mobile-profiler.mjs`；189个JS文件语法通过，准备期和取消执行真实Game方法的隔离VM检查 |
+| 静态与确定性 | `npm run check`、`node tools/check-mobile-character-warmup.mjs`、`node tools/check-mobile-startup.mjs`、`node tools/check-mobile-preparation.mjs`；角色串行/变体/首次程序准备/取消与异常恢复、开局互斥与取消 | 通过，另含`check-mobile-profiler.mjs`；190个JS文件语法通过，准备期和取消执行真实Game方法的隔离VM检查 |
 | 联机握手 | `node tools/check-mobile-network.mjs`、`node tools/check-net-preparation.mjs`；手机能力传播、超过12秒仍等待ready、迟到go、退房/掉线/切局、纯PC12秒旧路径 | 通过11组握手专项，模拟45秒慢端、房主迁移与旧消息；未执行真实多端/弱网矩阵，旧net-test依赖其他系统浏览器路径与本地relay，未计作通过 |
 | 桌面浏览器 | `node tools/check-diagnostics.mjs`、`npm run check:mobile`；启动九段、attract不全量预热、长任务留存、触屏/后台/结算、PC原入口 | 通过Edge无头浏览器回归：触控、多指、后台、布局、结算、PC原入口，pageerror/资源HTTP错误均为0；日志在`releases/test10-*.log`，浏览器结果不能换算手机FPS |
 | GPU资源上限模拟 | `node tools/check-mobile-gpu.mjs`；固定2倍/SMAA、地面资源预算、故障降级与PC边界 | 通过256/224组预算、SMAA实际像素、降级/安全暂停；PC高画质及物理材质通过，本机无旧GLSL基线，未做逐字节对比；模拟不是Maleoon真机验收 |
-| Android构建 | 移动资源同步、原生编译、签名验证、固定下载页版本/产物一致性 | 版本固定为1.0.10 / code10，源码验收后从干净提交构建；构建后补充签名/资源/HTTP校验结果，详细产物信息以本机`releases`记录为准 |
+| Android构建 | 移动资源同步、原生编译、签名验证、固定下载页版本/产物一致性 | 通过：1.0.10 / code10，源码0918cea且干净，原生构建与签名验证通过，354个网页资源逐字节一致，固定页与HTTP下载哈希核对一致；详细记录在本机`releases/android-build-info.json` |
 | Android真机 | v1.0.10覆盖安装、冷启动/菜单切换、开局、取消/重进、真实联机及至少2～3分钟实战日志 | **待用户安装复测**；本批尚不能宣称消除ANR或稳定60FPS |
 
-APK源码提交、打包时源码是否干净、SHA-256、签名验证及真机验收状态最终登记在本机`releases`构建记录中。APK、签名密钥和原始用户日志不随本文提交Git；不要用文档中的计划版本替代实际产物校验。
+实际产物为`releases/INKWAVE-android-test10-0918cea.apk`，21,087,357字节；完整源码`0918cea8e568f7a80b39cd96df317cfb7fbe5966`，打包时跟踪源码干净。SHA-256：`ce4063dd65e08fab5f48d7a25280e4e36990a0278c53d1008019415745010b8b`。apksigner验证通过，证书SHA-256为`8e8623efa96a83ebd9e48b48ec0b927f417718f5e3e563a2ac9386fb9cde6d46`，与本机test7～test9一致；当前未连接Android设备，真机验收仍为false。完整信息登记在本机`releases/android-build-info.json`。APK、签名密钥和原始用户日志不随本文提交Git；不要用文档中的计划版本替代实际产物校验。
 
 ## 下一次手机复测
 
