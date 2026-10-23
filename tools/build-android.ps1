@@ -36,16 +36,22 @@ try {
     Copy-Item -LiteralPath $mobileApk -Destination $mobileOutput -Force
     $mobileHash = (Get-FileHash -LiteralPath $mobileOutput -Algorithm SHA256).Hash.ToLower()
     "$mobileHash  $(Split-Path -Leaf $mobileOutput)" | Set-Content -LiteralPath "$mobileOutput.sha256" -Encoding ascii
+    # Capacitor重写文件可能仅改变换行；以Git实际内容差异判断源码是否修改。
+    & git diff --quiet HEAD --
+    if ($LASTEXITCODE -gt 1) { throw '无法核对源码修改状态' }
+    $mobileTrackedChanges = $LASTEXITCODE -eq 1
     [ordered]@{
         sourceCommit = (& git rev-parse HEAD).Trim()
-        trackedChanges = [bool](& git status --porcelain --untracked-files=no)
+        trackedChanges = $mobileTrackedChanges
         builtAt = (Get-Date).ToString('o')
         apk = Split-Path -Leaf $mobileOutput
         bytes = (Get-Item -LiteralPath $mobileOutput).Length
         sha256 = $mobileHash
         version = $mobileVersion
+        versionCode = [int]$mobileVersionCode
         deviceTested = $false
     } | ConvertTo-Json | Set-Content -LiteralPath releases/android-build-info.json -Encoding utf8
+    & "$PSScriptRoot/publish-android.ps1" -ApkPath $mobileOutput
     Write-Host "测试 APK：$mobileOutput"
     Write-Host "SHA-256：$mobileHash"
 } finally { Pop-Location }

@@ -24,7 +24,8 @@
 
 export const GAME_TITLE = 'INKWAVE';
 export const GAME_SUBTITLE = 'Turf Riot';
-export const VERSION = '1.0.0';
+// 手机测试版跟随APK版本，桌面网页保持原版本标识。
+export const VERSION = typeof __INKWAVE_BUILD__ !== 'undefined' ? __INKWAVE_BUILD__.version : '1.0.0';
 
 // 【队伍配色表】每局随机取一组高对比撞色;a 是 Team 0 的颜色,而 Team 0 永远是
 //   本地玩家所在队(对战双方视角下"我方"色会随调色板互换)。

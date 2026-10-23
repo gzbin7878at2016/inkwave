@@ -2,6 +2,8 @@
 
 更新日期：2026-10-23（北京时间）。本批只增加诊断上传，不修改渲染质量、帧率目标或游戏模拟。
 
+手机测试版本统一采用 `v1.0.N`（N为versionCode/test次数），本次test8显示为 `v1.0.8`。游戏角标、下载页面和Android版本名来自同一APK版本字段；以后test9对应 `v1.0.9`，递增versionCode时同时递增versionName。
+
 ## 使用
 
 1. 电脑仓库根目录运行 `py -3 tools/log_receiver.py`，保持窗口/进程运行；接收器监听8765端口。
@@ -9,6 +11,9 @@
 3. 安装已配置这台电脑局域网地址的test8 APK，在实际对局内点顶部“上传日志”。显示“上传成功”及文件名才表示电脑已确认保存。
 4. 日志写入仓库的 `releases/logs/`（本机仓库为 `D:\DemoInk`）。目录由接收器创建，不随Git上传。下载服务仅公开 `releases/mobile-install/`，不公开日志目录。
 5. 电脑无法连接或保存失败时会显示错误，按钮恢复可重试；原“导出日志”仍可使用。没有自动上传或后台重试。
+6. 手机收藏 `http://电脑局域网IPv4:8765/` 固定下载页，以后刷新即可查看版本并下载；固定APK路径为 `/INKWAVE-latest.apk`。`build-android.ps1`每次成功构建后自动更新下载页和APK，网页响应禁止缓存，下载按钮带内容哈希防止复用旧包。电脑局域网IP需保持一致（可在路由器配置DHCP地址保留）。
+
+已有APK可单独更新固定入口，无需重新编译：`./tools/publish-android.ps1 -ApkPath 'releases/具体安装包.apk'`，使用对应的 `releases/android-build-info.json` 校验SHA-256。
 
 新电脑/电脑IP改变时，在当前终端设置实际地址，然后按构建指南重新构建：
 

@@ -33,7 +33,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 8
-        versionName "1.1.0-android-test.8-log-upload"
+        versionName "1.0.8"
         resValue 'string', 'log_upload_url', logUploadUrl
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
