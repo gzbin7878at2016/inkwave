@@ -46,6 +46,7 @@ export function installDiagnostics(nativePlugin) {
     return {
       bootComplete: true, mode: G.mode, mapId: game.mapDef?.id, worldKey: game.worldKey, matchState: m?.state, practice: !!m?.practice,
       mobileGpu: game.R.mobileSafety?.state,
+      profile: game.mobile?.profile.snapshot(),
       settings: { quality: game.settings.quality, mobileVisual: game.settings.mobileVisual, mobileDynamicResolution: game.settings.mobileDynamicResolution, shadows: game.settings.shadows, bloom: game.settings.bloom, fpsCap: game.settings.fpsCap },
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
       level: { faces: G.level?.faces?.length, visible: game.levelMesh?.visible, vertices: game.levelMesh?.geometry?.attributes?.position?.count, material: material(game.levelMat), grateMaterial: material(game.grateMat) },
@@ -154,7 +155,9 @@ export function installDiagnostics(nativePlugin) {
   });
   const manager = { record, attachRenderer, report, persist, tick() {
     const now = performance.now(); if (now - lastTick < 5000) return; lastTick = now;
-    record('scene-snapshot', sceneSnapshot());
+    // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串。
+    const snapshot = sceneSnapshot(); delete snapshot.profile;
+    record('scene-snapshot', snapshot);
     if (renderer) { const gl = renderer.getContext(); const errors = []; for (let i = 0; i < 4; i++) { const e = gl.getError(); if (!e) break; errors.push(e); } if (errors.length) record('webgl-errors', errors, 'error'); }
     persist();
   } };

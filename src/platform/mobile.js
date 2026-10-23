@@ -1,5 +1,6 @@
 import { G } from '../core/ctx.js';
 import { TouchInput } from '../core/touchInput.js';
+import { MobileProfiler } from './mobileProfiler.js';
 
 // 手机平台边界：输入、生命周期与诊断；不改变网络协议和权威模拟。
 export function installMobile(game) {
@@ -131,6 +132,7 @@ export function installMobile(game) {
   };
   applySize();
   game.mobile = {
+    profile: new MobileProfiler(game),
     touch, state, suspend, foreground, resume,
     recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
@@ -144,7 +146,9 @@ export function installMobile(game) {
         const mem = game.R.renderer.info.memory;
         const times = Array.from(frameTimes.subarray(0, frameCount)).sort((a, b) => a - b);
         const sample = { at: Date.now(), fps: game.fps, p50: times[Math.floor((times.length - 1) * 0.5)] || 0, p95: times[Math.floor((times.length - 1) * 0.95)] || 0, scale: game.R.dynScale, textures: mem.textures, geometries: mem.geometries, calls: game.perf?.calls || 0, triangles: game.perf?.tris || 0, heapBytes: performance.memory?.usedJSHeapSize ?? null, rtt: G.net?.tr?.rtt || 0 };
-        state.samples.push(sample); if (state.samples.length > 1800) state.samples.shift();
+        sample.profile = game.mobile.profile.snapshot();
+        sample.mode = G.mode; sample.matchState = game.match?.state; sample.pixelRatio = game.R.renderer.getPixelRatio();
+        state.samples.push(sample); if (state.samples.length > 300) state.samples.shift();
         info.textContent = state.stats ? `${sample.fps} FPS · P95 ${Math.round(sample.p95)}ms · 比例 ${sample.scale.toFixed(2)} · 纹理 ${sample.textures} · 几何 ${sample.geometries} · RTT ${Math.round(sample.rtt)}ms` : state.network ? '' : '离线';
       }
     },

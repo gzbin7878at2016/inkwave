@@ -17,9 +17,12 @@ try {
   await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloadDir });
   await page.goto('http://localhost:8490/dist-mobile/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__inkwave?.mobile && window.inkwaveDiagnostics, { timeout: 120000 });
+  await page.waitForFunction(() => __inkwave.mobile.profile.topCalls?.length > 0, { timeout: 60000 });
   const baseline = await page.evaluate(() => inkwaveDiagnostics.report());
+  assert.ok(baseline.current.scene.profile.samples > 0);
+  assert.ok(baseline.current.scene.profile.topCalls.some(row => row.calls > 0));
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 6);
+  assert.equal(baseline.current.build.versionCode, 7);
   assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);

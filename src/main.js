@@ -1233,12 +1233,14 @@ class Game {
   // 特效/环境音/相机跟随 → 渲染出图。dt 全程参与换算。
   _frame(dt) {
     const tA = performance.now();
+    const profile = this.mobile?.profile; profile?.begin(tA);
     G.renderer.info.reset();
     G.time += dt;
     this.input.pollPad();
     this.mobile?.update(dt);
     this._padMenus();
     G.net?.update?.(dt);
+    profile?.mark(); // 输入、诊断与网络
     const m = this.match;
     // the online lobby / hub stand in their own full-frame set (showcase): the attract match behind them is neither
     // simulated nor drawn while it's covered — it resumes exactly where it was when the set fades away
@@ -1251,6 +1253,7 @@ class Game {
       if (m.attract) this._updateAttract(dt);
       else if (m.state === 'playing' && m.local?.alive && this.rig.mode !== 'follow' && this.rig.mode !== 'path') this.rig.follow(m.local, true);
     }
+    profile?.mark(); // 权威模拟、控制器与弹道
     if (!m || !m.paused) G.fx.update(dt, G.camera);
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
     if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
@@ -1263,9 +1266,11 @@ class Game {
       const e = Math.min(1, mk / 0.8), k = 1 - e * e * (3 - 2 * e);
       fxU.uDesat.value *= k; fxU.uFlood.value.w = k > 0.02 ? fxU.uFlood.value.w * k : 0;
     }
+    profile?.mark(); // 特效
     G.env.update?.(dt, G.camera);
     this.decor.update(dt);
     this.props?.update?.(dt, G.time);
+    profile?.mark(); // 环境、装饰与道具
     // map diorama: held map key during live play (or while waiting to respawn) swoops the view overhead — but not while
     // aiming a Vortex Strike (that uses the flat stage map)
     const strikeAiming = !!(m?.local?.specialActive && m.local.specialActive.id === 'strike' && m.local.specialActive.aiming);
@@ -1280,8 +1285,10 @@ class Game {
     const orbReady = !!(loc && loc.specialActive && loc.specialActive.id === 'booyah' && loc.specialActive.charge >= 1);
     G.projectiles.updateArc(loc, !!(loc && loc.alive && (loc.weaponRunner.aimingSub || orbReady) && m.state === 'playing' && !m.paused));
     const tB = performance.now();
+    profile?.mark(); // 相机与瞄准
     // paint → atlas, shader uniforms
     G.paint.flush(dt);
+    profile?.mark(); // 墨迹图集提交
     this.levelMat.userData.uniforms.uTime.value = G.time;
     // see-through window toward the local player
     {
@@ -1320,6 +1327,7 @@ class Game {
     sm.autoUpdate = false;
     this._frameN = (this._frameN || 0) + 1;
     if (this.settings.quality !== 'low' || (this._frameN & 1)) sm.needsUpdate = true;
+    profile?.mark(); // 材质参数、声音与渲染准备
     if (!this._skipRender) {
       if (!setUp) this.R.render();
       this.R.mobileSafety?.recover(this);
@@ -1327,6 +1335,7 @@ class Game {
       this.showcase.render();
     }
     const tC = performance.now();
+    profile?.mark(); // 场景与后处理提交
     const ps = this.perf || (this.perf = { sim: 0, render: 0, calls: 0, tris: 0 });
     ps.sim += (tB - tA - ps.sim) * 0.05; ps.render += (tC - tB - ps.render) * 0.05;
     ps.calls = G.renderer.info.render.calls; ps.tris = G.renderer.info.render.triangles;
@@ -1334,6 +1343,7 @@ class Game {
     if (m && !m.attract && this.hud && (m.state === 'playing' || m.state === 'intro' || m.state === 'finish')) this._updateHud(dt);
     this.menus?.update?.(dt);
     this.input.endFrame();
+    profile?.end(); // HUD、菜单与帧末处理也纳入总时间
   }
 
   // continuous sounds tied to the local player's state (swim gurgle, wall climb, enemy-ink sizzle)
