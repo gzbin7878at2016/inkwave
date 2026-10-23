@@ -48,7 +48,7 @@
 
 import { DEFAULT_SETTINGS } from '../config.js';
 import {
-  V, music as musicSingleton, makeImpulse, mulberry32, mtof, perc, ahr, adsr, pts, sweep, strokeWave, pulseWave,
+  V, music as musicSingleton, makeImpulse, noiseBuffer, mulberry32, mtof, perc, ahr, adsr, pts, sweep, strokeWave, pulseWave,
   kick, snare, crash, tom, brass, bell, pad, bass,
 } from './music.js';
 
@@ -317,6 +317,38 @@ export class AudioEngine {
     const d = SFX[name];
     if (!d && !this._warned.has(name)) { this._warned.add(name); console.warn('[audio] unknown sound', name); }
     return d;
+  }
+
+  // 只准备真实ctx上的共享噪声/波形缓存与配方首次建图；不启动音源、不连接总线、不改播放/RNG统计。
+  // 使用当前V实例的方法覆盖，不能临时改AudioContext或V.prototype影响同时发生的真实音效。
+  prepare(name, options = {}) {
+    const ctx = this.ctx, def = SFX[name];
+    if (!ctx || !def) return { name, skipped: true, nodes: 0 };
+    this._preparedSounds ??= new WeakMap();
+    let prepared = this._preparedSounds.get(ctx);
+    if (!prepared) this._preparedSounds.set(ctx, prepared = new Set());
+    const key = `${name}:${options.pitch ?? 1}`;
+    if (prepared.has(key)) return { name, cached: true, nodes: 0 };
+    const out = ctx.createGain(), voice = new V(ctx, out, ctx.currentTime, mulberry32(991));
+    voice.nodes.push(out);
+    voice._src = function (source, t0, t1, target) {
+      if (target) source.connect(target);
+      source._end = t1 ?? Infinity; this.srcs.push(source); this.nodes.push(source);
+      return source;
+    };
+    voice.noise = function (kind, t0, t1, target, rate = 1) {
+      const source = this.ctx.createBufferSource(); source.buffer = noiseBuffer(this.ctx, kind); source.loop = true;
+      source.playbackRate.value = rate; return this._src(source, t0, t1, target);
+    };
+    voice.buffer = function (buffer, t0, t1, target, rate = 1) {
+      const source = this.ctx.createBufferSource(); source.buffer = buffer; source.loop = true;
+      source.playbackRate.value = rate; return this._src(source, t0, t1, target);
+    };
+    try {
+      (def.build || def.loop)?.(voice, options.pitch ?? 1, options);
+      const nodes = voice.nodes.length; prepared.add(key);
+      return { name, nodes, cached: false };
+    } finally { voice.dispose(); }
   }
 
   // 【播放单发音效】六步流水线:①minGap 窗口内同名连发合并丢弃;②查配方;

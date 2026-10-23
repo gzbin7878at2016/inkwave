@@ -35,6 +35,12 @@ import { on, G } from '../core/ctx.js';
 const TRACK = { 1: 'boss', 2: 'boss_2', 3: 'boss_3' };
 let installed = false;
 
+// 与boss:intro、落地body/foot及标题卡实际调用一致；准备只建缓存，不发送事件或排期播放。
+export const BOSS_INTRO_SOUNDS = Object.freeze([
+  { name: 'boss_title', pitch: 1 }, { name: 'boss_roar', pitch: 1 }, { name: 'boss_slam', pitch: 0.8 },
+  { name: 'boss_step', pitch: 0.75 }, { name: 'splat_big', pitch: 0.7 },
+]);
+
 // 【对外入口】安装 Boss 音频导演。幂等:多次调用只有第一次生效,由 HUD 在启动时调用一次
 export function installBossAudio() {
   if (installed) return;

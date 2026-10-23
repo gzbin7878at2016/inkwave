@@ -217,6 +217,7 @@ export class BossModel {
   get sockets() { return Object.keys(this._sock); }
   // 【销毁】释放全部几何/材质/贴图/骨架/FX,并摘下 root
   dispose() {
+    this._disposed = true;
     for (const m of this.meshes) m.geometry.dispose();
     for (const k in this.mats) this.mats[k].dispose();
     this._stencil?.dispose(); this.skeleton.dispose(); this.fx.dispose();
@@ -292,8 +293,8 @@ export class Crablet {
       this.U.uFlash.value = u;
       if (this.popT >= 0.14 && this.mesh.visible) {
         this.mesh.visible = false;
-        this.fx = new BossFX({ quality: 'low', ink: this.U.uInk.value });
-        this.root.add(this.fx.group);
+        if (!this.fx) { this.fx = new BossFX({ quality: 'low', ink: this.U.uInk.value }); this.root.add(this.fx.group); }
+        else this.fx.reset();
         _v.set(0, 0.3, 0).applyMatrix4(this.root.matrixWorld);
         this.fx.ink(_v, 26, _v2.set(0, 1, 0), 4.2, 1.0, 0.09, this.root.matrixWorld.elements[13], 1.2);
       }
@@ -305,8 +306,60 @@ export class Crablet {
   hit() { this.U.uFlash.value = 1; }
   // 【触发爆墨】幂等:只第一次生效,置 popT=0 启动 pop 动画
   pop() { if (this.popped) return; this.popped = true; this.popT = 0; }
+  // 手机加载期预建并保留每只小蟹自己的爆墨缓冲，真正死亡时复用同一实例。
+  preparePopEffect() {
+    if (!this.fx) { this.fx = new BossFX({ quality: 'low', ink: this.U.uInk.value }); this.root.add(this.fx.group); }
+    this.fx.reset(); return this.fx;
+  }
+  resetForReuse({ ink, weak } = {}) {
+    this.root.removeFromParent(); this.root.position.set(0, 0, 0); this.root.quaternion.identity(); this.root.scale.setScalar(1); this.root.visible = true;
+    for (const bone of this.R.bones) {
+      bone.position.copy(this.R.rest[bone.name]);
+      if (bone.parent?.isBone) bone.position.sub(this.R.rest[bone.parent.name]);
+      bone.quaternion.identity(); bone.scale.setScalar(1);
+    }
+    this.t = 0; this.phi = Math.random(); this.seed = Math.random() * 10; this.popped = false; this.popT = -1;
+    this.mesh.visible = true; this.mesh.scale.setScalar(1); this.U.uTime.value = 0; this.U.uFlash.value = 0;
+    if (ink) this.setInk(ink); if (weak) this.U.uWeak.value.set(weak);
+    this.fx?.reset(); if (this.fx) this.fx.setInk(this.U.uInk.value);
+    this.update(0, {}); this.root.updateMatrixWorld(true);
+  }
   // 换墨色
   setInk(c) { this.U.uInk.value.set(c); }
   // 销毁:释放网格几何/材质/骨架,以及 pop 时可能新建的临时 FX
-  dispose() { this.mesh.geometry.dispose(); this.mat.dispose(); this.skel.dispose(); this.fx?.dispose(); this.root.removeFromParent(); }
+  dispose() { if (this._disposed) return; this._disposed = true; this.mesh.geometry.dispose(); this.mat.dispose(); this.skel.dispose(); this.fx?.dispose(); this.root.removeFromParent(); }
+}
+
+// 仅由手机Boss持有；7只存活上限加一批5只死亡演出余量，加载时逐只建造。耗尽仍走原factory，不减少敌人数。
+export class MobileCrabletPool {
+  constructor(options, { capacity = 12, factory = opts => new Crablet(opts) } = {}) {
+    this.options = options; this.capacity = capacity; this.factory = factory;
+    this.models = new Set(); this.free = []; this.borrowed = new Set(); this.disposed = false;
+  }
+  prepareNext() {
+    if (this.disposed || this.models.size >= this.capacity) return null;
+    const model = this.factory(this.options);
+    try { model.preparePopEffect(); model.resetForReuse(this.options); }
+    catch (error) { model.dispose(); throw error; }
+    this.models.add(model); this.free.push(model); return model;
+  }
+  acquire() {
+    if (this.disposed) return null;
+    const model = this.free.pop();
+    if (!model) return null;
+    try { model.resetForReuse(this.options); }
+    catch (error) { this.models.delete(model); model.dispose(); throw error; }
+    this.borrowed.add(model); return model;
+  }
+  release(model) {
+    if (!this.models.has(model)) return false;
+    if (!this.borrowed.delete(model)) return true;
+    model.resetForReuse(this.options); this.free.push(model); return true;
+  }
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const model of this.models) model.dispose();
+    this.models.clear(); this.free.length = 0; this.borrowed.clear();
+  }
 }

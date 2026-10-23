@@ -80,6 +80,46 @@ export class BossFX {
   // 【焦距校准】按视口高度与 FOV 推 uScale,使点精灵在屏幕上的像素尺寸与实际米数一致(透视缩放基准)
   setViewportHeight(h, fov = 50) { this.steamMat.uniforms.uScale.value = h / (2 * Math.tan((fov * Math.PI) / 360)); }
 
+  // 手机小怪归池时复位已有缓冲，保留GPU分配；与新建池相同的确定性随机序列。
+  reset() {
+    for (const array of [...Object.values(this.I), ...Object.values(this.S), this.sp, this.ssz, this.sal, this.sseed]) array.fill(0);
+    this.ni = this.ns = 0; this.geyserT = -1; this.geyserDur = 0; this.geyserPos.set(0, 0, 0); this.accS = this.accG = 0;
+    this.rnd = rng(9001); this.inkMesh.count = 0; this.inkMesh.visible = false;
+    this.steam.visible = false; this.steam.geometry.setDrawRange(0, 0);
+    this.inkMesh.instanceMatrix.needsUpdate = true;
+    for (const attribute of Object.values(this.steam.geometry.attributes)) attribute.needsUpdate = true;
+  }
+
+  // 加载期借用真实实例缓冲画一次演出帧，结束后恢复粒子/RNG/可见性；不调用Boss或发送游戏事件。
+  // 共享同一个instanceMatrix/蒸汽attribute，避免预热临时特效后实战仍要首次分配大缓冲。
+  async withPreparationFrame(kind, draw) {
+    if (this._preparing) throw new Error('Boss特效正在准备');
+    this._preparing = true;
+    const arrays = [...Object.values(this.I), ...Object.values(this.S), this.sp, this.ssz, this.sal, this.sseed, this.inkMesh.instanceMatrix.array];
+    const copies = arrays.map(array => array.slice());
+    const scalars = Object.fromEntries(['ni', 'ns', 'geyserT', 'geyserDur', 'accS', 'accG'].map(key => [key, this[key]]));
+    const state = { rnd: this.rnd, geyserPos: this.geyserPos.clone(), inkCount: this.inkMesh.count, inkVisible: this.inkMesh.visible,
+      steamVisible: this.steam.visible, start: this.steam.geometry.drawRange.start, count: this.steam.geometry.drawRange.count };
+    try {
+      this.rnd = rng(9001); this.ni = this.ns = 0; this.geyserT = -1; this.accS = this.accG = 0;
+      const pos = new THREE.Vector3(0, 0.3, 0), up = new THREE.Vector3(0, 1, 0);
+      if (kind === 'burst') { this.ink(pos, 90, up, 13, 0.75, 0.3, 0, 2.6); this.steamPuff(pos, 14, up, 4, 2.5, 2); }
+      else if (kind === 'landing') this.ink(pos.setY(0.2), 30, up, 6, 1, 0.2, 0);
+      else if (kind === 'steam') this.steamPuff(pos, 10, up, 3, 1.2, 1.3);
+      else throw new Error(`未知Boss预备特效:${kind}`);
+      this.update(1 / 30);
+      return await draw([this.inkMesh, this.steam].filter(object => object.visible));
+    } finally {
+      arrays.forEach((array, index) => array.set(copies[index]));
+      Object.assign(this, scalars); this.rnd = state.rnd; this.geyserPos.copy(state.geyserPos);
+      this.inkMesh.count = state.inkCount; this.inkMesh.visible = state.inkVisible;
+      this.inkMesh.instanceMatrix.needsUpdate = true;
+      this.steam.visible = state.steamVisible; this.steam.geometry.setDrawRange(state.start, state.count);
+      for (const attribute of Object.values(this.steam.geometry.attributes)) attribute.needsUpdate = true;
+      this._preparing = false;
+    }
+  }
+
   // 【喷墨团】从 pos 沿 dir(单位向量)方向、以 speed±spread 散射出 n 个墨团;groundY 用于落地摊平
   // 【分配策略】未满则递增 ni,已满则回收"剩余寿命最短"的槽位(最不重要者),保证池内始终是活的
   /** n glossy ink blobs from pos: dir (unit) * speed ± spread, sizes in metres */

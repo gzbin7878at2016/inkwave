@@ -471,6 +471,79 @@ export class PaintSystem {
     this.clear();
   }
 
+  // 手机加载期预付真正的图集pass，保留当前材质/大属性缓冲；每个action只做一次独立小目标绘制。
+  // 不调用splat/flood/flush，不写真实rt、CPU归属网格、判分、扩散队列或涟漪。
+  mobilePreparationSteps(renderer = this.renderer) {
+    return ['splat', 'dry', 'flood', 'wipe'].map((kind, index) => ({
+      label: `准备墨水效果 ${index + 1}/4`, kind,
+      action: () => this._prepareMobilePass(renderer, kind),
+    }));
+  }
+
+  _prepareMobilePass(renderer, kind) {
+    if (!this._mobilePreparationTarget) {
+      this._mobilePreparationTarget = this.rt.clone(); this._mobilePreparationTarget.setSize(4, 4);
+    }
+    const saved = {
+      target: renderer.getRenderTarget(), face: renderer.getActiveCubeFace?.() || 0, mip: renderer.getActiveMipmapLevel?.() || 0,
+      viewport: renderer.getViewport(new THREE.Vector4()), scissor: renderer.getScissor(new THREE.Vector4()), scissorTest: renderer.getScissorTest(), autoClear: renderer.autoClear,
+      meshVisible: this.mesh.visible, dryVisible: this.dryMesh.visible, range: { ...this.geo.drawRange }, dry: this._dryU.uDry.value,
+      floodGeometry: this._floodMesh.geometry, floodMaterial: this._floodMesh.material, floodVisible: this._floodMesh.visible,
+    };
+    const before = renderer.info.programs.length, attributes = [];
+    let floodState = null, material;
+    try {
+      renderer.setRenderTarget(this._mobilePreparationTarget); renderer.setViewport(0, 0, 4, 4); renderer.setScissor(0, 0, 4, 4); renderer.setScissorTest(false); renderer.autoClear = true;
+      this.mesh.visible = kind === 'splat'; this.dryMesh.visible = kind === 'dry';
+      if (kind === 'splat') {
+        // 只借用首个真实quad，保证产生片元而非退化三角；finally逐项恢复原值和待上传范围。
+        const values = { aPos: [-1, -1, 1, -1, 1, 1, -1, 1], aLocal: [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0],
+          aSplat: Array(4).fill([1, 0, 0.31, 0]).flat(), aStretch: Array(4).fill([1, 0, 0]).flat(), aGrow: Array(4).fill([1, 0, 0, 0]).flat() };
+        for (const [name, value] of Object.entries(values)) {
+          const attribute = this.geo.attributes[name];
+          attributes.push({ attribute, data: attribute.array.slice(0, value.length), ranges: attribute.updateRanges.map(range => ({ ...range })) });
+          attribute.array.set(value); attribute.clearUpdateRanges(); attribute.addUpdateRange(0, value.length); attribute.needsUpdate = true;
+        }
+        this.geo.setDrawRange(0, 6); material = this.mat;
+        renderer.render(this.scene, this.cam);
+      } else if (kind === 'dry') {
+        this._dryU.uDry.value = 1 / 255; material = this.dryMesh.material;
+        renderer.render(this.scene, this.cam);
+      } else {
+        // 区域的CPU轮廓和面列表按玩法创建；这里只准备相同真实flood/wipe材质，不生成虚假区域或判分。
+        if (!this._mobileFloodGeometry) {
+          const geometry = this._mobileFloodGeometry = new THREE.BufferGeometry();
+          geometry.setAttribute('aPos', new THREE.Float32BufferAttribute([-1, -1, 1, -1, 1, 1, -1, 1], 2));
+          geometry.setAttribute('aW', new THREE.Float32BufferAttribute([-0.5, 0, -0.5, 0.5, 0, -0.5, 0.5, 0, 0.5, -0.5, 0, 0.5], 3));
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(12), 3)); geometry.setIndex([0, 1, 2, 0, 2, 3]);
+        }
+        const U = this._floodU;
+        floodState = { poly: U.uPoly.value.slice(), part: U.uPart.value.slice(), parts: U.uParts.value, y: U.uY.value.clone(), c: U.uC.value.clone(), r: U.uR.value.clone(), team: U.uTeam.value };
+        U.uPoly.value.fill(0); U.uPoly.value.set([-1, -1, 1, -1, 1, 1, -1, 1]); U.uPart.value.fill(4); U.uPart.value[0] = 0; U.uParts.value = 1;
+        U.uY.value.set(-1, 1); U.uC.value.set(0, 0); U.uR.value.set(-1, 10); U.uTeam.value = kind === 'wipe' ? -1 : 0;
+        this._floodMesh.geometry = this._mobileFloodGeometry; this._floodMesh.material = kind === 'wipe' ? this._floodWipe : this._floodInk; this._floodMesh.visible = true;
+        material = this._floodMesh.material; renderer.render(this._floodScene, this.cam);
+      }
+      const program = renderer.properties.get(material).currentProgram;
+      if (program?.diagnostics?.runnable === false) throw new Error(`手机墨水预备着色器失败:${kind}`);
+      return { draws: 1, programsAdded: renderer.info.programs.length - before, kind };
+    } finally {
+      for (const { attribute, data, ranges } of attributes) {
+        attribute.array.set(data); attribute.clearUpdateRanges();
+        for (const range of ranges) attribute.addUpdateRange(range.start, range.count);
+        // 恢复的首quad也必须回写GPU，不能污染下一次真实墨滴。
+        attribute.addUpdateRange(0, data.length); attribute.needsUpdate = true;
+      }
+      this.geo.setDrawRange(saved.range.start, saved.range.count); this.mesh.visible = saved.meshVisible; this.dryMesh.visible = saved.dryVisible; this._dryU.uDry.value = saved.dry;
+      this._floodMesh.geometry = saved.floodGeometry; this._floodMesh.material = saved.floodMaterial; this._floodMesh.visible = saved.floodVisible;
+      if (floodState) {
+        const U = this._floodU; U.uPoly.value.set(floodState.poly); U.uPart.value.set(floodState.part); U.uParts.value = floodState.parts;
+        U.uY.value.copy(floodState.y); U.uC.value.copy(floodState.c); U.uR.value.copy(floodState.r); U.uTeam.value = floodState.team;
+      }
+      renderer.setRenderTarget(saved.target, saved.face, saved.mip); renderer.setViewport(saved.viewport); renderer.setScissor(saved.scissor); renderer.setScissorTest(saved.scissorTest); renderer.autoClear = saved.autoClear;
+    }
+  }
+
   // 清空图集与全部状态(换地图/重开比赛时调用)。version 递增,通知小地图等轮询方整体重画。
   clear() {
     const r = this.renderer;
@@ -1012,5 +1085,6 @@ export class PaintSystem {
     for (const p of this._floodPrep.values()) p.geo.dispose();
     this._floodPrep.clear(); this._floods.length = 0;
     this._floodInk.dispose(); this._floodWipe.dispose();
+    this._mobilePreparationTarget?.dispose(); this._mobileFloodGeometry?.dispose();
   }
 }

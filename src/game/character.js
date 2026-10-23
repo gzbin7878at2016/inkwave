@@ -56,7 +56,7 @@ import {
 import * as MATS from './character-mats.js';
 import { getWeaponDef, getSubDef, FIST_OFFSET, GRIP_HOLE_L, WEAPON_KINDS, makeLampMaterial, makeCoilMaterial, animateWeapon } from './character-weapons.js';
 import { TIERS, T_HERO, T_GAME, T_FAR, LOD_QUALITY, KID_H, FADE_S, pickTier, ditherMaterial, farGeometry } from './character-lod.js';
-import { queueMobileCharacterWarm, prepareMobileMaterialPrograms } from '../platform/mobileWarmup.js';
+import { queueMobileCharacterWarm, prepareMobileMesh } from '../platform/mobileWarmup.js';
 
 // ------------------------------------------------------------------------------------------------
 // Style tables(风格目录表)
@@ -1258,10 +1258,10 @@ export class Character {
   // 鱿鱼+幽灵、雷、墨水槽、武器近/远件、阴影深度变体)在加载期间一次性编译:临时挂一套
   // 仅用于预热的抖动网格、强制全可见、对着 HDR 目标 compileAsync、再手动跑一遍阴影 pass。
   // 每个角色只做一次;同外观的后续角色全是缓存命中(1-3ms)。比赛中换档/变身/扔雷零卡顿。
-  async warmAll(renderer = G.renderer, camera = G.camera, target = G.scene) {
+  async warmAll(renderer = G.renderer, camera = G.camera, target = G.scene, options = {}) {
     if (this._warmed) return this._warmed;
     if (!renderer || !camera || !target || !renderer.compileAsync) return false;
-    if (globalThis.inkwaveMobile) return this._warmAllMobile(renderer, camera, target);
+    if (globalThis.inkwaveMobile) return this._warmAllMobile(renderer, camera, target, options);
     const done = this._warmed = (async () => {
       const q = G.settings?.quality || 'high';
       // build every tier + the dither twins (warm-only meshes on this skeleton; the materials stay with the kid)
@@ -1302,7 +1302,7 @@ export class Character {
 
   // 手机把三档建模、武器抽稀和每件材质分别排队。compile 使用独立网格替身，不能靠 visible
   // 隐藏原树来分批：Three.js compile 会 traverse 全树。替身从不挂回游戏，不污染让帧时的画面。
-  _warmAllMobile(renderer, camera, target) {
+  _warmAllMobile(renderer, camera, target, options = {}) {
     if (this._disposed) return Promise.resolve(false);
     const parent = this.root.parent, scene = G.scene, match = G.match, q = G.settings?.quality || 'high';
     const preparation = G.game?._mobilePreparation;
@@ -1310,32 +1310,35 @@ export class Character {
       (!preparation || (G.game?._mobilePreparation === preparation && !preparation.cancelled)) &&
       (!preparation?.networkMatch || G.net?.match === preparation.networkMatch);
     this._mobileWarmPending = true;
+    // 固定100个阶段进度单位，避免建出LOD后才知道网格数导致总任务数来回跳变。
+    const progress = (completed, phase) => options.onProgress?.({ completed, total: 100, phase });
+    progress(0, '角色网格');
     const done = queueMobileCharacterWarm(async step => {
-      for (let tier = 0; tier < 3; tier++) await step('mobile-character-tier-build', () => this._tierSet(tier), { tier: TIERS[tier] });
-      for (const kind in this.weapons) for (let weapon = this.weapons[kind]; weapon; weapon = weapon.left) {
-        await step('mobile-character-weapon-far', () => farGeometry(weapon.def.body, 700), { weapon: kind, part: 'body' });
-        await step('mobile-character-weapon-far', () => farGeometry(weapon.def.ink, 300), { weapon: kind, part: 'ink' });
+      for (let tier = 0; tier < 3; tier++) {
+        await step('mobile-character-tier-build', () => this._tierSet(tier), { tier: TIERS[tier] }); progress((tier + 1) * 5, '角色网格');
       }
+      const weapons = [];
+      for (const kind in this.weapons) { let hand = 0; for (let weapon = this.weapons[kind]; weapon; weapon = weapon.left) weapons.push({ kind, weapon, hand: hand++ }); }
+      let weaponSteps = 0;
+      for (const { kind, weapon, hand } of weapons) {
+        await step('mobile-character-weapon-initialize', () => this._prepareMobileWeaponMaterials(weapon, hand), { weapon: kind, hand }); progress(15 + (++weaponSteps / (weapons.length * 3)) * 5, '武器材质');
+        await step('mobile-character-weapon-far', () => farGeometry(weapon.def.body, 700), { weapon: kind, part: 'body' }); progress(15 + (++weaponSteps / (weapons.length * 3)) * 5, '武器网格');
+        await step('mobile-character-weapon-far', () => farGeometry(weapon.def.ink, 300), { weapon: kind, part: 'ink' }); progress(15 + (++weaponSteps / (weapons.length * 3)) * 5, '武器网格');
+      }
+      progress(20, '角色材质与首绘');
       const meshes = [];
       this.root.traverse(object => { if (object.isMesh) meshes.push(object); });
-      const compile = async (mesh, material) => {
-        const proxy = mesh.clone(false); proxy.material = material; proxy.visible = true; proxy.frustumCulled = false;
-        const target0 = renderer.getRenderTarget(), programsBefore = renderer.info.programs.length;
-        let pending;
-        try {
-          renderer.setRenderTarget(G.post?.composer?.readBuffer || (_warmRT || (_warmRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }))));
-          pending = renderer.compileAsync(proxy, camera, target);
-        } finally { renderer.setRenderTarget(target0); }
-        await pending;
-        if (!current()) return { programsAdded: renderer.info.programs.length - programsBefore, programsPrepared: 0 };
-        // 无KHR并行编译扩展时compileAsync不会完成首次接口准备，必须在当前小步内付清。
-        const programsPrepared = prepareMobileMaterialPrograms(renderer, material);
-        return { programsAdded: renderer.info.programs.length - programsBefore, programsPrepared };
-      };
+      const compile = (mesh, material) => prepareMobileMesh(renderer, mesh, camera, target, { material, isCurrent: current, beforeFirstUse: step.beforeFirstUse, renderTarget: G.post?.composer?.readBuffer });
+      const compileTotal = meshes.length + this.lodSets.reduce((sum, set) => sum + set.list.length * 2, 0);
+      let compileDone = 0;
       // 每步只交给compile一个网格，包含当前不可见的鱿鱼、雷、墨水槽和武器远景件。
-      for (const mesh of meshes) await step('mobile-character-material-compile', () => compile(mesh, mesh.isSkinnedMesh && mesh.userData.iwMat ? this._matFor(mesh.userData.iwMat) : mesh.material), { mesh: mesh.name || mesh.type, variant: 'plain' });
+      for (const mesh of meshes) {
+        await step('mobile-character-material-compile', () => compile(mesh, mesh.isSkinnedMesh && mesh.userData.iwMat ? this._matFor(mesh.userData.iwMat) : mesh.material), { mesh: mesh.name || mesh.type, variant: 'plain' });
+        progress(20 + (++compileDone / compileTotal) * 75, '角色材质与首绘');
+      }
       for (const set of this.lodSets) for (const mesh of set.list) for (let side = 0; side < 2; side++) {
         await step('mobile-character-material-compile', () => compile(mesh, this._ditherMat(mesh.userData.iwMat, side)), { mesh: mesh.name, variant: side ? 'dither-in' : 'dither-out' });
+        progress(20 + (++compileDone / compileTotal) * 75, '角色材质与首绘');
       }
       const sm = renderer.shadowMap, lights = [];
       if (sm.enabled) target.traverseVisible(object => { if (object.isLight && object.castShadow && object.shadow) lights.push(object); });
@@ -1350,6 +1353,7 @@ export class Character {
           finally { sm.needsUpdate = needsUpdate; lights.forEach((light, index) => { light.shadow.needsUpdate = lightNeedsUpdate[index]; }); renderer.setRenderTarget(target0); }
         }, { mesh: mesh.name || mesh.type });
       }
+      progress(100, '角色就绪');
       return q;
     }, { isCurrent: current, diagnostics: globalThis.inkwaveDiagnostics, detail: { character: this.root.id, weapon: this.weaponKind } });
     // 入队时立即设置，下一帧的8个角色不会重复入队或并发执行同步重活。
@@ -1357,6 +1361,33 @@ export class Character {
     done.then(result => { if (result === false && this._warmed === done && !this._disposed) this._warmed = null; }, () => {})
       .finally(() => { this._mobileWarmPending = false; });
     return done;
+  }
+
+  // 只执行模型侧dt=0的空闲初始化，不推进Actor/WeaponRunner，不触发射击、伤害、音效或FX池。
+  // mitts的sponge、blade的edge/aura、brolly的伞布材质都在首次模型动画才创建，必须先留在真实武器上。
+  _prepareMobileWeaponMaterials(weapon, hand = 0) {
+    if (weapon._mobileMaterialsReady) return;
+    const original = [];
+    weapon.pivot.traverse(object => original.push({ object, position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
+      matrix: object.matrix.clone(), visible: object.visible, auto: object.matrixAutoUpdate }));
+    try {
+      // 只传本地身份，不借真实runner/kit状态：本地伞布初始化需保留原透明材质变体。
+      animateWeapon(weapon, { t: this.t || 0, dt: 0, color: this.color, near: weapon.near !== false, hand, runner: { a: { isLocal: !!this.isLocal } },
+        sinceShoot: 99, sinceFlick: 99, sinceRelease: 99, charge: 0, full: false, chargeFlash: 0, lowInk: 0, firing: false, rolling: 0, grounded: true, groundSpeed: 0, worldQuat: null });
+      weapon._mobileMaterialsReady = true;
+    } finally {
+      // 这些工厂均在当前武器实例内new专属材质；明确列举，不把共享塑料/墨水或FX池材质当作私有。
+      for (const material of [weapon.sponge, weapon.bl?.em, weapon.bl?.am, weapon.bs?.inkMat, weapon.bs?.creamMat]) {
+        if (material && !this._ownMats.includes(material)) this._ownMats.push(material);
+      }
+      // 保留新建长期材质/mesh；原有姿态和显隐在让帧前恢复，模型初始化不会改当前演示姿态。
+      for (const saved of original) {
+        const object = saved.object; object.position.copy(saved.position); object.quaternion.copy(saved.quaternion); object.scale.copy(saved.scale);
+        // 伞布首次初始化会把节点交给手工matrix驱动；这一结构配置及初始矩阵必须保留，不能恢复为自动矩阵。
+        if (!(saved.auto && !object.matrixAutoUpdate)) object.matrix.copy(saved.matrix);
+        object.visible = saved.visible; object.matrixWorldNeedsUpdate = true;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1558,6 +1589,7 @@ export class Character {
   // 【销毁】退出 LIVE 集、摘出场景图,释放本角色持有的材质(共享材质不 dispose,
   // 由各自系统管)、每角色的独享材质、LOD 抖动材质、骨架。
   dispose() {
+    if (this._disposed) return;
     this._disposed = true; // 已入队的手机预热在下一小步前取消，不能使用已释放材质/骨架。
     LIVE.delete(this);
     this.root.parent?.remove(this.root);

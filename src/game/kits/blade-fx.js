@@ -189,6 +189,14 @@ export const BladeFX = {
     }
     return true;
   },
+  // 手机加载期建立并返回真实池；不占busy、不入live、不播放音效。重斩额外几何也提前上传。
+  mobilePreparationMeshes() {
+    if (!this.ensure()) return [];
+    const meshes = [...this.arcs.map(slot => slot.mesh), ...this.waves.map(slot => slot.mesh)];
+    const heavy = this.arcs[0].mesh.clone(false); heavy.geometry = this._geoV;
+    meshes.push(heavy); // 共享真实池材质和长期几何，不创建即释放program。
+    return meshes;
+  },
   // a slash arc riding with actor a: side ±1 (+1 sweeps the kid's right → left), heavy = the overhead cut
   // 放一道挥砍弧光:side 决定左右镜像(+1 = 从角色右手扫向左手),heavy 用竖直弧(过顶重斩)否则水平横斩。
   // 依据 dur 决定描边进度节奏、fade 决定收尾淡出时长;角色摄像机太远(>50 m)时跳过以省绘制。

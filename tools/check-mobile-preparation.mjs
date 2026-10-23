@@ -12,7 +12,7 @@ const deferred = () => {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 };
-const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const classStart = mainSource.indexOf('class Game {');
 const classEnd = mainSource.lastIndexOf('// 【发动机点火】');
@@ -38,10 +38,16 @@ const sandbox = {
   params: new URLSearchParams(), DEV_STAGE: false,
   BOSS_MODE: { duration: 180 }, nextMobileFrame: async () => {},
   prepareMobileMaterialPrograms,
+  prepareMobileCombat: async (_game, _match, { isCurrent, onProgress }) => {
+    if (!isCurrent()) return { cancelled: true };
+    onProgress?.({ completed: 1, total: 1, label: '准备战斗效果' }); return {};
+  },
 };
 sandbox.window = sandbox;
 sandbox.G = {};
 const context = vm.createContext(sandbox);
+const frameReadySource = await readFile(new URL('../src/platform/mobileFrameReady.js', import.meta.url), 'utf8');
+vm.runInContext(frameReadySource.replace(/^export /gm, ''), context);
 const diagnosticsSource = await readFile(new URL('../src/platform/diagnostics.js', import.meta.url), 'utf8');
 vm.runInContext(diagnosticsSource.replace(/^export /gm, '') + '\ninstallDiagnostics(null);', context);
 const diagnostics = sandbox.inkwaveDiagnostics;
@@ -72,7 +78,7 @@ console.log('通过：启动256条、近期操作40条、最慢操作20条、200
 
 const Game = vm.runInContext(mainSource.slice(classStart, classEnd) + '\nGame;', context);
 const stages = [];
-sandbox.inkwaveDiagnostics = { beginStage: name => { const stage = { name, closed: false }; stages.push(stage); return () => { stage.closed = true; }; } };
+sandbox.inkwaveDiagnostics = { record: noop, beginStage: name => { const stage = { name, closed: false }; stages.push(stage); return () => { stage.closed = true; }; } };
 
 // 一次真实_frame必须以同一前缀记录完整阶段并全部闭合；常规帧不做逐段诊断。
 const frameGame = Object.create(Game.prototype);
@@ -116,36 +122,70 @@ loopGame._loop(1000);
 assert.equal(heartbeat, 1); assert.equal(endFrames, 1);
 assert.equal(frames, 0); assert.equal(dynamic, 0);
 loopGame._mobilePreparation = null;
+loopGame._mobilePreparationError = true;
+loopGame._loop(1016);
+assert.equal(frames, 0); assert.equal(dynamic, 0); assert.equal(heartbeat, 2);
+loopGame._mobilePreparationError = false;
 loopGame._loop(1016);
 assert.equal(frames, 1); assert.equal(dynamic, 1);
-console.log('通过：准备期保留心跳和帧末输入清理，暂停模拟/绘制与动态分辨率');
+console.log('通过：准备中/准备失败保留心跳和帧末输入清理，暂停模拟/绘制与动态分辨率');
 
 // 开局入口检查放在下方：通过可控Promise观察重复请求、过期回调与异常收尾。
-function gameFixture({ fade, world, warm } = {}) {
-  const calls = { fade: [], world: 0, setup: 0, start: 0, warm: 0, bind: 0, touch: [], dispose: 0 };
+function gameFixture({ fade, world, warm, preflightFault, completeFade } = {}) {
+  const calls = { fade: [], world: 0, setup: 0, start: 0, warm: 0, bind: 0, touch: [], dispose: 0, preflight: 0, order: [], overlays: [], preflightFault,
+    gpuStatus: 1, gpuPolls: 0, gpuDeleted: 0, gpuFences: 0, gpuFlushes: 0 };
   const game = Object.create(Game.prototype);
+  calls.shaderFailures = 0;
+  sandbox.inkwaveDiagnostics.shaderFailureCount = () => calls.shaderFailures;
+  sandbox.createMobilePreparationUI = handlers => {
+    const ui = { hidden: true, disposed: false, failed: false, updates: [], handlers,
+      show() { this.hidden = false; calls.order.push('show'); },
+      update(value) { this.updates.push(value); calls.order.push('progress'); },
+      complete() { this.completed = true; calls.order.push('complete'); },
+      fail() { this.failed = true; calls.order.push('failed'); },
+      hide() { this.hidden = true; },
+      dispose() { this.disposed = true; this.hidden = true; calls.order.push('dispose'); },
+    };
+    calls.overlays.push(ui); return ui;
+  };
+  const gl = { SYNC_GPU_COMMANDS_COMPLETE: 5, ALREADY_SIGNALED: 1, CONDITION_SATISFIED: 2, TIMEOUT_EXPIRED: 3, WAIT_FAILED: 4,
+    isContextLost: () => calls.preflightFault === 'context-lost',
+    fenceSync: () => { calls.gpuFences++; return {}; }, flush: () => { calls.gpuFlushes++; },
+    clientWaitSync: (_sync, flags, timeout) => { assert.equal(flags, 0); assert.equal(timeout, 0); calls.gpuPolls++; return calls.gpuStatus; },
+    deleteSync: () => { calls.gpuDeleted++; },
+  };
+  let renderTarget = 'screen';
   sandbox.G = {
     audio: { init: noop, duck: noop }, music: { stop: noop, preload: noop },
     projectiles: { clear: noop }, subs: { clear: noop }, specials: { clear: noop }, fx: { clear: noop }, paint: { clear: noop },
-    env: {}, scene: {}, net: { myId: 'local', isHost: true },
+    env: {}, scene: {}, net: { myId: 'local', isHost: true }, renderer: { info: { programs: [] }, getContext: () => gl,
+      getRenderTarget: () => renderTarget, setRenderTarget: value => { renderTarget = value; } },
   };
   sandbox.Match = class {
     constructor(opts) { this.options = opts; this.actors = []; this.state = 'init'; }
     setup() { calls.setup++; }
-    start() { calls.start++; this.state = 'playing'; }
+    start() { calls.start++; calls.order.push('start'); this.state = 'playing'; }
     dispose() { calls.dispose++; }
   };
   const map = config.OFFLINE_MAPS[0];
   Object.assign(game, {
-    settings: { difficulty: 'normal' }, profile: {}, mapDef: map, time: 'day', theme: config.mapTheme(map, 'day'),
+    settings: { difficulty: 'normal', fpsCap: 30 }, profile: {}, mapDef: map, time: 'day', theme: config.mapTheme(map, 'day'),
     input: { requestLock: noop, touch: { setEnabled: enabled => calls.touch.push(enabled), clear: noop } },
     menus: { show: noop, toast: noop }, showcase: { hide: noop },
     rig: { follow: noop }, hud: { setVisible: noop, setPractice: noop }, minimap: { setViewerTeam: noop },
+    R: { mobileSafety: { state: { fatal: false } } },
     _clearDeathMarks: noop, _applyNight: noop, _setPalette: noop, _pickPalette: () => [],
     _subFor: () => 'bomb', _specialFor: () => 'zooka',
-    _fade: (opacity, duration) => { calls.fade.push({ opacity, duration }); return opacity === 1 && fade ? fade.promise : Promise.resolve(); },
+    _fade: (opacity, duration) => { calls.fade.push({ opacity, duration }); calls.order.push(`fade-${opacity}`); return opacity === 1 && fade ? fade.promise : opacity === 0 && completeFade ? completeFade.promise : Promise.resolve(); },
     _buildWorld: () => { calls.world++; return world ? world.promise : Promise.resolve(); },
     _warmCharacters: () => { calls.warm++; return warm ? warm.promise : Promise.resolve(); },
+    _frame: (dt, prefix) => {
+      calls.preflight++; calls.order.push('preflight'); assert.equal(dt, 0); assert.equal(prefix, 'match-preflight');
+      if (calls.preflightFault === 'shader-failed') game.R.mobileSafety.state.fatal = true;
+      if (calls.preflightFault === 'shader-link-error') calls.shaderFailures++;
+      if (calls.preflightFault === 'suspended') game.mobileSuspended = true;
+      if (calls.preflightFault === 'frame-error') throw new Error('preflight-test');
+    },
   });
   const network = { bind: () => { calls.bind++; } };
   sandbox.G.net.match = network;
@@ -175,6 +215,10 @@ for (const online of [false, true]) {
   await token.done;
   assert.equal(game._mobilePreparation, null);
   assert.equal(calls.start, online ? 0 : 1); assert.equal(calls.bind, online ? 1 : 0);
+  assert.equal(calls.preflight, 1); assert.ok(token.ui.completed && token.ui.disposed);
+  assert.ok(calls.order.indexOf('show') < calls.order.indexOf('fade-1'));
+  assert.ok(calls.order.indexOf('preflight') < calls.order.indexOf('complete'));
+  if (!online) assert.ok(calls.order.indexOf('complete') < calls.order.indexOf('start'));
 }
 console.log('通过：单机/联机入口均在淡出前加锁，同/异入口重复请求不建世界、不提前开始/绑定');
 
@@ -223,9 +267,11 @@ for (const online of [false, true]) {
   const request = online ? game.startNetMatch(cfg, network) : game.startMatch(opts);
   const token = game._mobilePreparation;
   await flush(); world.reject(new Error('world-preparation-test'));
-  await assert.rejects(request, /world-preparation-test/);
+  assert.equal(await request, false);
   await token.done;
   assert.equal(game._mobilePreparation, null, '准备异常必须释放令牌');
+  assert.equal(game._mobilePreparationError, true); assert.ok(token.ui.failed && !token.ui.disposed);
+  assert.equal(await game.startMatch(opts), false, '失败界面未处理前不得重新开局');
 }
 const { game: tokenGame } = gameFixture();
 const oldToken = tokenGame._beginMobilePreparation();
@@ -248,7 +294,7 @@ const { game: quitGame, calls: quitCalls, opts: quitOpts } = gameFixture({ world
 let attractStarts = 0;
 quitGame.input.exitLock = noop;
 quitGame._playMusic = noop;
-quitGame._startAttract = () => { attractStarts++; quitGame.match = { attract: true }; };
+quitGame._startAttract = () => { assert.equal(quitCalls.overlays[0].disposed, false); attractStarts++; quitCalls.order.push('attract'); quitGame.match = { attract: true }; };
 sandbox.G.net.state = 'offline';
 const preparing = quitGame.startMatch(quitOpts);
 await flush();
@@ -263,6 +309,7 @@ assert.equal(await preparing, false);
 await quitting;
 assert.equal(quitGame._mobilePreparation, null);
 assert.equal(attractStarts, 1); assert.equal(quitCalls.setup, 0); assert.equal(quitCalls.start, 0);
+assert.ok(quitCalls.overlays[0].disposed); assert.ok(quitCalls.order.indexOf('attract') < quitCalls.order.indexOf('dispose'));
 console.log('通过：退出取消会等旧世界安全结束，随后恢复演示世界且无令牌done死锁');
 
 const actorHold = deferred();
@@ -283,32 +330,19 @@ assert.equal(actorToken.cancelled, false); assert.equal(secondActor, 0);
 actorGame._finishMobilePreparation(actorToken);
 console.log('通过：单角色预热等待期间session失效后，主控不再启动后续角色预热');
 
-// Boss也须逐网格隔离编译；异步链接期间取消时，不再准备接口或进入下一网格。
+// 主控与Boss准备模块的接口边界；真实实例绘制与状态恢复由Boss专项检查。
 for (const cancelMode of [null, 'token', 'network']) {
   const cancel = cancelMode !== null;
   const { game, network } = gameFixture();
-  const meshRoot = new THREE.Group();
-  const one = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial()); one.name = 'boss-one';
-  const two = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial()); two.name = 'boss-two'; two.visible = false;
-  one.add(two); meshRoot.add(one);
   const hold = deferred();
-  let target = 'screen', compiles = 0, uniforms = 0, attributes = 0, yields = 0;
-  const program = { getUniforms: () => { uniforms++; }, getAttributes: () => { attributes++; } };
-  const renderer = {
-    info: { programs: [] }, properties: { get: () => ({ currentProgram: program }) },
-    getRenderTarget: () => target, setRenderTarget: value => { target = value; },
-    compileAsync(proxy) {
-      compiles++;
-      assert.ok(proxy.isMesh && proxy.parent === null && proxy.children.length === 0);
-      assert.equal(proxy.visible, true); assert.equal(proxy.frustumCulled, false);
-      assert.equal(target, 'hdr');
-      return cancel ? hold.promise : Promise.resolve();
-    },
+  let bossCalls = 0, afterWaitCurrent;
+  sandbox.prepareMobileBoss = async (owner, match, { isCurrent, onProgress }) => {
+    assert.equal(owner, game); assert.equal(match, game.match); assert.equal(isCurrent(), true); bossCalls++;
+    onProgress({ completed: 3, total: 10, label: '准备登场效果' });
+    if (cancel) await hold.promise;
+    afterWaitCurrent = isCurrent(); return { cancelled: !afterWaitCurrent };
   };
-  game.R = { composer: { readBuffer: 'hdr' } };
-  sandbox.G.renderer = renderer; sandbox.G.camera = new THREE.PerspectiveCamera();
-  sandbox.nextMobileFrame = async () => { yields++; };
-  const match = { actors: [], boss: { model: { ready: Promise.resolve() }, warm: () => [meshRoot] } };
+  const match = { actors: [], boss: { model: { ready: Promise.resolve() } } };
   game.match = match;
   const token = game._beginMobilePreparation();
   if (cancelMode === 'network') token.networkMatch = network;
@@ -319,13 +353,141 @@ for (const cancelMode of [null, 'token', 'network']) {
     else token.cancelled = true;
     hold.resolve();
   }
-  await warming;
-  assert.equal(target, 'screen');
-  assert.equal(compiles, cancel ? 1 : 2);
-  assert.equal(uniforms, cancel ? 0 : 2); assert.equal(attributes, cancel ? 0 : 2);
-  assert.equal(yields, cancel ? 0 : 2);
+  assert.equal(await warming, !cancel);
+  assert.equal(bossCalls, 1); assert.equal(afterWaitCurrent, !cancel);
+  const bossUpdate = token.ui.updates.find(row => row.label === '准备登场效果');
+  assert.ok(bossUpdate && Math.abs(bossUpdate.progress - .789) < .0001);
   if (cancelMode === 'network') assert.equal(token.cancelled, false);
-  assert.equal(one.parent, meshRoot); assert.equal(two.parent, one); assert.equal(two.visible, false);
   game._finishMobilePreparation(token);
 }
-console.log('通过：Boss预热逐网格使用HDR目标、主动完成程序接口、每步让帧，主动取消/session失效后不查询或编译后续网格');
+console.log('通过：主控向Boss准备传递取消/session身份检查，按完成步骤映射实际阶段进度');
+
+const originalCombat = sandbox.prepareMobileCombat, originalBoss = sandbox.prepareMobileBoss;
+for (const boss of [false, true]) {
+  const { game } = gameFixture();
+  const match = { actors: Array.from({ length: 2 }, () => ({ character: { warmAll(_renderer, _camera, _scene, { onProgress }) {
+    for (const completed of [0, 25, 100]) onProgress({ completed, total: 100 }); return Promise.resolve();
+  } } })), ...(boss ? { boss: {} } : {}) };
+  sandbox.prepareMobileCombat = async (_game, _match, { onProgress }) => { for (const completed of [0, 1, 2]) onProgress({ completed, total: 2, label: '战斗效果检查' }); };
+  sandbox.prepareMobileBoss = async (_game, _match, { onProgress }) => { for (const completed of [0, 1, 2]) onProgress({ completed, total: 2, label: '登场效果检查' }); };
+  game.match = match;
+  const token = game._beginMobilePreparation();
+  assert.equal(await Game.prototype._warmCharacters.call(game, match, token), true);
+  const updates = token.ui.updates;
+  for (let i = 1; i < updates.length; i++) assert.ok(updates[i].progress >= updates[i - 1].progress, '主控原始阶段进度也须单调，不能仅依赖UI遮掩回退');
+  const combat = updates.filter(row => row.label === '战斗效果检查');
+  assert.ok(Math.abs(combat[0].progress - (boss ? .62 : .8)) < .0001);
+  assert.ok(Math.abs(combat.at(-1).progress - (boss ? .72 : .94)) < .0001);
+  assert.ok(Math.abs(updates.at(-1).progress - (boss ? .95 : .94)) < .0001);
+  assert.ok(updates.every(row => row.progress < 1));
+  game._finishMobilePreparation(token);
+}
+sandbox.prepareMobileCombat = originalCombat; sandbox.prepareMobileBoss = originalBoss;
+console.log('通过：普通/Boss角色、战斗效果、登场效果原始进度区间接续且单调，资源准备不提前100%');
+
+for (const online of [false, true]) for (const preflightFault of ['shader-failed', 'shader-link-error', 'context-lost', 'suspended', 'frame-error']) {
+  const { game, calls, cfg, network, opts } = gameFixture({ preflightFault });
+  const result = online ? await game.startNetMatch(cfg, network) : await game.startMatch(opts);
+  assert.equal(result, false); assert.equal(calls.preflight, 1);
+  assert.equal(calls.start, 0); assert.equal(calls.bind, 0);
+  assert.equal(game._mobilePreparation, null); assert.equal(game._mobilePreparationError, true);
+  assert.ok(calls.overlays[0].failed && !calls.overlays[0].completed && !calls.overlays[0].disposed);
+}
+console.log('通过：真实首绘检查在shader fatal/上下文丢失/帧异常时阻止开始和联机绑定，保持失败界面');
+
+for (const fault of [false, true]) {
+  const { game, calls, opts } = gameFixture();
+  let passCalls = 0;
+  const pass = { enabled: false, renderToScreen: true, render(renderer) {
+    passCalls++; assert.equal(this.renderToScreen, false); renderer.setRenderTarget('temporary-pass');
+    if (fault) throw new Error('extra-pass-test');
+  } };
+  game.R.extraPass = pass; game.R.composer = { readBuffer: {}, writeBuffer: {} };
+  assert.equal(await game.startMatch(opts), !fault);
+  assert.equal(passCalls, 1); assert.equal(pass.renderToScreen, true); assert.equal(pass.enabled, false);
+  assert.equal(sandbox.G.renderer.getRenderTarget(), 'screen');
+  assert.equal(calls.preflight, fault ? 0 : 1); assert.equal(calls.start, fault ? 0 : 1);
+  assert.equal(!!calls.overlays[0].completed, !fault);
+  if (fault) assert.ok(calls.overlays[0].failed && !calls.overlays[0].disposed);
+}
+console.log('通过：真实主控准备extraPass保留enabled/屏幕输出/渲染目标，Pass异常阻止首绘、100%和开局');
+
+const { game: retryGame, calls: retryCalls, opts: retryOpts } = gameFixture({ preflightFault: 'frame-error' });
+retryGame.input.exitLock = noop; retryGame._playMusic = noop;
+retryGame._startAttract = () => { retryGame.match = { attract: true, dispose: noop }; };
+sandbox.G.net.state = 'offline';
+assert.equal(await retryGame.startMatch(retryOpts), false);
+const failedOverlay = retryCalls.overlays[0];
+assert.ok(failedOverlay.failed && !failedOverlay.disposed && retryGame._mobilePreparationError);
+retryCalls.preflightFault = null;
+await failedOverlay.handlers.onRetry();
+assert.ok(failedOverlay.disposed); assert.equal(retryCalls.preflight, 2); assert.equal(retryCalls.start, 1);
+assert.equal(retryGame._mobilePreparation, null); assert.equal(retryGame._mobilePreparationError, false);
+assert.equal(retryGame._mobilePreparationOverlay, null); assert.equal(retryCalls.overlays.length, 2);
+assert.ok(retryCalls.overlays[1].completed && retryCalls.overlays[1].disposed);
+console.log('通过：失败重试先返回菜单释放旧覆盖层/错误锁，再创建新准备并完成首绘后开局');
+
+for (const online of [false, true]) {
+  const completeFade = deferred();
+  const { game, calls, cfg, network, opts } = gameFixture({ completeFade });
+  const request = online ? game.startNetMatch(cfg, network) : game.startMatch(opts);
+  await flush();
+  const token = game._mobilePreparation;
+  assert.ok(token.ui.completed); assert.equal(calls.preflight, 1); assert.equal(calls.start, 0);
+  if (online) { game.netMatchGo(); assert.equal(calls.start, 0, '准备覆盖层未退出前，迟到go不得提前开始对局'); }
+  completeFade.resolve(); assert.equal(await request, true);
+  assert.equal(calls.start, online ? 0 : 1); assert.ok(token.ui.disposed);
+}
+console.log('通过：100%先给浏览器可见帧，淡入等待完成后才开始，准备期迟到联机go不提前开局');
+
+// 使用真实GPU完成helper和可控WebGL2状态，等待阶段绝不阻塞轮询或提前开始。
+for (const outcome of ['ready', 'cancel', 'failed']) {
+  const { game, calls, opts } = gameFixture();
+  const hold = deferred(), originalTurn = sandbox.nextMobileFrame;
+  calls.gpuStatus = 3;
+  sandbox.nextMobileFrame = () => calls.gpuPolls ? hold.promise : Promise.resolve();
+  try {
+    const request = game.startMatch(opts);
+    await flush();
+    const token = game._mobilePreparation;
+    assert.equal(calls.preflight, 1); assert.equal(calls.gpuPolls, 1); assert.equal(calls.gpuDeleted, 0);
+    assert.equal(calls.start, 0); assert.ok(!token.ui.completed);
+    assert.ok(token.ui.updates.every(row => row.progress < 1));
+    if (outcome === 'cancel') token.cancelled = true;
+    else calls.gpuStatus = outcome === 'ready' ? 2 : 4;
+    hold.resolve();
+    assert.equal(await request, outcome === 'ready');
+    assert.equal(calls.gpuDeleted, 1); assert.equal(calls.gpuFences, 1); assert.equal(calls.gpuFlushes, 1);
+    assert.equal(calls.start, outcome === 'ready' ? 1 : 0);
+    assert.equal(!!token.ui.completed, outcome === 'ready');
+    if (outcome === 'failed') assert.ok(token.ui.failed && !token.ui.disposed);
+  } finally { sandbox.nextMobileFrame = originalTurn; }
+}
+console.log('通过：首帧GPU fence待完成时不100%/不开局，完成才进入；取消/WAIT_FAILED清理同步点');
+
+for (const outcome of ['ready', 'cancel', 'failed', 'context-lost', 'timeout', 'yield-error']) {
+  let polls = 0, deleted = 0, closed = 0, yielded = 0, current = true;
+  const gl = { SYNC_GPU_COMMANDS_COMPLETE: 5, ALREADY_SIGNALED: 1, CONDITION_SATISFIED: 2, TIMEOUT_EXPIRED: 3, WAIT_FAILED: 4,
+    fenceSync: () => ({}), flush: noop, deleteSync: () => { deleted++; },
+    isContextLost: () => outcome === 'context-lost',
+    clientWaitSync(_sync, flags, timeout) {
+      assert.equal(flags, 0); assert.equal(timeout, 0); polls++;
+      if (outcome === 'failed') return 4;
+      return outcome === 'ready' && polls >= 3 ? 1 : 3;
+    },
+  };
+  const request = sandbox.waitForMobileFrame({ getContext: () => gl }, {
+    isCurrent: () => current,
+    yieldTurn: async () => {
+      yielded++; clock += 60;
+      if (outcome === 'cancel') current = false;
+      if (outcome === 'yield-error') throw new Error('yield-test');
+    },
+    diagnostics: { beginStage: () => () => { closed++; } }, timeoutMs: 100,
+  });
+  if (outcome === 'ready') { assert.equal(await request, true); assert.equal(polls, 3); assert.equal(yielded, 2); }
+  else if (outcome === 'cancel') { assert.equal(await request, false); assert.equal(polls, 1); }
+  else await assert.rejects(request, outcome === 'timeout' ? /超时/ : outcome === 'context-lost' ? /上下文/ : outcome === 'yield-error' ? /yield-test/ : /同步失败/);
+  assert.equal(deleted, 1); assert.equal(closed, 1);
+}
+console.log('通过：真实fence helper采用0超时轮询，完成/取消/失败/上下文丢失/超时/让帧异常均释放sync并闭合诊断');

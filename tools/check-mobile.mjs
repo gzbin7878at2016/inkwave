@@ -32,7 +32,7 @@ try {
   await page.waitForFunction(() => window.__inkwave?.mobile, { timeout: 120000 });
   assert.equal(await page.evaluate(() => __inkwave.settings.quality), 'low');
   const migrated = await page.evaluate(() => ({ fps: __inkwave.settings.fpsCap, visual: __inkwave.settings.mobileVisual, dynamic: __inkwave.settings.mobileDynamicResolution, sensitivity: __inkwave.settings.touchSensitivity, version: __inkwave.settings.mobileDefaultsVersion }));
-  assert.deepEqual(migrated, { fps: 60, visual: 'hd', dynamic: false, sensitivity: 1.7, version: 1 });
+  assert.deepEqual(migrated, { fps: 30, visual: 'hd', dynamic: false, sensitivity: 1.7, version: 1 });
   const graphics = await page.evaluate(() => inkwaveDiagnostics.report().current);
   await page.waitForFunction(() => __inkwave.mobile.profile.count > 2 && __inkwave.mobile.profile.topDraws.length > 0, { timeout: 60000 });
   const profile = await page.evaluate(() => __inkwave.mobile.profile.snapshot());

@@ -40,7 +40,7 @@
 #mobile-log-status { position: fixed; z-index: 100; bottom: max(8px, env(safe-area-inset-bottom)); left: 8px; right: 8px; padding: 12px; border-radius: 12px; color: white; background: #17152bef; font: 14px system-ui; overflow-wrap: anywhere; }
 #mobile-log-status button { margin-left: 12px; }
 #mobile-gpu-error { position: fixed; inset: 30% 12%; z-index: 80; padding: 24px; border: 2px solid white; border-radius: 16px; color: white; background: #231b32f5; font: 18px/1.6 system-ui; }
-#mobile-dialog { position: fixed; z-index: 80; inset: 8% max(10%, env(safe-area-inset-right)) 8% max(10%, env(safe-area-inset-left));
+#mobile-dialog { position: fixed; z-index: 120; inset: 8% max(10%, env(safe-area-inset-right)) 8% max(10%, env(safe-area-inset-left));
   padding: 20px; background: #161326f5; color: white; border: 2px solid white; border-radius: 18px; font: 16px system-ui; overflow-y: auto; touch-action: pan-y; }
 #mobile-dialog p { margin: 0 0 14px; }
 /* 诊断栏缩小占用，保留导出入口与触屏按钮命中面积。 */
@@ -49,6 +49,33 @@
 #mobile-dialog input { min-height: 36px; width: 50%; }
 /* 缩小屏幕时菜单本身允许滚动，输入框保留系统输入法。 */
 .iw-mobile .iw-screen { overflow-y: auto; touch-action: pan-y; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+/* 开局准备在黑幕/诊断条之上，保持可见和可取消，防止触控穿透至游戏。 */
+#mobile-preparation { position: fixed; inset: 0; z-index: 110; box-sizing: border-box; display: flex;
+  padding: max(12px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  overflow: auto; overscroll-behavior: contain; touch-action: pan-y; pointer-events: auto; color: #fff; background: #0d1020;
+  font: 15px/1.5 system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+#mobile-preparation[hidden] { display: none; }
+.mobile-preparation-card { flex: none; margin: auto; width: min(100%, 560px); min-width: 0; box-sizing: border-box; padding: clamp(16px, 4vh, 28px);
+  border: 1px solid #ffffff30; border-radius: 20px; background: #191b31; }
+.mobile-preparation-eyebrow { margin: 0 0 4px; color: #ffab4c; font-size: 12px; font-weight: 800; letter-spacing: .16em; }
+#mobile-preparation-title { margin: 0 0 18px; font-size: clamp(22px, 5vh, 30px); line-height: 1.25; }
+.mobile-preparation-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+#mobile-preparation-label { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
+#mobile-preparation-percent { flex: none; margin-bottom: 8px; color: #ffd5a5; font-variant-numeric: tabular-nums; }
+#mobile-preparation-progress { height: 12px; overflow: hidden; border-radius: 8px; background: #ffffff20; }
+.mobile-preparation-fill { width: 0; height: 100%; border-radius: inherit; background: #ff951f; }
+#mobile-preparation-detail { min-height: 1.5em; margin: 12px 0 20px; color: #c6c9df; font-size: 13px; overflow-wrap: anywhere; }
+.mobile-preparation-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.mobile-preparation-actions button { min-height: 44px; min-width: 100px; padding: 8px 16px; border: 1px solid #ffffff60; border-radius: 12px;
+  color: #fff; background: #2e314c; font: 600 14px/1.4 system-ui, sans-serif; touch-action: manipulation; }
+#mobile-preparation-retry { color: #181224; border-color: #ffb257; background: #ffab4c; }
+.mobile-preparation-actions button:disabled { opacity: .6; }
+.mobile-preparation-actions button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+@media (max-height: 340px) {
+  .mobile-preparation-card { padding: 14px 18px; border-radius: 14px; }
+  #mobile-preparation-title { margin-bottom: 12px; }
+  #mobile-preparation-detail { margin: 8px 0 12px; }
+}
 @media (orientation: portrait) {
   #mobile-controls::after { content: '请横屏游玩'; position: absolute; inset: 40% 15%; text-align: center; color: white; background: #211f36ee; font: 24px system-ui; }
 }

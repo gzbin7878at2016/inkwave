@@ -26,7 +26,10 @@ import { mapTheme,
   MAPS, DIFFICULTY, PLAYER, PROGRESSION, VERSION, MATCH, OFFLINE_MAPS, mapOfflineOk, mapNoBots, mapBossOk,
 } from './config.js';
 import { warmMobileScene, warmMobilePostprocess } from './platform/mobileStartup.js';
-import { prepareMobileMaterialPrograms } from './platform/mobileWarmup.js';
+import { createMobilePreparationUI } from './platform/mobilePreparation.js';
+import { prepareMobileBoss } from './platform/mobileBossPreparation.js';
+import { prepareMobileCombat } from './platform/mobileCombatPreparation.js';
+import { waitForMobileFrame } from './platform/mobileFrameReady.js';
 import { Level } from './world/level.js';
 import { MAP_LAYOUTS } from './world/maps.js';
 import { PaintSystem } from './world/paint.js';
@@ -100,12 +103,16 @@ class Game {
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
     // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
-    // 手机默认60帧目标/2倍高清；几何预算仍为低档，避免连带开启昂贵阴影和AO。
-    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'hd', mobileDynamicResolution: false, shadows: false, bloom: false, fpsCap: 60, showFps: true } : DEFAULT_SETTINGS;
+    // 手机优先稳定30帧/2倍高清；保留玩家之后手动选择60帧。
+    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'hd', mobileDynamicResolution: false, shadows: false, bloom: false, fpsCap: 30, showFps: true } : DEFAULT_SETTINGS;
     this.settings = G.settings = loadJSON('inkwave.settings', defaults);
-    // 一次性升级旧APK设置，否则旧版保存的30帧/清晰档会覆盖新默认；之后保留玩家手动选择。
+    // 用户本轮优先稳定30帧，单独迁移帧率；保留既有高清和触控偏好，之后仍可手动切60。
     if (window.inkwaveMobile && this.settings.mobileDefaultsVersion !== 1) {
-      Object.assign(this.settings, { fpsCap: 60, mobileVisual: 'hd', mobileDynamicResolution: false, mobileDefaultsVersion: 1 });
+      Object.assign(this.settings, { mobileVisual: 'hd', mobileDynamicResolution: false, mobileDefaultsVersion: 1 });
+      saveJSON('inkwave.settings', this.settings);
+    }
+    if (window.inkwaveMobile && this.settings.mobilePacingVersion !== 1) {
+      Object.assign(this.settings, { fpsCap: 30, mobilePacingVersion: 1 });
       saveJSON('inkwave.settings', this.settings);
     }
     setLang(this.settings.lang || 'en');   // before any menu renders (src/i18n/strings.js)
@@ -796,24 +803,82 @@ class Game {
   }
 
   // 手机准备从入口立即互斥，防止淡入/换图等待期间重复点击并发重建世界。
-  _beginMobilePreparation() {
+  _beginMobilePreparation({ boss = false, retry } = {}) {
     if (!window.inkwaveMobile) return null;
-    if (this._mobilePreparation) return false;
-    const token = { cancelled: false };
+    if (this._mobilePreparation || this._mobilePreparationError || this.mobileSuspended) return false;
+    const token = { cancelled: false, retry };
     token.done = new Promise(resolve => { token.finish = resolve; });
     this._mobilePreparation = token;
     this.input.touch?.setEnabled(false); this.input.touch?.clear();
+    this.input.keys?.clear(); this.input.pressed?.clear();
+    if (this.input.mouse) Object.assign(this.input.mouse, { dx: 0, dy: 0, left: false, right: false, leftPressed: false, rightPressed: false });
+    token.shaderFailures = globalThis.inkwaveDiagnostics?.shaderFailureCount?.() || 0;
+    token.ui = createMobilePreparationUI({
+      onCancel: () => this.quitToMenu(),
+      onRetry: retry ? async () => { await this.quitToMenu(); await retry(); } : undefined,
+    });
+    this._mobilePreparationOverlay = token.ui;
+    token.ui.show({ title: boss ? '准备 Boss 战' : '准备对局' });
+    globalThis.inkwaveDiagnostics?.record('mobile-preparation-start', { boss });
     return token;
   }
   _isMobilePreparationCurrent(token) { return !token || (this._mobilePreparation === token && !token.cancelled && (!token.networkMatch || G.net?.match === token.networkMatch)); }
+  _updateMobilePreparation(token, progress, label, detail = '准备完成后进入对局。') {
+    if (token && this._isMobilePreparationCurrent(token)) token.ui?.update({ progress, label, detail });
+  }
+  _failMobilePreparation(token, error) {
+    if (!token || !this._isMobilePreparationCurrent(token)) return;
+    token.failed = true; this._mobilePreparationError = true;
+    globalThis.inkwaveDiagnostics?.record('mobile-preparation-failed', error, 'error');
+    token.ui?.fail('场景准备未完成，请重试或返回菜单。');
+  }
   _finishMobilePreparation(token) {
     if (!token) return;
     if (this._mobilePreparation === token) this._mobilePreparation = null;
+    if (!token.failed && !token.keepUntilMenu) {
+      token.ui?.dispose();
+      if (this._mobilePreparationOverlay === token.ui) this._mobilePreparationOverlay = null;
+    }
     token.finish();
   }
 
+  async _checkMobilePreparedFrame(m, token) {
+    if (!token) return true;
+    this._updateMobilePreparation(token, 0.96, '检查场景', '正在完成进入前的最后准备。');
+    await nextMobileFrame();
+    if (!this._isMobilePreparationCurrent(token) || this.match !== m) return false;
+    // 受击等屏幕效果首次启用也可能编译；在加载遮罩内准备实际Pass，保留原启用状态。
+    if (this.R.extraPass) {
+      const pass = this.R.extraPass, target = G.renderer.getRenderTarget(), screen = pass.renderToScreen;
+      const finish = globalThis.inkwaveDiagnostics?.beginStage('match-screen-effects-prepare');
+      try { pass.renderToScreen = false; pass.render(G.renderer, this.R.composer.writeBuffer, this.R.composer.readBuffer, 0, false); }
+      finally { pass.renderToScreen = screen; G.renderer.setRenderTarget(target); finish?.(); }
+    }
+    const done = globalThis.inkwaveDiagnostics?.beginStage('match-prepared-first-frame');
+    try { this._frame(0, 'match-preflight'); }
+    finally { done?.(); }
+    if (G.renderer.getContext?.().isContextLost() || this.R.mobileSafety?.state.fatal || this.mobileSuspended ||
+      (globalThis.inkwaveDiagnostics?.shaderFailureCount?.() || 0) > token.shaderFailures) throw new Error('手机图形准备未通过');
+    if (!await waitForMobileFrame(G.renderer, { isCurrent: () => this._isMobilePreparationCurrent(token) && this.match === m,
+      yieldTurn: nextMobileFrame, diagnostics: globalThis.inkwaveDiagnostics })) return false;
+    globalThis.inkwaveDiagnostics?.record('mobile-preparation-ready', { programs: G.renderer.info.programs.length,
+      fpsCap: this.settings.fpsCap, boss: !!m.boss, actors: m.actors.length });
+    this._updateMobilePreparation(token, 0.99, '场景已就绪');
+    await nextMobileFrame();
+    return this._isMobilePreparationCurrent(token) && this.match === m;
+  }
+  async _completeMobilePreparation(token, fadeMs) {
+    if (!token) return true;
+    if (!this._isMobilePreparationCurrent(token)) return false;
+    token.ui?.complete();
+    await nextMobileFrame();
+    if (!this._isMobilePreparationCurrent(token)) return false;
+    await this._fade(0, fadeMs);
+    return this._isMobilePreparationCurrent(token);
+  }
+
   async startMatch(o = {}) {
-    const preparation = this._beginMobilePreparation();
+    const preparation = this._beginMobilePreparation({ boss: o.mode === 'boss', retry: () => this.startMatch(o) });
     if (preparation === false) return false;
     try {
       const practice = !!o.practice;
@@ -831,8 +896,10 @@ class Game {
       G.audio?.duck?.(1, 0.01);   // a new stage picked from the practice pause menu starts un-ducked
       this.input.requestLock();
       this.menus?.show(null);
+      if (preparation) await nextMobileFrame();
       await this._fade(1, 350);
       if (!this._isMobilePreparationCurrent(preparation)) return false;
+      this._updateMobilePreparation(preparation, 0.05, '准备场景');
       G.music?.stop?.(0.3); this._musicTrack = null;
       // start buffering this round's match song and the final-minute song while the world loads
       G.music?.preload?.('battle'); if (!practice) G.music?.preload?.('battle_final');
@@ -847,6 +914,7 @@ class Game {
         map = OFFLINE_MAPS[0];
       }
       if (opts.mode === 'boss' && !mapBossOk(map.id)) opts.mode = 'turf';
+      this._updateMobilePreparation(preparation, 0.08, '准备地图');
       const worldDone = globalThis.inkwaveDiagnostics?.beginStage('match-world-prepare', { map: map.id, mode: opts.mode });
       try { await this._buildWorld(map, opts.mode); } finally { worldDone?.(); }
       if (!this._isMobilePreparationCurrent(preparation)) return false;
@@ -866,23 +934,30 @@ class Game {
         playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
         autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
       }));
+      this._updateMobilePreparation(preparation, 0.2, '创建对局');
+      if (preparation) { await nextMobileFrame(); if (!this._isMobilePreparationCurrent(preparation)) return false; }
       const setupDone = globalThis.inkwaveDiagnostics?.beginStage('match-setup', { map: map.id, practice });
       try { m.setup(); } finally { setupDone?.(); }
-      await this._warmCharacters(m);
+      await this._warmCharacters(m, preparation);
       if (!this._isMobilePreparationCurrent(preparation) || (preparation && this.match !== m)) return false;
+      if (!await this._checkMobilePreparedFrame(m, preparation)) return false;
       this.minimap.setViewerTeam(0);
       G.mode = 'match';
       this.hud?.setVisible(false);
       this.hudPrompt = null; this._hintT = 0; this._hints = {};
       this.hud?.setPractice?.(practice);
+      if (!await this._completeMobilePreparation(preparation, 500)) return false;
       m.start();
       if (practice) {
         // no intro fly-over: straight in, special charged so it can be tried right away
         if (m.local) m.local.special = m.local.specialCost();
         this.hud?.setVisible(true);
       }
-      this._fade(0, 500);
+      if (!preparation) this._fade(0, 500);
       return true;
+    } catch (error) {
+      if (!preparation) throw error;
+      this._failMobilePreparation(preparation, error); return false;
     } finally { this._finishMobilePreparation(preparation); }
   }
 
@@ -937,19 +1012,22 @@ class Game {
   // ---- online (src/net/session.js drives these) -----------------------------------------------------------------
   // Build the host's match: same stage / time / palette / roster on every client; the intro starts on netMatchGo.
   async startNetMatch(cfg, nm) {
-    const preparation = this._beginMobilePreparation();
+    const preparation = this._beginMobilePreparation({ boss: cfg.mode === 'boss' });
     if (preparation === false) return false;
     if (preparation) preparation.networkMatch = nm;
     try {
       G.audio?.init?.();
       this.menus?.show(null);
+      if (preparation) await nextMobileFrame();
       await this._fade(1, 350);
       if (!this._isMobilePreparationCurrent(preparation)) return false;
+      this._updateMobilePreparation(preparation, 0.05, '准备场景');
       G.music?.stop?.(0.3); this._musicTrack = null;
       this.showcase.hide();
       if (this.match) this.match.dispose();
       G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
       const map = MAPS.find((m) => m.id === cfg.map) || MAPS[0];
+      this._updateMobilePreparation(preparation, 0.08, '准备地图');
       const worldDone = globalThis.inkwaveDiagnostics?.beginStage('match-world-prepare', { map: map.id, mode: cfg.mode, online: true });
       try { await this._buildWorld(map, cfg.mode); } finally { worldDone?.(); }
       if (!this._isMobilePreparationCurrent(preparation)) return false;
@@ -968,10 +1046,13 @@ class Game {
         attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
         roster: cfg.roster, myId: G.net.myId, host: G.net.isHost, autopilot: params.has('autopilot'),
       }));
+      this._updateMobilePreparation(preparation, 0.2, '创建对局');
+      if (preparation) { await nextMobileFrame(); if (!this._isMobilePreparationCurrent(preparation)) return false; }
       const setupDone = globalThis.inkwaveDiagnostics?.beginStage('match-setup', { map: map.id, online: true });
       try { m.setup(); } finally { setupDone?.(); }
-      await this._warmCharacters(m);   // before 'ready': nobody starts until every shader a squidkid can use is compiled
+      await this._warmCharacters(m, preparation);   // before 'ready': nobody starts until every shader a squidkid can use is compiled
       if (!this._isMobilePreparationCurrent(preparation) || (preparation && this.match !== m)) return false;
+      if (!await this._checkMobilePreparedFrame(m, preparation)) return false;
       nm.bind(m);
       this.lastMatchOpts = null;
       this.minimap.setViewerTeam(m.local ? m.local.team : 0);
@@ -981,59 +1062,58 @@ class Game {
       // hold on the stage (not black) while the others finish loading
       if (m.local) { this.rig.follow(m.local, true); this.rig.yaw = m.local.team === 0 ? 0 : Math.PI; }
       this.rig.dioFlip = !!(m.local && m.local.team === 1);
-      this._fade(0, 450);
+      if (!await this._completeMobilePreparation(preparation, 450)) return false;
+      if (!preparation) this._fade(0, 450);
       return true;
+    } catch (error) {
+      if (!preparation) throw error;
+      this._failMobilePreparation(preparation, error); return false;
     } finally { this._finishMobilePreparation(preparation); }
   }
   // Compile every shader variant a squidkid can use this match (all detail tiers, their cross-fades, squid form,
   // weapons) and build every kid's tier meshes while the screen is still faded out, so none of it lands mid-match.
   // Programs are shared, so after the first kid of each weapon the rest are a few ms each.
-  async _warmCharacters(m) {
+  async _warmCharacters(m, preparation = this._mobilePreparation) {
     if (window.inkwaveMobile) {
-      const diagnostics = globalThis.inkwaveDiagnostics;
+      const diagnostics = globalThis.inkwaveDiagnostics, current = () => this.match === m && this._isMobilePreparationCurrent(preparation);
       const finish = diagnostics?.beginStage('match-character-warm-total', { actors: m.actors.length, boss: !!m.boss });
       try {
-        // 不使用8秒竞速提前放行：未完成的预热不能泄漏到实战帧中。
+        const end = m.boss ? 0.62 : 0.8;
         for (let index = 0; index < m.actors.length; index++) {
-          if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
-          const actor = m.actors[index], done = diagnostics?.beginStage('match-character-warm', { actor: index, weapon: actor.weaponId });
-          try { await actor.character?.warmAll?.(); }
-          catch (error) { console.warn('[inkwave] warm', error); }
+          if (!current()) return false;
+          const actor = m.actors[index], label = `准备角色 ${index + 1} / ${m.actors.length}`;
+          const report = ({ completed = 0, total = 1 } = {}) => this._updateMobilePreparation(preparation,
+            0.3 + (end - 0.3) * (index + Math.min(1, completed / Math.max(1, total))) / m.actors.length, label);
+          report();
+          const done = diagnostics?.beginStage('match-character-warm', { actor: index, weapon: actor.weaponId });
+          try { await actor.character?.warmAll?.(G.renderer, G.camera, G.scene, { onProgress: report }); }
           finally { done?.(); }
-          await nextMobileFrame();
+          if (!current()) return false;
+          report({ completed: 1, total: 1 });
         }
-        if (m.boss && this.match === m && this._isMobilePreparationCurrent(this._mobilePreparation)) {
-          await m.boss.model.ready;
-          if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
-          const meshes = [];
-          for (const root of m.boss.warm()) root.traverse(object => { if (object.isMesh || object.isLine || object.isPoints) meshes.push(object); });
-          for (const mesh of meshes) {
-            if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
-            const detail = { name: mesh.name || mesh.type }, done = diagnostics?.beginStage('match-boss-warm', detail);
-            const renderer = G.renderer, target0 = renderer.getRenderTarget(), before = renderer.info.programs.length;
-            try {
-              // compile会遍历隐藏子树；使用单个代理，且与实战相同的HDR目标准备变体。
-              const proxy = mesh.clone(false); proxy.visible = true; proxy.frustumCulled = false;
-              let pending;
-              try { renderer.setRenderTarget(this.R.composer.readBuffer); pending = renderer.compileAsync(proxy, G.camera, G.scene); }
-              finally { renderer.setRenderTarget(target0); }
-              await pending;
-              if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
-              detail.programsPrepared = prepareMobileMaterialPrograms(renderer, mesh.material);
-              detail.programsAdded = renderer.info.programs.length - before;
-            } catch (error) { console.warn('[inkwave] boss warm', error); }
-            finally { done?.(); }
-            await nextMobileFrame();
-          }
+        if (!current()) return false;
+        const combatStart = m.boss ? 0.62 : 0.8, combatEnd = m.boss ? 0.72 : 0.94;
+        this._updateMobilePreparation(preparation, combatStart, '准备战斗效果');
+        await prepareMobileCombat(this, m, { isCurrent: current, diagnostics,
+          onProgress: ({ completed = 0, total = 1, label } = {}) => this._updateMobilePreparation(preparation,
+            combatStart + (combatEnd - combatStart) * Math.min(1, completed / Math.max(1, total)), label || '准备战斗效果') });
+        if (!current()) return false;
+        if (m.boss && current()) {
+          this._updateMobilePreparation(preparation, 0.72, '准备 Boss 和登场效果');
+          await prepareMobileBoss(this, m, { isCurrent: current, diagnostics,
+            onProgress: ({ completed = 0, total = 1, label } = {}) => this._updateMobilePreparation(preparation,
+              0.72 + 0.23 * Math.min(1, completed / Math.max(1, total)), label || '准备 Boss 和登场效果') });
         }
+        return current();
       } finally { finish?.(); }
-      return;
+      return false;
     }
     const jobs = m.actors.map((a) => a.character?.warmAll ? Promise.resolve(a.character.warmAll()).catch((e) => console.warn('[inkwave] warm', e)) : null).filter(Boolean);
     if (m.boss) jobs.push(Promise.resolve(m.boss.model.ready).then(() => Promise.all(m.boss.warm().map((o) => G.renderer.compileAsync(o, G.camera, G.scene)))).catch((e) => console.warn('[inkwave] boss warm', e)));
     if (jobs.length) await Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 8000))]);   // never hang a load
   }
   netMatchGo() {
+    if (window.inkwaveMobile && (this._mobilePreparation || this._mobilePreparationError)) return false;
     const m = this.match;
     if (!m || m.state !== 'init') return;
     this.input.requestLock();
@@ -1113,7 +1193,7 @@ class Game {
   }
   async quitToMenu(screen = 'main') {
     const preparation = this._mobilePreparation;
-    if (preparation) preparation.cancelled = true;
+    if (preparation) { preparation.cancelled = true; preparation.keepUntilMenu = true; }
     clearTimeout(this._netEndT);
     if (G.net && G.net.state !== 'offline' && G.net.state !== 'error') G.net.leave();
     // 取消后等待正在进行的建造/编译安全退出，旧任务不能覆盖新的菜单演示世界。
@@ -1129,6 +1209,8 @@ class Game {
     this._startAttract();
     this.hud?.setPractice?.(false);
     this.menus?.show(screen);
+    this._mobilePreparationError = false;
+    this._mobilePreparationOverlay?.dispose(); this._mobilePreparationOverlay = null;
     this._playMusic('menu');
     G.audio?.duck?.(1, 0.01);
     this._fade(0, 500);
@@ -1283,13 +1365,14 @@ class Game {
     this._lastTs = ts;
     this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());
     if (this.frozen || this._building || this.mobileSuspended) return;
-    if (this._mobilePreparation) {
+    if (this._mobilePreparation || this._mobilePreparationError) {
       // 分批预热期间保持联网心跳，但不让模拟/绘制并发修改正在准备的角色。
       G.net?.update?.(dt); this.input.endFrame(); return;
     }
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
+    this.mobile?.profile?.recordInterval?.(dt * 1000);
     this.mobile?.recordFrame(dt * 1000); // 记录钳制前的实际帧间隔，不能把掉帧隐藏在 dt 上限内。
     dt = Math.min(dt, 1 / 24);
     this._frame(dt);

@@ -125,7 +125,7 @@ export class BossHud {
   }
 
   // 【销毁】退订总线、移除两处根节点。
-  dispose() { this._unsubs.forEach((u) => u()); this.layer.remove(); this.over.remove(); }
+  dispose() { this._unsubs.forEach((u) => u()); this._preparedTitle?.remove(); this._preparedTitle = null; this.layer.remove(); this.over.remove(); }
 
   // ================================================================ mode + accessors
   /** Called by the HUD at every match intro (and by boss:spawn). */
@@ -511,8 +511,7 @@ export class BossHud {
   // ---------------------------------------------------------------- big moments
   // 【标题卡】boss:intro 时在 overLayer 弹 2.5 s 标题卡（墨迹带+逐字砸落的 BOSS_NAME+别称），
   //   80 ms 后补一声 splat_big；animationend 或 3.2 s 兜底移除。
-  _titleCard() {
-    this.over.querySelectorAll('.iw-btc').forEach((e) => e.remove());
+  _makeTitleCard() {
     const letters = [...BOSS_NAME].map((c, i) => h('span', { style: { '--i': i } }, c));
     const el = h('div', { class: 'iw-btc' },
       h('div', { class: 'iw-btc__band' },
@@ -524,6 +523,31 @@ export class BossHud {
         h('div', { class: 'iw-btc__tags' }, h('div', { class: 'iw-btc__tag' }, h('i', { html: GLYPHS.swords }), 'BOSS BATTLE'), h('span', { class: 'iw-beta iw-btc__beta' }, 'PUBLIC BETA')),
         h('div', { class: 'iw-btc__name iw-display' }, letters),
         h('div', { class: 'iw-btc__epi' }, t(BOSS_EPITHET).toUpperCase())));
+    return el;
+  }
+
+  // 提前创建同一张真实标题卡并加载字体/完成布局；不触发intro状态、动画计时器或任何声音。
+  async prepareIntro({ isCurrent = () => true } = {}) {
+    if (!isCurrent()) return { cancelled: true };
+    const el = this._preparedTitle || (this._preparedTitle = this._makeTitleCard());
+    const nodes = [el, ...el.querySelectorAll('*')], styles = nodes.map(node => node.getAttribute('style'));
+    try {
+      for (const node of nodes) node.style.animation = 'none';
+      el.style.visibility = 'hidden'; el.style.pointerEvents = 'none'; this.over.appendChild(el);
+      const name = el.querySelector('.iw-btc__name');
+      const font = name && globalThis.getComputedStyle?.(name).font;
+      if (font && globalThis.document?.fonts?.load) await document.fonts.load(font, BOSS_NAME);
+      if (!isCurrent()) { if (this._preparedTitle === el) this._preparedTitle = null; return { cancelled: true }; }
+      const bounds = el.getBoundingClientRect();
+      return { titlePrepared: true, nodes: nodes.length, width: Math.round(bounds.width), height: Math.round(bounds.height) };
+    } finally {
+      el.remove(); nodes.forEach((node, index) => styles[index] === null ? node.removeAttribute('style') : node.setAttribute('style', styles[index]));
+    }
+  }
+
+  _titleCard() {
+    this.over.querySelectorAll('.iw-btc').forEach((e) => e.remove());
+    const el = this._preparedTitle || this._makeTitleCard(); this._preparedTitle = null;
     el.addEventListener('animationend', (e) => { if (e.target === el) el.remove(); });
     setTimeout(() => el.remove(), 3200);
     this.over.appendChild(el);

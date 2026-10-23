@@ -44,6 +44,12 @@ export function installMobile(game) {
     state.suspended = true; state.needsResume = true; game.mobileSuspended = true;
     if (game.hud) game.hud.paused = true;
     resetInput(); game.pause(); G.music?.pause?.(); G.audio?.ctx?.suspend?.().catch(() => {});
+    if (game._mobilePreparation || game._mobilePreparationError) {
+      // 准备中进入后台：取消后停止旧世界，回前台通过继续按钮安全返回菜单。
+      if (game._mobilePreparation) game._mobilePreparation.cancelled = true;
+      game._mobilePreparationError = true;
+      state.onlineExit = '场景准备已暂停，点击继续返回菜单。';
+    }
     // Android 后台不保证 WebSocket/计时器存活。本测试版主动离房，前台明确提示重新加入。
     if (G.net && !['offline', 'error'].includes(G.net.state)) {
       G.net.leave(); state.onlineExit = '应用进入后台，已退出联机房间。请重新加入；旧对局不自动恢复。';

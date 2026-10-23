@@ -6,10 +6,10 @@
 
 - 用户仓库：<https://github.com/gzbin7878at2016/inkwave>。
 - **最新工作分支：`codex/android-capacitor`。不要只拉main就开始开发。** main目前仍停在早期Android方案文档阶段，未合并本轮实现。
-- 本轮v1.0.10手机预热第二批功能提交为`0918cea`，已推送用户仓库；前一版源码`92d3292`。交付记录文档可有后续独立提交，以`git log`及远端HEAD为准；APK内嵌功能提交与`releases/android-build-info.json`对应。
-- 当前已可构建/侧载Android debug APK；最低Android10/API29，包名`com.demoink.inkwave`。test8新增[同一Wi-Fi上传日志](android/LOG-UPLOAD-test8.zh-CN.md)，真机上传已收到；已收到v1.0.9真机复测，最新v1.0.10继续处理[角色预热与开局准备](android/STARTUP-test10.zh-CN.md)。
-- 手机默认60帧目标、2倍高清、SMAA、自动降低清晰度关闭；几何预算low，阴影和泛光默认关闭。这里low不表示1倍渲染。
-- 固定高清已在真机日志确认；**稳定60帧未达成**。已收到v1.0.10 Boss日志：启动23.070秒、收尾41ms；Boss开场前准备19.879秒，其中8角色约16.200秒、Boss约2.413秒。首个衣服变体仍有1630ms长任务，6个无新增程序的角色仍等待9.009秒。下一批优先研究缓存命中快速准备/减少重复10ms等待，保持变体与画质；详细边界见test10说明。实战仅17条/16.920秒，FPS中位37，不能当作长期热机验收。
+- 本轮为v1.0.11手机加载与稳定帧耗；上一版功能源码0918cea，真机分析记录6920525。当前准确源码提交以Git及`releases/android-build-info.json`为准；交付文档可有后续独立提交。
+- 当前可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
+- 按用户最新优先级，手机默认目标改为30FPS（仍可手动30/60），固定2倍高清、SMAA、自动降低清晰度关闭，原对局人数不变；PC保留默认。v11一次性迁移帧率设置，不清档。
+- v10真机已确认Boss准备19.879秒，首衣服仍1630ms长任务；6个无新增程序角色仍等待9.009秒。v11按真实程序对象复用、约5ms预算让帧，移除缓存命中固定10ms等待；进度条覆盖角色、战斗效果、Boss登场/音效/小怪首绘和GPU完成等待。**真机稳定30帧及不再掉个位数尚待安装复测，不能把桌面软件渲染FPS当作达标证据。**
 - PC保留原渲染路径。不要为手机性能直接改共享QUALITY或PC地面着色器。
 
 ## 2. 目标、已完成事项与证据
@@ -22,7 +22,7 @@
 | GPU兼容 | 手机独立参数纹理和简化材质、失败降级/暂停、诊断导出 | Maleoon实际日志已无原地面shader失败；其他GPU仍需测 |
 | 清晰度与材质 | 1/1.5/2倍选项、SMAA/FXAA、ORM/烘焙遮蔽、墨迹边缘 | 仍是现有模型资产，不等同于商业手游美术品质 |
 | 固定高清 | 一次性迁移默认60/2倍，自动降分辨率可选且默认关 | 实际帧率随负载变化，不能承诺固定60 |
-| 性能与预热 | CPU九段、真实绘制排行、启动阶段/长任务、单网格角色串行准备 | v1.0.8/v1.0.9真机已定位长停顿；v1.0.10等待真机复测，稳定60帧未达成 |
+| 性能与预热 | CPU九段、真实绘制排行、启动/长任务、首次资源加载、100ms尖峰记录 | v10真机定位开局长等待；v11已做加载资源前置，等待真机稳定30帧复测 |
 
 最初问题已由test2手机日志定位：Maleoon920片元uniform上限256组，原地面数组本身超过预算，报too many uniforms。手机独立材质后约51～52组（保守合计），保留PC原材质；历史同环境PC三组GLSL哈希一致。新电脑无原环境基线时不能宣称做过同样的逐字节比较。
 
@@ -42,8 +42,9 @@ test5中用户选60/高清后，动态scale降到0.5，实际只有770×376。te
 | v1.0.8 | Git版本记录 | 局域网上传、固定下载入口和版本号 | [日志上传](android/LOG-UPLOAD-test8.zh-CN.md) |
 | v1.0.9 | 92d3292 | 关闭手机自动预载、逐对象启动预热 | [启动第一批](android/STARTUP-test9.zh-CN.md) |
 | v1.0.10 | 0918cea | 角色分步预热、准备互斥与手机房间就绪握手 | [启动第二批](android/STARTUP-test10.zh-CN.md) |
+| v1.0.11 | 本轮Git记录 | 真实进度、首次资源/战斗效果准备、缓存快路径与默认30帧 | [加载与稳定帧耗](android/LOADING-test11.zh-CN.md) |
 
-本轮交付版本为`v1.0.10` / versionCode10，归档为`releases/INKWAVE-android-test10-0918cea.apk`，21,087,357字节，源码干净。SHA-256为`ce4063dd65e08fab5f48d7a25280e4e36990a0278c53d1008019415745010b8b`；签名、354个内置网页资源、固定页及HTTP下载哈希核对均通过。完整记录在本机`releases/android-build-info.json`，已收到启动/Boss开局及短时实战日志，长期热机/多人/系统ANR尚未验收。
+本轮交付版本为`v1.0.11` / versionCode11，归档名`releases/INKWAVE-android-test11-<源码短提交>.apk`；最终大小、哈希、签名和资源核对见`releases/android-build-info.json`及v11交付记录。新包需要从干净的已推送提交构建，APK不入Git。
 
 当前电脑手机固定下载页为`http://192.168.0.109:8765/`，接收日志为`releases/logs/`；它们不通过Git同步。换电脑或局域网IP变化时按实际配置重新启动接收器并构建上传地址。
 APK与构建记录在releases中被忽略，不会随git clone下载。需要原包时单独复制并验证哈希，或在新电脑重新构建。
@@ -67,6 +68,10 @@ node tools/check-mobile-profiler.mjs
 node tools/check-mobile-character-warmup.mjs
 node tools/check-mobile-preparation.mjs
 node tools/check-net-preparation.mjs
+node tools/check-mobile-loading.mjs
+node tools/check-mobile-boss-preparation.mjs
+node tools/check-mobile-combat-preparation.mjs
+node tools/check-mobile-paint-preparation.mjs
 ```
 
 以上clone命令仅用于新目录；已有仓库不要重复clone覆盖。`--origin fork`主动将用户仓库命名为fork，方便与当前流程一致。npm ci以package-lock.json为准；不要为安装方便随意升级依赖。
@@ -179,8 +184,8 @@ HEAD与远端分支哈希应相同。认证、网络或远端拒绝时，明确�
 
 ## 9. 下一位开发者从哪里接
 
-1. 确认代码包含v1.0.10预热队列、准备期互斥和手机房间就绪握手，先阅读test10最新真机反馈；下一批优先减少缓存命中的重复编译等待/让帧。
-2. 本机已收到v1.0.10日志`INKWAVE-logs-20261023-165256-228604-0d19c279.json`。对比下一版时分开记录启动九段、角色最慢步骤、开局总等待；核对同签名、正确提交及固定2倍/SMAA。继续采集实际playing至少2～3分钟日志。退出菜单会重置profile上下文，应在对局内上传。
+1. 确认代码包含v1.0.11加载进度、真首绘/GPU fence、12小怪资源池和战斗效果准备，先阅读v11说明。
+2. 基线日志为v1.0.10的`INKWAVE-logs-20261023-165256-228604-0d19c279.json`；接收v11真机时核对30帧/固定2倍/SMAA、进度条后的100ms帧间隔尖峰、slowFrames CPU归因及新增程序。至少采集2～3分钟playing，并测试Boss出场、首开火/受击和小怪出现/死亡；再做长期热机。
 3. 按CPU分段和排行榜选择下一批单一目标：场景/远景裁剪或LOD、重复绘制、墨迹更新、UI/机器人更新等。排名靠前只表示优先调查，不等于已证实最耗GPU。
 4. 原项目部分道具已经合并/实例化，机器人感知也已有节流。先测再改，不能重复加已有机制或凭空估计帧率收益。
 5. 固定分辨率做同地图/路线/武器的前后对比；测试热机与对局开场/大招峰值。保持对局人数和命中判定，不靠降低玩法复杂度制造收益。

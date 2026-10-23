@@ -628,9 +628,16 @@ class HazardFX {
   // 加载时在地下生成各类预警实例，供渲染器提前编译以减少首招卡顿。
   warm() {
     for (const k of ['lane', 'beam', 'barrel']) { const m = this._take(k); m.position.set(0, -40, 0); }
-    const z = new Float32Array(REACH_N).fill(1);
-    this._ring('-1:warm', z).material.uniforms.uC.value.set(0, -40, 0);
-    this._fan('-1:warmfan', 0, -40, 0, 0, 1, () => 1);
+    if (!this._warmKeepers) {
+      const z = new Float32Array(REACH_N).fill(1);
+      const ring = this._ring('-1:warm', z), fan = this._fan('-1:warmfan', 0, -40, 0, 0, 1, () => 1);
+      ring.material.uniforms.uC.value.set(0, -40, 0);
+      if (globalThis.inkwaveMobile) {
+        // 手机预备模板常驻本局、始终隐藏，不进入真实招式缓存/命中遍历，保住shader和共享环属性。
+        this._per.delete('-1:warm'); this._per.delete('-1:warmfan');
+        ring.visible = fan.visible = false; this._warmKeepers = { ring, fan };
+      }
+    }
     return this.group;
   }
 
@@ -640,6 +647,8 @@ class HazardFX {
     for (const k in this.geo) this.geo[k].dispose();
     for (const k in this.pools) for (const m of this.pools[k].list) if (m.material !== this.beamMat && m.material !== this.barrelMat) m.material.dispose();
     for (const o of this._per.values()) { o.geometry.dispose(); o.material.dispose(); }
+    for (const o of Object.values(this._warmKeepers || {})) { o.geometry.dispose(); o.material.dispose(); }
+    this._warmKeepers = null;
     this.beamMat.dispose(); this.barrelMat.dispose();
   }
 }

@@ -12,7 +12,7 @@
 // keyed to; guests read it off the snapshots at their playback time.
 import * as THREE from 'three';
 import { G, emit, on, clamp } from '../core/ctx.js';
-import { BossModel } from './bossModel.js';
+import { BossModel, MobileCrabletPool } from './bossModel.js';
 import { BossNav, FLOOR_BODY } from './bossNav.js';
 import { BossHazards, movePhaseAt, moveTimes, beamAngle, HZ } from './bossHazards.js';
 import { BossBrain } from './bossBrain.js';
@@ -52,6 +52,7 @@ export class Boss {
     this.target = -1;                                   // nid it's focused on
     this.flashN = 0; this.weakN = 0; this.hurt = 0;
     this.crabs = new Map();                             // id → { id, x, y, z, yaw, hp, model, … }
+    this.crabletPool = globalThis.inkwaveMobile ? new MobileCrabletPool({ ink: G.teamColors[1], weak: G.teamColors[0], quality: G.settings?.quality }) : null;
     this.log = { moves: [], sent: 0, sentDmg: 0, recv: 0, recvDmg: 0 };   // audits (tools/net-test.mjs --mode boss)
     this._spawnPoint();
     // pseudo attacker for squidkid damage ('damage' / 'splatted' events, death cam, kill feed)
@@ -445,12 +446,12 @@ export class Boss {
     for (const [id, c] of this.crabs) {
       if (!c.model) {
         emit('boss:crablet', { phase: 'spawn', pos: new THREE.Vector3(c.x, c.y + 0.3, c.z) });
-        try { c.model = BossModel.makeCrablet({ ink: G.teamColors[1], weak: G.teamColors[0], quality: G.settings?.quality }); G.scene.add(c.model.root); } catch (e) { console.warn('[boss] crablet', e); c.model = { root: new THREE.Group(), update() {}, pop() {}, dispose() {} }; }
+        try { c.model = this.crabletPool?.acquire() || BossModel.makeCrablet({ ink: G.teamColors[1], weak: G.teamColors[0], quality: G.settings?.quality }); G.scene.add(c.model.root); } catch (e) { console.warn('[boss] crablet', e); c.model = { root: new THREE.Group(), update() {}, pop() {}, dispose() {} }; }
       }
       const r = c.model.root;
       r.position.set(c.x, c.y, c.z); r.rotation.y = c.yaw;
       c.model.update(dt, { speed: c.speed || 0, turn: 0, dead: c.dead });
-      if (c.dead) { c.popT = (c.popT || 0) + dt; if (c.popT > 1.2) { c.model.dispose?.(); r.removeFromParent(); this.crabs.delete(id); } }
+      if (c.dead) { c.popT = (c.popT || 0) + dt; if (c.popT > 1.2) { if (!this.crabletPool?.release(c.model)) c.model.dispose?.(); r.removeFromParent(); this.crabs.delete(id); } }
     }
   }
 
@@ -531,8 +532,9 @@ export class Boss {
   // 退出对局时撤下模型和危险区并清理事件绑定，避免下一局仍收到旧 Boss 的回调。
   dispose() {
     this.unsubs.forEach((u) => u());
-    for (const c of this.crabs.values()) { c.model?.dispose?.(); c.model?.root?.removeFromParent(); }
+    for (const c of this.crabs.values()) { if (!this.crabletPool?.release(c.model)) c.model?.dispose?.(); c.model?.root?.removeFromParent(); }
     this.crabs.clear();
+    this.crabletPool?.dispose();
     this.hz.dispose();
     this.model.dispose();
     if (G.boss === this) G.boss = null;

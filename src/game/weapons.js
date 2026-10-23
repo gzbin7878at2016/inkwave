@@ -1040,6 +1040,23 @@ export class Projectiles {
     return m;
   }
 
+  // 手机加载期仅建立真实长期池和瞄准线，不发射、不记网络事件、不改变弹道列表。
+  mobilePreparationMeshes(actors = []) {
+    this.arcLine.computeLineDistances();
+    if (!this.beamPool.length) this.beamPool.push(this._beamMesh());
+    const result = [this.blobs, this.arcLine, this.arcRing, ...this.beamPool];
+    for (const actor of actors) if (actor.weapon?.kind === 'charger') {
+      let sight = this.sights.get(actor);
+      if (!sight) {
+        sight = new THREE.Mesh(this.ribbonGeo, makeRibbonMaterial(1)); sight.visible = false;
+        sight.frustumCulled = false; sight.renderOrder = 4; sight.onBeforeRender = ribbonGate;
+        this.sights.set(actor, sight); this.scene.add(sight);
+      }
+      result.push(sight);
+    }
+    return result;
+  }
+
   // 【枪口解算】优先角色骨骼枪口;举枪未完成时按 aimReady 权重向"瞄准姿态枪口"插值
   //   (首发不会从腰间出弹);位置非法/离胸口太远/视线被挡时,退化到"胸口+瞄准方向 0.3 m"的保底点。
   // Where the muzzle is — or, while the gun is still coming up to the aim pose (the first shot of a burst fires on

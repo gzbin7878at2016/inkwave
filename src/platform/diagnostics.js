@@ -44,7 +44,7 @@ export function installDiagnostics(nativePlugin) {
   const beginStage = (name, detail = {}) => {
     const begin = performance.now();
     return () => {
-      const stage = { name, startMs: Math.round(begin - started), durationMs: Math.round(performance.now() - begin), ...detail };
+      const stage = { ...detail, name, startMs: Math.round(begin - started), durationMs: Math.round(performance.now() - begin) };
       const stages = current.startup.completedAtMs === null ? current.startup.stages : current.responsiveness.operations;
       stages.push(stage);
       if (stages.length > (current.startup.completedAtMs === null ? 256 : 40)) stages.shift();
@@ -209,7 +209,7 @@ export function installDiagnostics(nativePlugin) {
     current: { ...current, scene: sceneSnapshot(), programs: programsSnapshot(), performanceSamples: globalThis.__inkwave?.mobile?.state?.samples?.slice(-600) || [], paintProbe: probe ? paintProbe() : undefined },
     previous,
   });
-  const manager = { record, attachRenderer, report, persist, beginStage, startupCheckpoint,
+  const manager = { record, attachRenderer, report, persist, beginStage, startupCheckpoint, shaderFailureCount: () => current.shaderFailures.length,
     finishStartup() { startupCheckpoint('interactive'); current.startup.completedAtMs = Math.round(performance.now() - started); persist(); }, tick() {
     const now = performance.now(); if (now - lastTick < 5000) return; lastTick = now;
     // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串。
