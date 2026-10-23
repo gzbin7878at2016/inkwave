@@ -4,6 +4,8 @@
 
 <h1 align="center">INKWAVE</h1>
 
+安卓开发请先阅读[开发进度与跨电脑接续指南](docs/DEVELOPMENT-HANDOFF.zh-CN.md)。最新工作分支：`codex/android-capacitor`；每批验证后立即中文提交并推送，规则见[AGENTS.md](AGENTS.md)。
+
 <p align="center">
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
