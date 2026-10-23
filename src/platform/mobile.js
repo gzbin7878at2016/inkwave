@@ -18,8 +18,10 @@ export function installMobile(game) {
   const panel = document.createElement('div'); panel.id = 'mobile-panel';
   panel.innerHTML = `<button data-mobile="practice">触屏练习</button><button data-mobile="tune">触控设置</button><button data-mobile="stats">诊断</button><button data-mobile="export">复制报告</button><span></span>`;
   document.body.append(panel);
-  const logButton = document.getElementById('mobile-log-export');
-  if (logButton) panel.append(logButton);
+  for (const id of ['mobile-log-export', 'mobile-log-upload']) {
+    const logButton = document.getElementById(id);
+    if (logButton) panel.append(logButton);
+  }
   const dialog = document.createElement('div'); dialog.id = 'mobile-dialog'; dialog.hidden = true;
   document.body.append(dialog);
   const info = panel.querySelector('span');

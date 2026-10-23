@@ -7,7 +7,7 @@
 - 用户仓库：<https://github.com/gzbin7878at2016/inkwave>。
 - **最新工作分支：`codex/android-capacitor`。不要只拉main就开始开发。** main目前仍停在早期Android方案文档阶段，未合并本轮实现。
 - 编写本文前的开发分支HEAD：`46ad962`；最新功能提交：`b484104`（手机性能定位第一批）。本文自身的提交号由Git记录，后续以远端分支HEAD为准，不把这个历史哈希当作永远最新。
-- 当前已可构建/侧载Android debug APK；最低Android10/API29，包名`com.demoink.inkwave`。
+- 当前已可构建/侧载Android debug APK；最低Android10/API29，包名`com.demoink.inkwave`。test8新增[同一Wi-Fi上传日志](android/LOG-UPLOAD-test8.zh-CN.md)，电脑接收器保存到`releases/logs/`；真机上传仍待验收，日志可用于继续test7性能分析。
 - 手机默认60帧目标、2倍高清、SMAA、自动降低清晰度关闭；几何预算low，阴影和泛光默认关闭。这里low不表示1倍渲染。
 - 固定高清已在test6真机日志确认；**稳定60帧未达成**。test7为低频性能诊断包，等待用户新真机日志，再选择第二批热点优化。
 - PC保留原渲染路径。不要为手机性能直接改共享QUALITY或PC地面着色器。

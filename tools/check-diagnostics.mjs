@@ -22,7 +22,7 @@ try {
   assert.ok(baseline.current.scene.profile.samples > 0);
   assert.ok(baseline.current.scene.profile.topCalls.some(row => row.calls > 0));
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 7);
+  assert.equal(baseline.current.build.versionCode, 8);
   assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);
@@ -61,6 +61,25 @@ try {
   assert.ok(exported.current.events.some(e => e.category === 'console-warn' && e.detail.includes('diagnostics-console-warning-test')));
   assert.ok(exported.current.events.some(e => e.category === 'fetch-http-error'));
   console.log('通过：日志文件下载、JSON解析、警告与资源HTTP错误');
+
+  // 使用真实接收器验证按钮成功回执和磁盘内容，再断网验证失败可重试。
+  const logDir = resolve('releases/logs');
+  await mkdir(logDir, { recursive: true });
+  const beforeUpload = new Set(await readdir(logDir));
+  await page.click('#mobile-log-upload');
+  await page.waitForFunction(() => document.querySelector('#mobile-log-status')?.textContent.includes('上传成功'), { timeout: 30000 });
+  const savedName = (await readdir(logDir)).find(f => !beforeUpload.has(f) && f.endsWith('.json'));
+  assert.ok(savedName, '上传日志必须真实保存到电脑');
+  const uploaded = JSON.parse(await readFile(resolve(logDir, savedName), 'utf8'));
+  assert.equal(uploaded.format, exported.format);
+  assert.ok(uploaded.current.shaderFailures.length > 0);
+  assert.ok(uploaded.current.events.some(e => e.category === 'user-upload'));
+  await page.setRequestInterception(true);
+  page.on('request', r => r.method() === 'POST' && r.url().endsWith('/api/logs') ? r.abort() : r.continue());
+  await page.click('#mobile-log-upload');
+  await page.waitForFunction(() => document.querySelector('#mobile-log-status')?.textContent.includes('上传失败'), { timeout: 30000 });
+  assert.equal(await page.$eval('#mobile-log-upload', b => b.disabled), false);
+  console.log('通过：上传按钮真实落盘、错误回执、失败后恢复可重试');
 
   // 一次迁移后允许玩家改回省电/30帧；重启不能每次强制覆盖选择。
   await page.evaluate(() => __inkwave._setSettings({ fpsCap: 30, mobileVisual: 'battery', mobileDynamicResolution: true }));

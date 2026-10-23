@@ -27,6 +27,7 @@ const stamp = {
   sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
   trackedChanges: !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).trim(),
   diagnostics: true,
+  logUploadUrl: process.env.INKWAVE_LOG_UPLOAD_URL || '',
 };
 // 所有入口保留 src 层级；共享块也放在两层目录，兼容既有 ../../assets URL。
 await build({

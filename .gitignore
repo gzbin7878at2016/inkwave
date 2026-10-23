@@ -10,6 +10,7 @@ android/app/src/main/assets/capacitor.plugins.json
 *.keystore
 *.jks
 node_modules/
+tools/__pycache__/
 .vercel/
 .wrangler/
 .env*

@@ -1,5 +1,30 @@
 apply plugin: 'com.android.application'
 
+// 接收地址仅从本机构建环境读取，不把电脑IP硬编码进源码；未配置时禁止上传。
+def logUploadUrl = System.getenv('INKWAVE_LOG_UPLOAD_URL') ?: ''
+def logUploadHost = ''
+if (logUploadUrl) {
+    def endpoint = new URI(logUploadUrl)
+    def octets = (endpoint.host ?: '').tokenize('.')
+    def ipv4 = octets.size() == 4 && octets.every { it ==~ /\d{1,3}/ && it.toInteger() <= 255 }
+    def lan = ipv4 && (octets[0] == '10' || (octets[0] == '192' && octets[1] == '168') || (octets[0] == '172' && octets[1].toInteger() in 16..31))
+    if (!lan || endpoint.scheme != 'http' || endpoint.port != 8765 || endpoint.path != '/api/logs' || endpoint.userInfo || endpoint.query || endpoint.fragment) {
+        throw new GradleException('INKWAVE_LOG_UPLOAD_URL必须为http://局域网IPv4:8765/api/logs')
+    }
+    logUploadHost = endpoint.host
+}
+def logUploadRes = layout.buildDirectory.dir('generated/res/logUpload')
+def generateLogUploadSecurity = tasks.register('generateLogUploadSecurity') {
+    inputs.property('host', logUploadHost)
+    outputs.dir(logUploadRes)
+    doLast {
+        def xml = new File(logUploadRes.get().asFile, 'xml/log_upload_security.xml')
+        xml.parentFile.mkdirs()
+        def domain = logUploadHost ? "<domain-config cleartextTrafficPermitted=\"true\"><domain includeSubdomains=\"false\">${logUploadHost}</domain></domain-config>" : ''
+        xml.text = "<?xml version=\"1.0\" encoding=\"utf-8\"?><network-security-config><base-config cleartextTrafficPermitted=\"false\"/>${domain}</network-security-config>"
+    }
+}
+
 android {
     namespace = "com.demoink.inkwave"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +32,9 @@ android {
         applicationId "com.demoink.inkwave"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 7
-        versionName "1.1.0-android-test.7-profile"
+        versionCode 8
+        versionName "1.1.0-android-test.8-log-upload"
+        resValue 'string', 'log_upload_url', logUploadUrl
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -22,7 +48,9 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    sourceSets.main.res.srcDir(logUploadRes)
 }
+tasks.named('preBuild').configure { dependsOn(generateLogUploadSecurity) }
 
 repositories {
     flatDir{
