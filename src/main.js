@@ -26,6 +26,7 @@ import { mapTheme,
   MAPS, DIFFICULTY, PLAYER, PROGRESSION, VERSION, MATCH, OFFLINE_MAPS, mapOfflineOk, mapNoBots, mapBossOk,
 } from './config.js';
 import { warmMobileScene, warmMobilePostprocess } from './platform/mobileStartup.js';
+import { prepareMobileMaterialPrograms } from './platform/mobileWarmup.js';
 import { Level } from './world/level.js';
 import { MAP_LAYOUTS } from './world/maps.js';
 import { PaintSystem } from './world/paint.js';
@@ -56,6 +57,8 @@ const params = new URLSearchParams(location.search);
 // solo offline (never with bots); without it such a stage only ever loads for an online match
 const DEV_STAGE = params.has('devstage');
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+// 手机预热在rAF之后再排普通任务，避免Promise微任务在同一帧绘制前继续吞掉主线程。
+const nextMobileFrame = () => new Promise(resolve => document.hidden ? setTimeout(resolve, 0) : requestAnimationFrame(() => setTimeout(resolve, 0)));
 const REFRESH_RATES = [30, 48, 50, 60, 75, 90, 100, 120, 144, 165, 240]; // common display rates (Hz)
 
 // ------------------------------------------------------------------------------------------ persistence
@@ -245,12 +248,12 @@ class Game {
         this._skipRender = true;
         for (let i = 0; i < 2; i++) {
           const done = diagnostics?.beginStage('startup-simulation-prime', { frame: i + 1 });
-          try { this._frame(1 / 60); } finally { done?.(); }
-          await nextFrame();
+          try { this._frame(1 / 60, 'startup-prime'); } finally { done?.(); }
+          await nextMobileFrame();
         }
       } finally { this._skipRender = skipRender; }
-      await warmMobilePostprocess(scene, G.renderer, this.R.composer, nextFrame, diagnostics);
-      await warmMobileScene(scene, () => this.R.render(), nextFrame, diagnostics);
+      await warmMobilePostprocess(scene, G.renderer, this.R.composer, nextMobileFrame, diagnostics);
+      await warmMobileScene(scene, () => this.R.render(), nextMobileFrame, diagnostics);
       for (const mesh of this._warmMeshes || []) G.scene.remove(mesh);
       this._warmMeshes?.[0]?.geometry.dispose(); this._warmMeshes = null;
     } else {
@@ -264,7 +267,7 @@ class Game {
     // 手机已逐批触发首次资源使用，只做1次完整帧收尾；PC仍保留原3帧初始化。
     for (let i = 0; i < (window.inkwaveMobile ? 1 : 3); i++) {
       const finish = diagnostics?.beginStage('startup-full-frame', { frame: i + 1 });
-      try { this._frame(1 / 60); } finally { finish?.(); }
+      try { this._frame(1 / 60, window.inkwaveMobile ? 'startup-frame' : null); } finally { finish?.(); }
       await nextFrame();
     }
     await progress(1, 'Ready!');
@@ -792,68 +795,95 @@ class Game {
     for (const m of [this.levelMat, this.grateMat]) setLevelLamps(m, G.level, k);
   }
 
+  // 手机准备从入口立即互斥，防止淡入/换图等待期间重复点击并发重建世界。
+  _beginMobilePreparation() {
+    if (!window.inkwaveMobile) return null;
+    if (this._mobilePreparation) return false;
+    const token = { cancelled: false };
+    token.done = new Promise(resolve => { token.finish = resolve; });
+    this._mobilePreparation = token;
+    this.input.touch?.setEnabled(false); this.input.touch?.clear();
+    return token;
+  }
+  _isMobilePreparationCurrent(token) { return !token || (this._mobilePreparation === token && !token.cancelled && (!token.networkMatch || G.net?.match === token.networkMatch)); }
+  _finishMobilePreparation(token) {
+    if (!token) return;
+    if (this._mobilePreparation === token) this._mobilePreparation = null;
+    token.finish();
+  }
+
   async startMatch(o = {}) {
-    const practice = !!o.practice;
-    const opts = {
-      mapId: o.mapId === 'sunset' ? 'tidewater' : (o.mapId || this.mapDef.id),
-      time: o.mapId === 'sunset' ? 'dusk' : (o.time || this.time || 'day'),
-      difficulty: o.difficulty || this.settings.difficulty,
-      // Zone Control / Boss Battle from the stage select's MODE; practice is always turf
-      mode: o.practice ? 'turf' : o.mode === 'zones' ? 'zones' : o.mode === 'boss' ? 'boss' : 'turf',
-    };
-    opts.duration = opts.mode === 'zones' ? (o.duration || ZONES.duration) : opts.mode === 'boss' ? (o.duration || BOSS_MODE.duration)
-      : Math.min(MATCH.maxDuration, o.duration || this.settings.matchLength || MATCH.defaultDuration);
-    if (!practice) this.lastMatchOpts = opts;
-    G.audio?.init?.();
-    G.audio?.duck?.(1, 0.01);   // a new stage picked from the practice pause menu starts un-ducked
-    this.input.requestLock();
-    this.menus?.show(null);
-    await this._fade(1, 350);
-    G.music?.stop?.(0.3); this._musicTrack = null;
-    // start buffering this round's match song and the final-minute song while the world loads
-    G.music?.preload?.('battle'); if (!practice) G.music?.preload?.('battle_final');
-    this.showcase.hide();
-    if (this.match) this.match.dispose();
-    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
-    let map = MAPS.find((m) => m.id === opts.mapId) || MAPS[0];
-    // offline never plays an online-only stage (the menus don't offer one; a stray ?autostart / api call falls back)
-    if (!mapOfflineOk(map.id) && !DEV_STAGE) {
-      console.warn(`[inkwave] ${map.name} is online only — offline match on ${OFFLINE_MAPS[0].name} instead`);
-      this.menus?.toast?.(`${map.name} is online only`);
-      map = OFFLINE_MAPS[0];
-    }
-    if (opts.mode === 'boss' && !mapBossOk(map.id)) opts.mode = 'turf';
-    await this._buildWorld(map, opts.mode);   // no-op when this stage (+ mode variant) is already built
-    const theme = mapTheme(map, opts.time);
-    this.time = opts.time === 'dusk' ? 'dusk' : 'day';
-    if (theme !== this.theme) {
-      this.theme = theme;
-      G.env.setTheme?.(theme);
-      if (G.env.envMap) G.scene.environment = G.env.envMap;
-      G.fx.setLighting?.(G.env.getSkyColors?.());
-    }
-    this._applyNight();   // after any stage rebuild too (new prop kit / decor)
-    this.mapDef = map;
-    this._setPalette(this._pickPalette());
-    const m = (this.match = G.match = new Match({
-      attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: this.profile.weapon || 'shooter', sub: this._subFor(this.profile.weapon), special: this._specialFor(this.profile.weapon),
-      playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-      autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
-    }));
-    m.setup();
-    await this._warmCharacters(m);
-    this.minimap.setViewerTeam(0);
-    G.mode = 'match';
-    this.hud?.setVisible(false);
-    this.hudPrompt = null; this._hintT = 0; this._hints = {};
-    this.hud?.setPractice?.(practice);
-    m.start();
-    if (practice) {
-      // no intro fly-over: straight in, special charged so it can be tried right away
-      if (m.local) m.local.special = m.local.specialCost();
-      this.hud?.setVisible(true);
-    }
-    this._fade(0, 500);
+    const preparation = this._beginMobilePreparation();
+    if (preparation === false) return false;
+    try {
+      const practice = !!o.practice;
+      const opts = {
+        mapId: o.mapId === 'sunset' ? 'tidewater' : (o.mapId || this.mapDef.id),
+        time: o.mapId === 'sunset' ? 'dusk' : (o.time || this.time || 'day'),
+        difficulty: o.difficulty || this.settings.difficulty,
+        // Zone Control / Boss Battle from the stage select's MODE; practice is always turf
+        mode: o.practice ? 'turf' : o.mode === 'zones' ? 'zones' : o.mode === 'boss' ? 'boss' : 'turf',
+      };
+      opts.duration = opts.mode === 'zones' ? (o.duration || ZONES.duration) : opts.mode === 'boss' ? (o.duration || BOSS_MODE.duration)
+        : Math.min(MATCH.maxDuration, o.duration || this.settings.matchLength || MATCH.defaultDuration);
+      if (!practice) this.lastMatchOpts = opts;
+      G.audio?.init?.();
+      G.audio?.duck?.(1, 0.01);   // a new stage picked from the practice pause menu starts un-ducked
+      this.input.requestLock();
+      this.menus?.show(null);
+      await this._fade(1, 350);
+      if (!this._isMobilePreparationCurrent(preparation)) return false;
+      G.music?.stop?.(0.3); this._musicTrack = null;
+      // start buffering this round's match song and the final-minute song while the world loads
+      G.music?.preload?.('battle'); if (!practice) G.music?.preload?.('battle_final');
+      this.showcase.hide();
+      if (this.match) this.match.dispose();
+      G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+      let map = MAPS.find((m) => m.id === opts.mapId) || MAPS[0];
+      // offline never plays an online-only stage (the menus don't offer one; a stray ?autostart / api call falls back)
+      if (!mapOfflineOk(map.id) && !DEV_STAGE) {
+        console.warn(`[inkwave] ${map.name} is online only — offline match on ${OFFLINE_MAPS[0].name} instead`);
+        this.menus?.toast?.(`${map.name} is online only`);
+        map = OFFLINE_MAPS[0];
+      }
+      if (opts.mode === 'boss' && !mapBossOk(map.id)) opts.mode = 'turf';
+      const worldDone = globalThis.inkwaveDiagnostics?.beginStage('match-world-prepare', { map: map.id, mode: opts.mode });
+      try { await this._buildWorld(map, opts.mode); } finally { worldDone?.(); }
+      if (!this._isMobilePreparationCurrent(preparation)) return false;
+      const theme = mapTheme(map, opts.time);
+      this.time = opts.time === 'dusk' ? 'dusk' : 'day';
+      if (theme !== this.theme) {
+        this.theme = theme;
+        G.env.setTheme?.(theme);
+        if (G.env.envMap) G.scene.environment = G.env.envMap;
+        G.fx.setLighting?.(G.env.getSkyColors?.());
+      }
+      this._applyNight();   // after any stage rebuild too (new prop kit / decor)
+      this.mapDef = map;
+      this._setPalette(this._pickPalette());
+      const m = (this.match = G.match = new Match({
+        attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: this.profile.weapon || 'shooter', sub: this._subFor(this.profile.weapon), special: this._specialFor(this.profile.weapon),
+        playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
+        autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
+      }));
+      const setupDone = globalThis.inkwaveDiagnostics?.beginStage('match-setup', { map: map.id, practice });
+      try { m.setup(); } finally { setupDone?.(); }
+      await this._warmCharacters(m);
+      if (!this._isMobilePreparationCurrent(preparation) || (preparation && this.match !== m)) return false;
+      this.minimap.setViewerTeam(0);
+      G.mode = 'match';
+      this.hud?.setVisible(false);
+      this.hudPrompt = null; this._hintT = 0; this._hints = {};
+      this.hud?.setPractice?.(practice);
+      m.start();
+      if (practice) {
+        // no intro fly-over: straight in, special charged so it can be tried right away
+        if (m.local) m.local.special = m.local.specialCost();
+        this.hud?.setVisible(true);
+      }
+      this._fade(0, 500);
+      return true;
+    } finally { this._finishMobilePreparation(preparation); }
   }
 
   _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
@@ -907,47 +937,98 @@ class Game {
   // ---- online (src/net/session.js drives these) -----------------------------------------------------------------
   // Build the host's match: same stage / time / palette / roster on every client; the intro starts on netMatchGo.
   async startNetMatch(cfg, nm) {
-    G.audio?.init?.();
-    this.menus?.show(null);
-    await this._fade(1, 350);
-    G.music?.stop?.(0.3); this._musicTrack = null;
-    this.showcase.hide();
-    if (this.match) this.match.dispose();
-    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
-    const map = MAPS.find((m) => m.id === cfg.map) || MAPS[0];
-    await this._buildWorld(map, cfg.mode);   // no-op when this stage (+ mode variant) is already built
-    const theme = mapTheme(map, cfg.time);
-    this.time = cfg.time === 'dusk' ? 'dusk' : 'day';
-    if (theme !== this.theme) {
-      this.theme = theme;
-      G.env.setTheme?.(theme);
-      if (G.env.envMap) G.scene.environment = G.env.envMap;
-      G.fx.setLighting?.(G.env.getSkyColors?.());
-    }
-    this._applyNight();
-    this.mapDef = map;
-    this._setPalette(this.settings.colorblind ? COLORBLIND_PALETTE : TEAM_PALETTES[cfg.palette] || TEAM_PALETTES[0]);
-    const m = (this.match = G.match = new Match({
-      attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-      roster: cfg.roster, myId: G.net.myId, host: G.net.isHost, autopilot: params.has('autopilot'),
-    }));
-    m.setup();
-    await this._warmCharacters(m);   // before 'ready': nobody starts until every shader a squidkid can use is compiled
-    nm.bind(m);
-    this.lastMatchOpts = null;
-    this.minimap.setViewerTeam(m.local ? m.local.team : 0);
-    G.mode = 'match';
-    this.hud?.setVisible(false);
-    this.hudPrompt = null; this._hintT = 0; this._hints = {};
-    // hold on the stage (not black) while the others finish loading
-    if (m.local) { this.rig.follow(m.local, true); this.rig.yaw = m.local.team === 0 ? 0 : Math.PI; }
-    this.rig.dioFlip = !!(m.local && m.local.team === 1);
-    this._fade(0, 450);
+    const preparation = this._beginMobilePreparation();
+    if (preparation === false) return false;
+    if (preparation) preparation.networkMatch = nm;
+    try {
+      G.audio?.init?.();
+      this.menus?.show(null);
+      await this._fade(1, 350);
+      if (!this._isMobilePreparationCurrent(preparation)) return false;
+      G.music?.stop?.(0.3); this._musicTrack = null;
+      this.showcase.hide();
+      if (this.match) this.match.dispose();
+      G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+      const map = MAPS.find((m) => m.id === cfg.map) || MAPS[0];
+      const worldDone = globalThis.inkwaveDiagnostics?.beginStage('match-world-prepare', { map: map.id, mode: cfg.mode, online: true });
+      try { await this._buildWorld(map, cfg.mode); } finally { worldDone?.(); }
+      if (!this._isMobilePreparationCurrent(preparation)) return false;
+      const theme = mapTheme(map, cfg.time);
+      this.time = cfg.time === 'dusk' ? 'dusk' : 'day';
+      if (theme !== this.theme) {
+        this.theme = theme;
+        G.env.setTheme?.(theme);
+        if (G.env.envMap) G.scene.environment = G.env.envMap;
+        G.fx.setLighting?.(G.env.getSkyColors?.());
+      }
+      this._applyNight();
+      this.mapDef = map;
+      this._setPalette(this.settings.colorblind ? COLORBLIND_PALETTE : TEAM_PALETTES[cfg.palette] || TEAM_PALETTES[0]);
+      const m = (this.match = G.match = new Match({
+        attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
+        roster: cfg.roster, myId: G.net.myId, host: G.net.isHost, autopilot: params.has('autopilot'),
+      }));
+      const setupDone = globalThis.inkwaveDiagnostics?.beginStage('match-setup', { map: map.id, online: true });
+      try { m.setup(); } finally { setupDone?.(); }
+      await this._warmCharacters(m);   // before 'ready': nobody starts until every shader a squidkid can use is compiled
+      if (!this._isMobilePreparationCurrent(preparation) || (preparation && this.match !== m)) return false;
+      nm.bind(m);
+      this.lastMatchOpts = null;
+      this.minimap.setViewerTeam(m.local ? m.local.team : 0);
+      G.mode = 'match';
+      this.hud?.setVisible(false);
+      this.hudPrompt = null; this._hintT = 0; this._hints = {};
+      // hold on the stage (not black) while the others finish loading
+      if (m.local) { this.rig.follow(m.local, true); this.rig.yaw = m.local.team === 0 ? 0 : Math.PI; }
+      this.rig.dioFlip = !!(m.local && m.local.team === 1);
+      this._fade(0, 450);
+      return true;
+    } finally { this._finishMobilePreparation(preparation); }
   }
   // Compile every shader variant a squidkid can use this match (all detail tiers, their cross-fades, squid form,
   // weapons) and build every kid's tier meshes while the screen is still faded out, so none of it lands mid-match.
   // Programs are shared, so after the first kid of each weapon the rest are a few ms each.
   async _warmCharacters(m) {
+    if (window.inkwaveMobile) {
+      const diagnostics = globalThis.inkwaveDiagnostics;
+      const finish = diagnostics?.beginStage('match-character-warm-total', { actors: m.actors.length, boss: !!m.boss });
+      try {
+        // 不使用8秒竞速提前放行：未完成的预热不能泄漏到实战帧中。
+        for (let index = 0; index < m.actors.length; index++) {
+          if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
+          const actor = m.actors[index], done = diagnostics?.beginStage('match-character-warm', { actor: index, weapon: actor.weaponId });
+          try { await actor.character?.warmAll?.(); }
+          catch (error) { console.warn('[inkwave] warm', error); }
+          finally { done?.(); }
+          await nextMobileFrame();
+        }
+        if (m.boss && this.match === m && this._isMobilePreparationCurrent(this._mobilePreparation)) {
+          await m.boss.model.ready;
+          if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
+          const meshes = [];
+          for (const root of m.boss.warm()) root.traverse(object => { if (object.isMesh || object.isLine || object.isPoints) meshes.push(object); });
+          for (const mesh of meshes) {
+            if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
+            const detail = { name: mesh.name || mesh.type }, done = diagnostics?.beginStage('match-boss-warm', detail);
+            const renderer = G.renderer, target0 = renderer.getRenderTarget(), before = renderer.info.programs.length;
+            try {
+              // compile会遍历隐藏子树；使用单个代理，且与实战相同的HDR目标准备变体。
+              const proxy = mesh.clone(false); proxy.visible = true; proxy.frustumCulled = false;
+              let pending;
+              try { renderer.setRenderTarget(this.R.composer.readBuffer); pending = renderer.compileAsync(proxy, G.camera, G.scene); }
+              finally { renderer.setRenderTarget(target0); }
+              await pending;
+              if (this.match !== m || !this._isMobilePreparationCurrent(this._mobilePreparation)) return;
+              detail.programsPrepared = prepareMobileMaterialPrograms(renderer, mesh.material);
+              detail.programsAdded = renderer.info.programs.length - before;
+            } catch (error) { console.warn('[inkwave] boss warm', error); }
+            finally { done?.(); }
+            await nextMobileFrame();
+          }
+        }
+      } finally { finish?.(); }
+      return;
+    }
     const jobs = m.actors.map((a) => a.character?.warmAll ? Promise.resolve(a.character.warmAll()).catch((e) => console.warn('[inkwave] warm', e)) : null).filter(Boolean);
     if (m.boss) jobs.push(Promise.resolve(m.boss.model.ready).then(() => Promise.all(m.boss.warm().map((o) => G.renderer.compileAsync(o, G.camera, G.scene)))).catch((e) => console.warn('[inkwave] boss warm', e)));
     if (jobs.length) await Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 8000))]);   // never hang a load
@@ -1031,8 +1112,12 @@ class Game {
     G.music?.resume?.();
   }
   async quitToMenu(screen = 'main') {
+    const preparation = this._mobilePreparation;
+    if (preparation) preparation.cancelled = true;
     clearTimeout(this._netEndT);
     if (G.net && G.net.state !== 'offline' && G.net.state !== 'error') G.net.leave();
+    // 取消后等待正在进行的建造/编译安全退出，旧任务不能覆盖新的菜单演示世界。
+    if (preparation) await preparation.done;
     this.input.exitLock();
     this.menus?.show(null);
     await this._fade(1, 350);
@@ -1198,6 +1283,10 @@ class Game {
     this._lastTs = ts;
     this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());
     if (this.frozen || this._building || this.mobileSuspended) return;
+    if (this._mobilePreparation) {
+      // 分批预热期间保持联网心跳，但不让模拟/绘制并发修改正在准备的角色。
+      G.net?.update?.(dt); this.input.endFrame(); return;
+    }
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
@@ -1255,8 +1344,11 @@ class Game {
   // 【一帧的全部工作】boot() 结束后,游戏从此只剩这一函数的循环往复。流水线:
   // 输入轮询 → 网络 → 比赛模拟(帧太慢自动拆 2 个子步,物理不跳步)→ 弹道/副武器/大招 →
   // 特效/环境音/相机跟随 → 渲染出图。dt 全程参与换算。
-  _frame(dt) {
+  _frame(dt, diagnosticPrefix = null) {
     const tA = performance.now();
+    const diagnostics = diagnosticPrefix ? globalThis.inkwaveDiagnostics : null;
+    let endStage = diagnostics?.beginStage(`${diagnosticPrefix}-input`);
+    const traceStage = diagnostics ? name => { endStage?.(); endStage = diagnostics.beginStage(`${diagnosticPrefix}-${name}`); } : null;
     const profile = this.mobile?.profile; profile?.begin(tA);
     G.renderer.info.reset();
     G.time += dt;
@@ -1265,6 +1357,7 @@ class Game {
     this._padMenus();
     G.net?.update?.(dt);
     profile?.mark(); // 输入、诊断与网络
+    traceStage?.('simulation');
     const m = this.match;
     // the online lobby / hub stand in their own full-frame set (showcase): the attract match behind them is neither
     // simulated nor drawn while it's covered — it resumes exactly where it was when the set fades away
@@ -1278,6 +1371,7 @@ class Game {
       else if (m.state === 'playing' && m.local?.alive && this.rig.mode !== 'follow' && this.rig.mode !== 'path') this.rig.follow(m.local, true);
     }
     profile?.mark(); // 权威模拟、控制器与弹道
+    traceStage?.('effects');
     if (!m || !m.paused) G.fx.update(dt, G.camera);
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
     if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
@@ -1291,10 +1385,12 @@ class Game {
       fxU.uDesat.value *= k; fxU.uFlood.value.w = k > 0.02 ? fxU.uFlood.value.w * k : 0;
     }
     profile?.mark(); // 特效
+    traceStage?.('environment');
     G.env.update?.(dt, G.camera);
     this.decor.update(dt);
     this.props?.update?.(dt, G.time);
     profile?.mark(); // 环境、装饰与道具
+    traceStage?.('camera');
     // map diorama: held map key during live play (or while waiting to respawn) swoops the view overhead — but not while
     // aiming a Vortex Strike (that uses the flat stage map)
     const strikeAiming = !!(m?.local?.specialActive && m.local.specialActive.id === 'strike' && m.local.specialActive.aiming);
@@ -1310,9 +1406,11 @@ class Game {
     G.projectiles.updateArc(loc, !!(loc && loc.alive && (loc.weaponRunner.aimingSub || orbReady) && m.state === 'playing' && !m.paused));
     const tB = performance.now();
     profile?.mark(); // 相机与瞄准
+    traceStage?.('paint');
     // paint → atlas, shader uniforms
     G.paint.flush(dt);
     profile?.mark(); // 墨迹图集提交
+    traceStage?.('prepare');
     this.levelMat.userData.uniforms.uTime.value = G.time;
     // see-through window toward the local player
     {
@@ -1352,6 +1450,7 @@ class Game {
     this._frameN = (this._frameN || 0) + 1;
     if (this.settings.quality !== 'low' || (this._frameN & 1)) sm.needsUpdate = true;
     profile?.mark(); // 材质参数、声音与渲染准备
+    traceStage?.('draw');
     if (!this._skipRender) {
       if (!setUp) this.R.render();
       this.R.mobileSafety?.recover(this);
@@ -1360,6 +1459,7 @@ class Game {
     }
     const tC = performance.now();
     profile?.mark(); // 场景与后处理提交
+    traceStage?.('ui');
     const ps = this.perf || (this.perf = { sim: 0, render: 0, calls: 0, tris: 0 });
     ps.sim += (tB - tA - ps.sim) * 0.05; ps.render += (tC - tB - ps.render) * 0.05;
     ps.calls = G.renderer.info.render.calls; ps.tris = G.renderer.info.render.triangles;
@@ -1368,6 +1468,7 @@ class Game {
     this.menus?.update?.(dt);
     this.input.endFrame();
     profile?.end(); // HUD、菜单与帧末处理也纳入总时间
+    endStage?.();
   }
 
   // continuous sounds tied to the local player's state (swim gurgle, wall climb, enemy-ink sizzle)

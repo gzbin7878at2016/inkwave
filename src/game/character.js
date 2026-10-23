@@ -56,6 +56,7 @@ import {
 import * as MATS from './character-mats.js';
 import { getWeaponDef, getSubDef, FIST_OFFSET, GRIP_HOLE_L, WEAPON_KINDS, makeLampMaterial, makeCoilMaterial, animateWeapon } from './character-weapons.js';
 import { TIERS, T_HERO, T_GAME, T_FAR, LOD_QUALITY, KID_H, FADE_S, pickTier, ditherMaterial, farGeometry } from './character-lod.js';
+import { queueMobileCharacterWarm, prepareMobileMaterialPrograms } from '../platform/mobileWarmup.js';
 
 // ------------------------------------------------------------------------------------------------
 // Style tables(风格目录表)
@@ -1189,7 +1190,13 @@ export class Character {
   _updateLod(dt) {
     const L = this.lod;
     // fallback when the host did not warm this kid before the match (see warmAll): at first sight, not at first fade
-    if (!this._warmed && this.inWorld && this._rendered) this.warmAll();
+    // 手机标题演示不预热隐藏的所有LOD；真实开局由加载流程显式预热，新进角色再走串行兜底。
+    if (!this._warmed && this.inWorld && this._rendered && !(globalThis.inkwaveMobile && G.match?.attract)) {
+      const warm = this.warmAll();
+      if (globalThis.inkwaveMobile) warm.catch(error => console.warn('[character] mobile warm', error));
+    }
+    // 排队期间保持当前已显示档，避免自动切档绕过分批建模再次同步构建隐藏LOD。
+    if (globalThis.inkwaveMobile && this._mobileWarmPending) return;
     // the builders' detail also depends on the quality setting: a settings change rebuilds the tier sets
     const q = G.settings?.quality || 'high';
     if (q !== L.q && L.to < 0) {
@@ -1254,6 +1261,7 @@ export class Character {
   async warmAll(renderer = G.renderer, camera = G.camera, target = G.scene) {
     if (this._warmed) return this._warmed;
     if (!renderer || !camera || !target || !renderer.compileAsync) return false;
+    if (globalThis.inkwaveMobile) return this._warmAllMobile(renderer, camera, target);
     const done = this._warmed = (async () => {
       const q = G.settings?.quality || 'high';
       // build every tier + the dither twins (warm-only meshes on this skeleton; the materials stay with the kid)
@@ -1289,6 +1297,65 @@ export class Character {
       await p;
       return q;
     })();
+    return done;
+  }
+
+  // 手机把三档建模、武器抽稀和每件材质分别排队。compile 使用独立网格替身，不能靠 visible
+  // 隐藏原树来分批：Three.js compile 会 traverse 全树。替身从不挂回游戏，不污染让帧时的画面。
+  _warmAllMobile(renderer, camera, target) {
+    if (this._disposed) return Promise.resolve(false);
+    const parent = this.root.parent, scene = G.scene, match = G.match, q = G.settings?.quality || 'high';
+    const preparation = G.game?._mobilePreparation;
+    const current = () => !this._disposed && this.root.parent === parent && G.scene === scene && G.match === match &&
+      (!preparation || (G.game?._mobilePreparation === preparation && !preparation.cancelled)) &&
+      (!preparation?.networkMatch || G.net?.match === preparation.networkMatch);
+    this._mobileWarmPending = true;
+    const done = queueMobileCharacterWarm(async step => {
+      for (let tier = 0; tier < 3; tier++) await step('mobile-character-tier-build', () => this._tierSet(tier), { tier: TIERS[tier] });
+      for (const kind in this.weapons) for (let weapon = this.weapons[kind]; weapon; weapon = weapon.left) {
+        await step('mobile-character-weapon-far', () => farGeometry(weapon.def.body, 700), { weapon: kind, part: 'body' });
+        await step('mobile-character-weapon-far', () => farGeometry(weapon.def.ink, 300), { weapon: kind, part: 'ink' });
+      }
+      const meshes = [];
+      this.root.traverse(object => { if (object.isMesh) meshes.push(object); });
+      const compile = async (mesh, material) => {
+        const proxy = mesh.clone(false); proxy.material = material; proxy.visible = true; proxy.frustumCulled = false;
+        const target0 = renderer.getRenderTarget(), programsBefore = renderer.info.programs.length;
+        let pending;
+        try {
+          renderer.setRenderTarget(G.post?.composer?.readBuffer || (_warmRT || (_warmRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }))));
+          pending = renderer.compileAsync(proxy, camera, target);
+        } finally { renderer.setRenderTarget(target0); }
+        await pending;
+        if (!current()) return { programsAdded: renderer.info.programs.length - programsBefore, programsPrepared: 0 };
+        // 无KHR并行编译扩展时compileAsync不会完成首次接口准备，必须在当前小步内付清。
+        const programsPrepared = prepareMobileMaterialPrograms(renderer, material);
+        return { programsAdded: renderer.info.programs.length - programsBefore, programsPrepared };
+      };
+      // 每步只交给compile一个网格，包含当前不可见的鱿鱼、雷、墨水槽和武器远景件。
+      for (const mesh of meshes) await step('mobile-character-material-compile', () => compile(mesh, mesh.isSkinnedMesh && mesh.userData.iwMat ? this._matFor(mesh.userData.iwMat) : mesh.material), { mesh: mesh.name || mesh.type, variant: 'plain' });
+      for (const set of this.lodSets) for (const mesh of set.list) for (let side = 0; side < 2; side++) {
+        await step('mobile-character-material-compile', () => compile(mesh, this._ditherMat(mesh.userData.iwMat, side)), { mesh: mesh.name, variant: side ? 'dither-in' : 'dither-out' });
+      }
+      const sm = renderer.shadowMap, lights = [];
+      if (sm.enabled) target.traverseVisible(object => { if (object.isLight && object.castShadow && object.shadow) lights.push(object); });
+      if (lights.length) for (const mesh of meshes) if (mesh.castShadow) {
+        await step('mobile-character-shadow-warm', () => {
+          const proxy = mesh.clone(false); proxy.visible = true; proxy.frustumCulled = false; proxy.onBeforeShadow = mesh.onBeforeShadow;
+          // 骨架继续引用原角色；替身保持原世界变换，阴影预热不修改角色的可见性或父节点。
+          mesh.updateWorldMatrix(true, false); proxy.matrixAutoUpdate = false; proxy.matrix.copy(mesh.matrixWorld); proxy.updateMatrixWorld(true);
+          const target0 = renderer.getRenderTarget(), needsUpdate = sm.needsUpdate;
+          const lightNeedsUpdate = lights.map(light => light.shadow.needsUpdate);
+          try { sm.needsUpdate = true; for (const light of lights) light.shadow.needsUpdate = true; sm.render(lights, proxy, camera); }
+          finally { sm.needsUpdate = needsUpdate; lights.forEach((light, index) => { light.shadow.needsUpdate = lightNeedsUpdate[index]; }); renderer.setRenderTarget(target0); }
+        }, { mesh: mesh.name || mesh.type });
+      }
+      return q;
+    }, { isCurrent: current, diagnostics: globalThis.inkwaveDiagnostics, detail: { character: this.root.id, weapon: this.weaponKind } });
+    // 入队时立即设置，下一帧的8个角色不会重复入队或并发执行同步重活。
+    this._warmed = done;
+    done.then(result => { if (result === false && this._warmed === done && !this._disposed) this._warmed = null; }, () => {})
+      .finally(() => { this._mobileWarmPending = false; });
     return done;
   }
 
@@ -1491,6 +1558,7 @@ export class Character {
   // 【销毁】退出 LIVE 集、摘出场景图,释放本角色持有的材质(共享材质不 dispose,
   // 由各自系统管)、每角色的独享材质、LOD 抖动材质、骨架。
   dispose() {
+    this._disposed = true; // 已入队的手机预热在下一小步前取消，不能使用已释放材质/骨架。
     LIVE.delete(this);
     this.root.parent?.remove(this.root);
     for (const k of ['skin', 'cloth', 'hair', 'eye', 'fill', 'squid', 'squidGhost', 'glow']) this.mats[k].dispose();

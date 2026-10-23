@@ -22,7 +22,7 @@ export function installDiagnostics(nativePlugin) {
   const started = performance.now();
   const current = { build: BUILD, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, events: [], shaderFailures: [], gpu: null, native: null,
     startup: { stages: [], checkpoints: [{ atMs: 0, phase: 'module-import' }], completedAtMs: null },
-    responsiveness: { longTaskSupported: false, thresholdMs: 200, longTasks: [], longTaskCount: 0, maxLongTaskMs: 0, stalls: [], maxDelayMs: 0, operations: [] } };
+    responsiveness: { longTaskSupported: false, thresholdMs: 200, longTasks: [], longTaskCount: 0, maxLongTaskMs: 0, stalls: [], maxDelayMs: 0, operations: [], slowOperations: [], operationCount: 0 } };
   let previous = null, renderer = null, savedTimer = null, lastTick = 0;
   let shaderId = 0;
   const shaderSeen = new WeakSet();
@@ -48,6 +48,11 @@ export function installDiagnostics(nativePlugin) {
       const stages = current.startup.completedAtMs === null ? current.startup.stages : current.responsiveness.operations;
       stages.push(stage);
       if (stages.length > (current.startup.completedAtMs === null ? 256 : 40)) stages.shift();
+      if (current.startup.completedAtMs !== null) {
+        const response = current.responsiveness; response.operationCount++;
+        // 分批步骤很多，另保留最慢20项，防止开局建模证据被后续缓存命中挤掉。
+        if (stage.durationMs >= 200) { response.slowOperations.push(stage); response.slowOperations.sort((a, b) => b.durationMs - a.durationMs); response.slowOperations.length = Math.min(20, response.slowOperations.length); }
+      }
     };
   };
   const startupCheckpoint = (next, label) => {

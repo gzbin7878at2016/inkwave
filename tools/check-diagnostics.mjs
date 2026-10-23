@@ -22,7 +22,7 @@ try {
   assert.ok(baseline.current.scene.profile.samples > 0);
   assert.ok(baseline.current.scene.profile.topCalls.some(row => row.calls > 0));
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 9);
+  assert.equal(baseline.current.build.versionCode, 10);
   assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);
@@ -34,9 +34,11 @@ try {
   assert.ok(baseline.current.startup.stages.some(stage => stage.name === 'mobile-first-draw-batch'));
   assert.equal(baseline.current.startup.stages.filter(stage => stage.name === 'startup-full-frame').length, 1);
   assert.equal(baseline.current.startup.stages.filter(stage => stage.name === 'startup-simulation-prime').length, 2);
+  for (const stage of ['simulation', 'paint', 'draw']) assert.ok(baseline.current.startup.stages.some(row => row.name === `startup-frame-${stage}`));
   await new Promise(resolve => setTimeout(resolve, 3000));
   assert.equal(await page.evaluate(() => !!__inkwave.showcase.lob), false, '手机菜单不得自动创建大厅');
   assert.equal(await page.evaluate(() => !!__inkwave.showcase._warmState), false, '手机首帧不得自动预热隐藏展台');
+  assert.equal(await page.evaluate(() => __inkwave.match.actors.some(actor => !!actor.character?._warmed)), false, '手机菜单演示角色不得触发全量角色预热');
   await page.evaluate(() => {
     const done = inkwaveDiagnostics.beginStage('test-intentional-long-task');
     const start = performance.now();

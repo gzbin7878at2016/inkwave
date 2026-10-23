@@ -10,7 +10,7 @@
 //   大厅编排让位于 netmatch.js 的逐帧复制(那里另有「谁拥有谁」的权威模型)。
 // 【状态机】state: offline → connecting → lobby → starting → match → lobby …… 或任意阶段 → error。
 //   开赛是两段握手:房主广播 roster(k:'start') → 每个客户端建场景后回报就绪(k:'ready') → 房主收到齐员
-//   广播 k:'go'(或 12 秒兜底)→ 所有端同时 _launch 进 match。intros 因此同步起跑。
+//   广播 k:'go'→ 所有端同时 _launch 进 match。纯PC保留12秒兜底；手机参与时等待实际预热完成。
 // 【关键约定】房号 5 字符、剔除易混字符(O/0、I/1)与 WASD(菜单光标键);errorCode 是稳定错误码,
 //   逻辑只比它(src/net/errors.js),error 仅为英文兜底文本。setMe 是**请求**:客端先本地乐观回显,
 //   最终以房主广播为准。比赛中途离开者由主机上的 Bot 顶替(见 netmatch.js onLeave)。
@@ -96,7 +96,7 @@ export class NetSession {
   // 【本机档案】从离线 profile 归一出一份加入时上报的身份(名字截 16、配装取合法值);客端加入时发给房主
   _profile() {
     const p = G.game?.profile || {};
-    return { name: (p.name || 'Player').slice(0, 16), weapon: WEAPONS[p.weapon] ? p.weapon : 'shooter', sub: subOf(p.sub), special: specialOf(p.special), style: p.style || null };
+    return { name: (p.name || 'Player').slice(0, 16), weapon: WEAPONS[p.weapon] ? p.weapon : 'shooter', sub: subOf(p.sub), special: specialOf(p.special), style: p.style || null, waitForReady: !!globalThis.inkwaveMobile };
   }
 
   // ------------------------------------------------------------------ rooms
@@ -142,18 +142,19 @@ export class NetSession {
     this._botsPref = this.isHost ? true : null;   // a new room fills with bots unless its stage forbids them
     if (this.isHost) {
       // 【房主开局】新房主自建第一个玩家条目(带上外观/配装)并平衡队伍;客端等房主广播
-      this.lobby.players = [this._newPlayer(this.myId, name || me.name, { weapon: me.weapon, sub: me.sub, special: me.special, style: me.style })];
+      this.lobby.players = [this._newPlayer(this.myId, name || me.name, { weapon: me.weapon, sub: me.sub, special: me.special, style: me.style, waitForReady: me.waitForReady })];
       this._fixTeams();
     }
     this._setState('lobby');
     // tell the host who we are (the host already knows itself)
     // 【客端自报身份】房主已自建条目;客端把 name/配装/外观发给房主,房主随后广播权威 lobby
-    if (!this.isHost) tr.sendTo(this.hostId, { k: 'me', name: name || me.name, weapon: me.weapon, sub: me.sub, special: me.special, style: me.style });
+    if (!this.isHost) tr.sendTo(this.hostId, { k: 'me', name: name || me.name, weapon: me.weapon, sub: me.sub, special: me.special, style: me.style, waitForReady: me.waitForReady });
     this._pushLobby();
   }
 
   // 【离开】销毁比赛、关连接、清空身份与大厅。silent=true 用于内部「连前清场」,不触发状态事件
   leave(silent = false) {
+    this._clearPreparation();
     this.match?.dispose(); this.match = null;
     this.tr?.close(); this.tr = null;
     const was = this.state;
@@ -168,6 +169,8 @@ export class NetSession {
   // 【失败出口】把任意错误收敛成 errorCode + 英文 error,关连接,切 error 状态并派发 'error' 事件 ——
   //   UI 用 errorCode 查 i18n 表显示文案。建房/加入/开赛失败都经此
   _fail(e) {
+    this._clearPreparation();
+    this.match?.dispose(); this.match = null;
     this.errorCode = e?.code || ERR.CONNECT;
     this.error = e?.message || 'Could not connect';
     this.tr?.close(); this.tr = null;
@@ -180,6 +183,7 @@ export class NetSession {
   _closed(reason) {
     const inMatch = this.state === 'match' || this.state === 'starting';
     const gone = reason !== 'bye';
+    this._clearPreparation();
     this.errorCode = gone ? codeFromText(reason) || ERR.LOST : null;
     this.error = gone ? (reason || 'Lost connection to the room') : null;
     this.match?.dispose(); this.match = null;
@@ -213,6 +217,15 @@ export class NetSession {
       this.match?.onLeave(o.id, hostChanged);
       if (hostChanged) this._emit('host', { hostId: this.hostId });
       if (this.isHost) { this._fixTeams(); this._broadcastLobby(); }
+      // 手机房间等待真实ready；有人离开后重新核对。准备期换房主时向新房主重报本机就绪。
+      const preparation = this._startPreparation;
+      if (this.state === 'starting' && preparation?.strict) {
+        if (hostChanged && preparation.ready) {
+          if (this.isHost) this._markReady(this.myId);
+          else this.tr?.sendTo(this.hostId, { k: 'ready', id: this._startCfg.id });
+        }
+        if (this.isHost) this._checkReady();
+      }
       this._emit('leave', { player: gone, reason: 'left' });
       this._pushLobby();
     }
@@ -220,7 +233,7 @@ export class NetSession {
 
   // 【新玩家条目】默认 team='auto'、无外观时给随机风格;武器/配装取合法值。房主用它构造 lobby.players 项
   _newPlayer(id, name, o) {
-    return { id, name: (name || 'Player').slice(0, 16), team: 'auto', weapon: WEAPONS[o.weapon] ? o.weapon : 'shooter', sub: subOf(o.sub), special: specialOf(o.special), style: o.style || randomStyle(), ready: false, host: id === this.hostId, ping: 0 };
+    return { id, name: (name || 'Player').slice(0, 16), team: 'auto', weapon: WEAPONS[o.weapon] ? o.weapon : 'shooter', sub: subOf(o.sub), special: specialOf(o.special), style: o.style || randomStyle(), ready: false, host: id === this.hostId, ping: 0, waitForReady: !!o.waitForReady };
   }
 
   // host: honour team requests while keeping ≤ 4 a side, then place everyone still on 'auto' on the smaller side
@@ -243,7 +256,7 @@ export class NetSession {
   // 【线上大厅格式】逐字段挑出要过网的字段(不含 you/host 等本地派生标记,但保留 host 用于客端对齐)
   _wireLobby() {
     const l = this.lobby;
-    return { map: l.map, time: l.time, duration: l.duration, bots: l.bots, difficulty: l.difficulty, palette: l.palette, mode: l.mode, players: l.players.map(({ id, name, team, weapon, sub, special, style, ready, ping }) => ({ id, name, team, weapon, sub, special, style, ready, ping })) };
+    return { map: l.map, time: l.time, duration: l.duration, bots: l.bots, difficulty: l.difficulty, palette: l.palette, mode: l.mode, players: l.players.map(({ id, name, team, weapon, sub, special, style, ready, ping, waitForReady }) => ({ id, name, team, weapon, sub, special, style, ready, ping, waitForReady })) };
   }
   // local view: mark you + host
   // 【本地视图】派发前刷新 you/host 派生标记(每个人看到「哪个是自己」「哪个是房主」都由本地计算,不过网)
@@ -285,6 +298,7 @@ export class NetSession {
     if (o.style) p.style = o.style;
     if (o.ready != null) p.ready = !!o.ready;
     if (o.ping != null) p.ping = Math.round(o.ping);
+    if (typeof o.waitForReady === 'boolean') p.waitForReady = o.waitForReady;
     if (o.team === 'auto') p.team = 'auto';
     else if (o.team === 0 || o.team === 1) {
       const n = this.lobby.players.filter((x) => x !== p && x.team === o.team).length;
@@ -361,6 +375,8 @@ export class NetSession {
     }
     // (Zone Control always runs its own 5:00 + overtime, as offline)
     const cfg = { k: 'start', roster, map: l.map, time: l.time, duration: !boss && l.mode === 'zones' ? ZONES.duration : l.duration, difficulty: l.difficulty, palette: l.palette, mode: boss ? 'boss' : l.mode === 'zones' ? 'zones' : 'turf', host: this.myId, id: Math.random().toString(36).slice(2, 8) };
+    // 只有手机参与才取消12秒强制放行；纯PC房间继续使用原来的超时策略。附加字段不改中继信封。
+    if (globalThis.inkwaveMobile || l.players.some(player => player.waitForReady)) cfg.waitForReady = true;
     this.tr.lock(true);
     this.tr.broadcast(cfg);
     this._begin(cfg);
@@ -370,7 +386,9 @@ export class NetSession {
   // 【开赛第二步】两端(房主广播后本地、客端收 'start' 后)都跑:清就绪 → 切 starting → 等大厅倒计时动画
   //   (launchLobby)→ 建 NetMatch → 让 game 建场景(startNetMatch)。随后房主自报就绪、客端发 'ready'。
   async _begin(cfg) {
+    this._clearPreparation();
     this._startCfg = cfg;
+    const preparation = this._startPreparation = { ready: false, pendingGo: false, strict: !!(cfg.waitForReady || globalThis.inkwaveMobile) };
     this._ready = new Set();
     for (const p of this.lobby.players) p.ready = false;
     this._setState('starting');
@@ -379,40 +397,73 @@ export class NetSession {
     try { await G.game?.menus?.launchLobby?.(); } catch (e) { console.warn('[net] launch', e); }
     // 【防竞态】等待期间若状态已离开 starting 或 cfg 被换(如中途退房),放弃本次开赛
     if (this.state !== 'starting' || this._startCfg !== cfg) return;
-    this.match = new NetMatch(this, cfg);
+    const match = this.match = new NetMatch(this, cfg);
     try {
-      await G.game.startNetMatch(cfg, this.match);
+      const prepared = await G.game.startNetMatch(cfg, match);
+      if (prepared === false) {
+        // 入口准备锁拒绝/取消时不能把它伪报成完成；已离房的旧任务则静默结束。
+        if (this._startPreparation === preparation && this.match === match && this._startCfg === cfg) this._fail(netError(ERR.MATCH_START, 'Could not start the match'));
+        return;
+      }
     } catch (e) {
+      if (this._startPreparation !== preparation || this.match !== match || this._startCfg !== cfg) return;
       console.error('[net] match start failed', e);
       this._fail(netError(ERR.MATCH_START, 'Could not start the match'));
       return;
     }
+    // 预热会跨很多帧；离房/掉线/换局后不能让旧Promise再报告ready或启动已销毁的比赛。
+    if (this._startPreparation !== preparation || this.match !== match || this._startCfg !== cfg || !['starting', 'match'].includes(this.state)) return;
+    preparation.ready = true;
     if (this.isHost) this._markReady(this.myId);
     else this.tr?.sendTo(this.hostId, { k: 'ready', id: cfg.id });
+    if (preparation.pendingGo && this.state === 'starting') this._launch();
+  }
+
+  _clearPreparation() {
+    clearTimeout(this._goT); this._goT = null;
+    this._startPreparation = null;
+    this._startCfg = null;
+    this._ready = null;
   }
 
   // 【就绪汇聚(房主)】收齐所有人类的『就绪』后 _go。加载期间已离开的人(不在 _members)自动算就绪,
-  //   避免一个人掉线卡住全场;12 秒兜底超时(_goT)保证慢加载者也不会拖住所有人。
+  //   手机房间不把慢预热当成就绪；纯PC保留12秒兜底。断开者从实际等待名单中剔除。
   _markReady(id) {
     if (!this.isHost || this.state !== 'starting' || !this._startCfg) return;
+    if (!this._startCfg.roster.some(actor => !actor.bot && actor.owner === id)) return;
     this._ready.add(id);
+    this._checkReady();
+  }
+
+  _checkReady() {
+    if (!this.isHost || this.state !== 'starting' || !this._startCfg) return;
     const humans = new Set(this._startCfg.roster.filter((r) => !r.bot).map((r) => r.owner));
     for (const h of humans) if (!this._members.has(h) && h !== this.myId) this._ready.add(h);   // left while loading
     const all = [...humans].every((h) => this._ready.has(h));
     if (all) this._go();
-    else if (!this._goT) this._goT = setTimeout(() => this._go(), 12000);   // don't hold everyone for one slow load
+    else if (!this._startPreparation?.strict && !this._goT) {
+      const cfg = this._startCfg;
+      this._goT = setTimeout(() => { if (this._startCfg === cfg) this._go(); }, 12000);
+    }
   }
 
   // 【发令】房主广播 k:'go',所有人(含房主)同时 _launch,保证 intro 同帧起跑
   _go() {
     clearTimeout(this._goT); this._goT = null;
     if (this.state !== 'starting') return;
+    // 不能通过迟到的旧定时器绕过手机房间的ready条件。
+    if (this._startPreparation?.strict && (!this._startPreparation.ready || this._startCfg.roster.some(actor => !actor.bot && (actor.owner === this.myId || this._members.has(actor.owner)) && !this._ready.has(actor.owner)))) return;
     this.tr?.broadcast({ k: 'go', id: this._startCfg.id });
     this._launch();
   }
 
   // 【真正起跑】切 match 状态、让 NetMatch 开始出帧、通知 game(解冻比赛逻辑)
   _launch() {
+    if (this.state !== 'starting') return;
+    if (this._startPreparation?.strict && !this._startPreparation.ready) {
+      // 旧房主可能仍发送12秒兜底go；先记下，等本机bind完成，绝不启动未准备的比赛。
+      this._startPreparation.pendingGo = true; return;
+    }
     this._setState('match');
     this.match?.go();
     G.game.netMatchGo?.();
@@ -421,6 +472,7 @@ export class NetSession {
   // the match's results have been shown: everyone back to the lobby (the room stays)
   // 【回到大厅】比赛结算展示完毕后调用:销毁 NetMatch、房主开锁并重置就绪、所有人切回 lobby(房间不散)
   endMatch() {
+    this._clearPreparation();
     this.match?.dispose(); this.match = null;
     this._startCfg = null;
     if (!this.tr) return;
@@ -454,7 +506,7 @@ export class NetSession {
       case 'emote': this._emit('emote', { id: from, name: d.n }); break;
       case 'start': if (from === this.hostId && this.state === 'lobby') this._begin(d); break;
       case 'ready': if (this.isHost && this._startCfg && d.id === this._startCfg.id) this._markReady(from); break;
-      case 'go': if (from === this.hostId && this.state === 'starting') this._launch(); break;
+      case 'go': if (from === this.hostId && this.state === 'starting' && d.id === this._startCfg?.id) this._launch(); break;
       default: this.match?.onMessage(from, d);
     }
   }
