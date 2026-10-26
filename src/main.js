@@ -18,6 +18,7 @@
 //   · 模块加载失败不致命:loadModule() 会降级到 dev/stubs.js 的假实现
 // ========================================================================================
 import * as THREE from 'three';
+import { mobileViewport } from './platform/mobileViewport.js';
 import { G, on, emit, clamp, damp } from './core/ctx.js';
 import { Renderer } from './core/renderer.js';
 import { Input } from './core/input.js';
@@ -1640,12 +1641,16 @@ class Game {
 
   _updateHud(dt) {
     const m = this.match, a = m.local, cam = G.camera;
+    // 手机准星与队友标记共用真实视口缓存，避免战斗事件写DOM后再次同步窗口布局。
+    // PC保留原生读取；公式与窗口变化处理不变。
+    const viewport = window.inkwaveMobile ? mobileViewport() : null;
+    const W = viewport ? viewport.width : innerWidth, H = viewport ? viewport.height : innerHeight;
     this.minimap.update(dt);
     const w = a.weapon;
     // crosshair spread = the weapon's live cone (first-shot accurate, blooms with sustained fire / in the air)
     const vHalf = (G.camera.fov * Math.PI) / 360;
     const coneDeg = a.weaponRunner.spread ?? (w.kind === 'shooter' ? 5.5 : w.kind === 'blaster' ? 1.2 : 0);
-    const spread = w.kind === 'roller' ? 28 : w.kind === 'brush' ? 22 : Math.min(90, (Math.tan((coneDeg * Math.PI) / 180) / Math.tan(vHalf)) * (innerHeight / 2));
+    const spread = w.kind === 'roller' ? 28 : w.kind === 'brush' ? 22 : Math.min(90, (Math.tan((coneDeg * Math.PI) / 180) / Math.tan(vHalf)) * ((viewport ? H : innerHeight) / 2));
     const players = [];
     const t = { x: 0, y: 0 };
     for (const o of m.actors) {
@@ -1661,7 +1666,6 @@ class Game {
     // ally markers
     const markers = [];
     const v = this._mv || (this._mv = new THREE.Vector3());
-    const W = innerWidth, H = innerHeight;
     for (const o of m.actors) {
       const tracked = o.team !== a.team && o.alive && o.status.track > 0 && o.status.trackTeam === a.team;
       if (!tracked && (o.isLocal || o.team !== a.team || !o.alive)) continue;
