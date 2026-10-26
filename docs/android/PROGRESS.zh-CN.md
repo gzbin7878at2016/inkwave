@@ -598,3 +598,5 @@ HUD隔离已完成all/markers/UI动画/map/bar/special/top各60秒及20秒native
 移除该HTTP端点访问，仅用已验证CDP方法；新增 `node tools/check-phone-trace-stream.mjs`，在菜单进行1秒blink.user_timing流式导出、标记/进程一致/丢失核对，始终关闭应用，不进入Boss、不计成绩。语法与分块读取单测通过，须先提交推送再真机执行。手机成功后才继续完整HUD、60秒自然结束、正常操作/USB上传关闭的Boss调查。功能APK仍v41/252fcda，正式25.535/26.556FPS，30未稳定、60未开始，PC与游戏功能未改。
 
 流式菜单自检已在当前手机通过：16754字节、标记存在、dataLoss=false、PID16561前后一致，应用已关闭。随后v41完整HUD一分钟Boss调查自然结束：1690帧/67.8116实际秒=24.92199FPS，P95 66.6/P99 83.3ms，>=100ms 5次；USB日志184531-506267-dad78d59核对源码并关闭。本轮不是成绩。渲染Trace没有崩溃，完成事件dataLoss=false，但详细Skia流超过256MiB容量保护而被拒绝，保留失败报告、不分析空事件。已移除逐命令disabled-by-default-skia与同轮V8/timeline混采，仅blink.user_timing/gpu/cc/viz/skia定位阶段，下一轮先3秒。此前“结束超时”不能继续简单归因端点或USB；当前明确另有超大导出负载。功能与安装包未变。
+
+渲染阶段3秒采集成功，13.16MB/71444事件、未丢失/截断；发现1615次EndRaster约1056.53ms线程CPU，标签层与大招环反复RasterTask，不能当硬件GPU计时/独立因果。详见BOSS-DOM-INVESTIGATION末节。完整一分钟方法25.183FPS、退出恢复/USB184757-292836-b05acf7b源码核对/关闭通过；45～49秒死亡不作正式比较。下一步仅Boss完整HUD临时图层提示对照，先控画质/栅格尺寸/内存及同步图层映射，再决定是否产品化；PC与功能APK未变，30未稳、60未开始。

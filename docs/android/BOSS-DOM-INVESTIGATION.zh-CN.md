@@ -118,3 +118,14 @@ BOSS_TRACE_RENDERING=1时先向当前WebView实际查询Tracing.getCategories，
 调整工具而非重启同一局：去掉最密集的逐GL命令gpu.service，只保留实际支持的cc/viz/skia/SkiaGPU；采用ReturnAsStream按1MiB分块读，最大256MiB、始终关闭句柄；导出完成有界等60秒，避免重复请求Tracing.end。先读本机/json/protocol确认traceBufferSizeInKb再用64MiB配置，不支持则记录并使用原参数。独立方法轮结束最多等20秒本轮Trace尾部导出，然后仍上传关闭；正式轮不加此分支。
 
 混合文本/base64/UTF8/EOF/容量失败关闭单元通过；真实Edge ReturnAsStream 61723字节/5事件，中文标记保留、dataLoss=false、句柄确认关闭通过。真机调整结果待验证，未把超时当作USB断线或游戏图形错误。
+
+## 2026-10-27 渲染阶段采集首次成功
+
+只采blink.user_timing/gpu/cc/viz/skia、3秒ReturnAsStream后，当前WebView已能正常导出。报告 `releases/investigation/boss-trace-2026-10-26T18-46-13-933Z.json`：13,157,342字节，71,444原始事件，dataLoss=false、eventsTruncated=false，起止标记绑定renderer17795/17832，间隔3074.398ms。2个未闭合B作用域位于边界，不把它们补成完整耗时；下列统计仅使用完整X且开始落在标记内的事件，存在边界末端轻微越界，不代表正式帧率。
+
+- GPU服务线程17740/17838中RasterDecoderImpl::DoEndRasterCHROMIUM共1615次：墙钟1097.07ms、线程CPU1056.53ms。其Flush等子事件嵌套，不相加；这是栅格服务CPU，不是GPU硬件计时。
+- Renderer Main BeginMainFrame 97次，墙钟2828.78ms、CPU2556.49ms，属于宽作用域，不能当作纯DOM成本。
+- RasterTask 1222次，跨worker墙钟合计351.90ms、CPU236.15ms。随后同局只读LayerTree+DOM映射（本地 `v41-rendering-stage.layers.json`）可对应稳定ID：7个iw-mk__tag图层144/146/148/150/152/154/156各约80～86次栅格，总CPU99.10ms；iw-sp__ring图层206为70次/CPU49.64ms。晚些时间的映射并非逐事件同步快照，缺失/销毁图层不强行归属。
+- 这提供了反复栅格化的真实线索，但尚不能断言标签/大招环是帧率根因，尤其首次开场短窗口与稳态不同。候选下一步为完整HUD临时will-change:transform/scale提示的独立方法对照，保持原scale/opacity/动画/人数/像素密度，不直接发布；先相同阶段Trace比较栅格事件，再同局native与正式两轮确认。需留意锁栅格尺寸可能引起文字放大模糊及图层内存，若出现即撤销；不恢复v38/39逐帧Animation采样，不把图层优化假设当结论。
+
+本局自然一分钟游戏时长，实际记录1668帧/66.2349秒=25.18310FPS，P95 58.4/P99 83.3ms、>=100ms 7次；带Trace/方法探针，且45～49秒死亡，不作为正式成绩。正常退出菜单与渲染/音频/display状态恢复通过；实际UI USB日志 `INKWAVE-logs-20261026-184757-292836-b05acf7b.json` 核对252fcda后强制关闭并确认。语法250文件与事件收集/流读取单测通过。仍安装v41，30未稳定、60未开始。
