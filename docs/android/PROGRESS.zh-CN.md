@@ -600,3 +600,7 @@ HUD隔离已完成all/markers/UI动画/map/bar/special/top各60秒及20秒native
 流式菜单自检已在当前手机通过：16754字节、标记存在、dataLoss=false、PID16561前后一致，应用已关闭。随后v41完整HUD一分钟Boss调查自然结束：1690帧/67.8116实际秒=24.92199FPS，P95 66.6/P99 83.3ms，>=100ms 5次；USB日志184531-506267-dad78d59核对源码并关闭。本轮不是成绩。渲染Trace没有崩溃，完成事件dataLoss=false，但详细Skia流超过256MiB容量保护而被拒绝，保留失败报告、不分析空事件。已移除逐命令disabled-by-default-skia与同轮V8/timeline混采，仅blink.user_timing/gpu/cc/viz/skia定位阶段，下一轮先3秒。此前“结束超时”不能继续简单归因端点或USB；当前明确另有超大导出负载。功能与安装包未变。
 
 渲染阶段3秒采集成功，13.16MB/71444事件、未丢失/截断；发现1615次EndRaster约1056.53ms线程CPU，标签层与大招环反复RasterTask，不能当硬件GPU计时/独立因果。详见BOSS-DOM-INVESTIGATION末节。完整一分钟方法25.183FPS、退出恢复/USB184757-292836-b05acf7b源码核对/关闭通过；45～49秒死亡不作正式比较。下一步仅Boss完整HUD临时图层提示对照，先控画质/栅格尺寸/内存及同步图层映射，再决定是否产品化；PC与功能APK未变，30未稳、60未开始。
+
+## 2026-10-27 完整HUD标签合成提示方法（待真机）
+
+新增BOSS_LAYER_HINTS=1，仅一分钟methodProbe且禁止与遮蔽/音频/UI旁路混用。15～45实际采样秒仅对Boss队友标签加will-change:transform,scale，原缩放/动画/像素密度不变，45秒与离场恢复、finally验证样式移除。真实Edge范围/可见属性/取消清理通过。Trace新增BOSS_TRACE_START_SECONDS，采集边界外记录玩家存活/绘制量，以及标签/大招环LayerTree与DOM映射，避免晚采归属混淆；仍非成绩。待中文提交推送后真机6～9与20～23秒分别3秒采集，有效窗口须同存活且近似负载。当前游戏功能和v41 APK未变。

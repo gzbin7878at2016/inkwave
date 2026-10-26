@@ -3,10 +3,12 @@
 import {mkdir,writeFile} from 'node:fs/promises';
 import {createTraceEventCollector} from './trace-event-collector.mjs';
 import {readCdpTraceStream} from './read-cdp-trace-stream.mjs';
-let ws,seq=0,tracing=false,ending=false,complete,streamHandle;
+let ws,seq=0,tracing=false,ending=false,complete,streamHandle,layerTreeEnabled=false,layers=[];
 const rendering=process.env.BOSS_TRACE_RENDERING==='1';
 const pending=new Map(),collector=createTraceEventCollector({limit:rendering?200000:80000,minUs:rendering?50:100}),events=collector.events;
 const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
+const startSeconds=Number(process.env.BOSS_TRACE_START_SECONDS||0);
+if(!Number.isFinite(startSeconds)||startSeconds<0||startSeconds+seconds>50)throw Error('Trace起点须非负且结束不晚于50秒');
 if(!Number.isFinite(seconds)||seconds<1||seconds>45)throw Error('BOSS_TRACE_SECONDS须为1～45');
 const report={status:'waiting',requestedSeconds:seconds,renderingProbe:rendering,eventsTruncated:false,performanceTest:false};
 const base=`releases/investigation/boss-trace-${new Date().toISOString().replace(/[:.]/g,'-')}`;
@@ -15,6 +17,15 @@ const call=(method,params={})=>new Promise((resolve,reject)=>{
  pending.set(id,{resolve,reject,timer});ws.send(JSON.stringify({id,method,params}));
 });
 const evaluate=async expression=>{const r=await call('Runtime.evaluate',{expression,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
+// 在采集边界外批量定位少量标签，避免用几分钟后的图层ID猜测归属。
+const snapshot=async()=>{
+ const state=await evaluate('({activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,actors:__inkwave.match?.actors?.length,phase:__phonePerf.layerProbe?.phase,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles})');
+ if(!layerTreeEnabled)return {state};
+ const root=(await call('DOM.getDocument',{depth:0})).root.nodeId;
+ const nodes=(await call('DOM.querySelectorAll',{nodeId:root,selector:'.iw-hud.is-boss .iw-mk__tag,.iw-hud.is-boss .iw-sp__ring'})).nodeIds.slice(0,8);
+ const mapping=[];for(const nodeId of nodes){const n=(await call('DOM.describeNode',{nodeId,depth:0})).node,attrs=n.attributes||[],cls=attrs[attrs.indexOf('class')+1];mapping.push({backendNodeId:n.backendNodeId,classes:cls,layers:layers.filter(l=>l.backendNodeId===n.backendNodeId)});}
+ return {state,mapping};
+};
 await mkdir('releases/investigation',{recursive:true});
 try {
  let page;
@@ -26,6 +37,7 @@ try {
  ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject});
  ws.onmessage=e=>{
   const v=JSON.parse(e.data);
+  if(v.method==='LayerTree.layerTreeDidChange')layers=v.params.layers||[];
   if(v.id){const p=pending.get(v.id);if(!p)return;clearTimeout(p.timer);pending.delete(v.id);v.error?p.reject(Error(JSON.stringify(v.error))):p.resolve(v.result);}
   else if(v.method==='Tracing.dataCollected'){
    collector.add(v.params.value);
@@ -34,9 +46,9 @@ try {
  };
  ws.onclose=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('调试目标关闭'))}pending.clear()};
  let ready=false;
- for(let i=0;i<100;i++){
+ for(let i=0;i<200;i++){
   const state=await evaluate('({probe:!!window.__phonePerf?.methods,live:!!window.__phonePerf?.match&&window.__phonePerf.match===window.__inkwave?.match&&window.__inkwave?.match?.state==="playing",active:window.__phonePerf?.activeMs||0})');
-  if(state.probe&&state.live){if(state.active>(55-seconds)*1000)throw Error('调查轮剩余时间不足');ready=true;break;}
+  if(state.probe&&state.live&&state.active>=startSeconds*1000){if(state.active>(55-seconds)*1000)throw Error('调查轮剩余时间不足');ready=true;break;}
   await new Promise(r=>setTimeout(r,500));
  }
  if(!ready)throw Error('没有运行带探针的Boss实战');
@@ -53,12 +65,15 @@ try {
   await evaluate('window.__inkwaveRenderTrace={pending:true,startedAt:Date.now()};true');
  }
  report.transferMode=params.transferMode;
+ if(rendering){try{await call('LayerTree.enable');layerTreeEnabled=true;}catch(error){report.layerMappingError=String(error);}}
+ report.before=await snapshot();
  await call('Tracing.start',params);tracing=true;
  await evaluate('performance.mark("inkwave-render-start");true');
  await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),60000);complete=()=>{clearTimeout(timer);resolve()}});
  await evaluate('performance.mark("inkwave-render-end");true');
  ending=true;await Promise.all([call('Tracing.end'),done]);tracing=false;
+ report.after=await snapshot();
  if(rendering){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
  Object.assign(report,collector.info());
  report.markers=events.filter(e=>e.name?.startsWith('inkwave-render-')).map(e=>({name:e.name,pid:e.pid,tid:e.tid,ts:e.ts}));
@@ -71,6 +86,7 @@ try {
 finally{
  if(tracing&&!ending&&ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({id:++seq,method:'Tracing.end'}));
  if(rendering&&ws?.readyState===WebSocket.OPEN)await evaluate('if(window.__inkwaveRenderTrace)__inkwaveRenderTrace.pending=false;true').catch(()=>{});
+ if(layerTreeEnabled&&ws?.readyState===WebSocket.OPEN)await call('LayerTree.disable').catch(()=>{});
  ws?.close();
  Object.assign(report,collector.info());
  await writeFile(`${base}.json`,JSON.stringify({report,traceEvents:events}));
