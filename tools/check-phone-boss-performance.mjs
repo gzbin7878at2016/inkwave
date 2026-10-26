@@ -257,6 +257,7 @@ try{
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
+ report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
  report.simulationProbe=await c.evaluate('({stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
  report.pannerTransitions=await c.evaluate('window.__phonePerf.pannerTransitions||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');

@@ -478,3 +478,9 @@
 - 图旁路轮完整结束、USB文件INKWAVE-logs-20261026-123132-108703-fbf79fef.json核对关闭；27.774FPS仅为静音/跟踪调查。上下文始终running、48kHz、baseLatency=4ms/outputLatency=40ms；原生20.0004秒、1167397/1167397记录、锚点±115ms，12～14.2秒/18～28.5秒音频89.02%→18.80%单核。图和单发建图同时被旁路，不能仅归因某个滤波器，但不支持“纯输出设备开销”作为全部解释。
 - 下一独立BOSS_AUDIO_REVERB_BYPASS=1轮只在15秒断开SFX和音乐卷积混响输入，保留全部干声、音乐、声像和限幅，尾音自然结束；finally重接、异常传出，互斥且不作成绩。正式APK声音未改。
 - 新增profile-phone-boss-audio.mjs只读WebAudio.enable/getRealtimeData，独立方法轮6～13秒附着，最多40次/约40秒、到30秒战斗停止，禁覆盖/有超时、结束disable，不抢转发。BOSS_AUDIO_PROFILE_NAME与主轮新名称一致。平台指标参考[Chrome官方说明](https://developer.chrome.com/docs/devtools/webaudio)；原始renderCapacity保留，[DevTools前端](https://raw.githubusercontent.com/ChromeDevTools/devtools-frontend/main/front_end/panels/web_audio/WebAudioView.ts)实际乘100显示百分比，避免与协议注释单位混淆。先检查中文提交，再真机。
+
+## 2026-10-26：v30仅手机Boss缩短混响尾音（待真机）
+
+- 单独混响旁路轮完整结束、USB文件INKWAVE-logs-20261026-123709-848672-e5590f36.json核对关闭；WebAudio原始负载中位0.9302→0.6117，仅候选依据，27.820FPS不作成绩。没有将静音/停混响加入产品。
+- 手机Boss加载期离线取得原归一化响应，SFX1.5→0.4秒、音乐2.2→0.6秒尾音渐出，保留早期响度/HRTF/干声/音乐/限幅；PC/普通原IR，Boss释放/准备失败取消按match恢复。48kHz约0.366MiB额外缓存、能量保留99.63%/99.03%；无API/异常/超时回退原IR。
+- 真实浏览器双采样率/归一化开关、早期波形、实际Boss释放、缓存/取消/PC隔离、部分setter失败回滚与外部新配置保护通过；Boss准备回归通过。[v30细节与待真机步骤](BOSS-PERFORMANCE-test30.zh-CN.md)。先基础检查中文提交推送，再干净构建与正式测试，仍未宣称稳定30。

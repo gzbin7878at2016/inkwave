@@ -2,6 +2,7 @@
 import { G } from '../core/ctx.js';
 import { BOSS_INTRO_SOUNDS } from '../audio/bossAudio.js';
 import { BOSS_CACHED_SOUNDS } from '../audio/bossOneShotCache.js';
+import { prepareMobileBossReverb, restoreMobileBossReverb } from '../audio/mobileBossReverb.js';
 import { createMobileWarmSession, prepareMobileMesh } from './mobileWarmup.js';
 
 const sum = (total, row) => {
@@ -58,6 +59,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
   BOSS_CACHED_SOUNDS.forEach((name, index) => add(`准备战斗短音 ${index + 1}/${BOSS_CACHED_SOUNDS.length}`,
     () => G.audio?.prepareBossSample?.(name, { isCurrent: current,
       enabled: () => !!globalThis.inkwaveMobile && !!game.match?.boss && G.mode === 'match' }) || { skipped: true }, { sound: name }));
+  add('准备手机Boss空间混响', () => prepareMobileBossReverb(game, match, { isCurrent: current }));
   add('准备Boss标题与字体', () => game.hud?.boss?.prepareIntro?.({ isCurrent: current }) || { skipped: true });
   const total = tasks.length;
   const trace = diagnostics && {
@@ -76,6 +78,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     if (!current()) cancelled = true;
     else { failed = true; throw error; }
   } finally {
+    if (cancelled || failed) restoreMobileBossReverb(match);
     if (cancelled || failed) pool?.dispose();
     summary = session.finish({ total, cancelled, failed });
   }
