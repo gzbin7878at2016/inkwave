@@ -63,7 +63,16 @@ try{
    wrap(Storage.prototype,'setItem','storageWrite');
    wrap(g.R.renderer.getContext(),'getError','glGetError');
    wrap(g.minimap,'update','minimapUpdate');wrap(g.minimap,'_compose','minimapCompose');
-   if(__G.audio)wrap(__G.audio,'play','audioPlay');
+   if(__G.audio){
+    wrap(__G.audio,'play','audioPlay');
+    const audio=__G.audio,play=audio.play;p.audioNames={};
+    // 只在调查轮按名称汇总，不把每次节点列表写进日志，避免采样本身膨胀。
+    audio.play=function(name,...args){const start=performance.now();let voice;try{return voice=play.call(this,name,...args)}finally{
+     const row=p.audioNames[name]??={calls:0,played:0,nodes:0,totalMs:0,maxMs:0};
+     const elapsed=performance.now()-start;row.calls++;row.totalMs+=elapsed;row.maxMs=Math.max(row.maxMs,elapsed);
+     if(voice){row.played++;row.nodes+=voice.v.nodes.length;}
+    }};restores.push(()=>audio.play=play);
+   }
   }
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
@@ -126,6 +135,7 @@ try{
  report.summary={frames:a.length,seconds,averageFps:a.length/seconds,p50:a[Math.floor(a.length*.5)],p95:a[Math.floor(a.length*.95)],p99:a[Math.floor(a.length*.99)],over100:a.filter(x=>x>=100).length};
  if(!a.length||(seconds<duration&&!report.roundCompleted))throw Error('实际战斗采样时长不足');
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
+ report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
