@@ -39,6 +39,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PLAYER } from '../config.js';
 import { G } from '../core/ctx.js';
+import { environmentTextureProfile } from '../platform/renderProfiles.js';
 
 const WATER_Y = PLAYER.waterY; // -1.6
 const DEG = Math.PI / 180;
@@ -1809,7 +1810,10 @@ export class Environment {
   _initCloudBake() {
     // 手机只降低离屏云纹理工作量，不降低游戏画面2倍密度；PC保留原2048×640。
     // 启动对照诊断发现完整环境烘焙可造成长GPU等待，先以单变量缩小此负载验证重置触发条件。
-    const width = globalThis.inkwaveMobile ? 512 : CLOUD_W, height = globalThis.inkwaveMobile ? 160 : CLOUD_H;
+    this.textureProfile = environmentTextureProfile();
+    const width = globalThis.inkwaveMobile ? this.textureProfile.cloudWidth : CLOUD_W;
+    const height = globalThis.inkwaveMobile ? this.textureProfile.cloudHeight : CLOUD_H;
+    if (globalThis.inkwaveMobile) globalThis.inkwaveDiagnostics?.record('environment-texture-profile', this.textureProfile);
     this._cloudRT = new THREE.WebGLRenderTarget(width, height, {
       type: THREE.HalfFloatType, format: THREE.RGBAFormat, colorSpace: THREE.NoColorSpace,
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false,
@@ -1996,7 +2000,8 @@ export class Environment {
     if (!this._marina) { U.uFarOn.value = 0; return; }
     const r = this.renderer;
     if (!this._farRT) {
-      this._farRT = new THREE.WebGLCubeRenderTarget(512, {
+      // 手机只缩小远山/城市水面倒影；PC每面512保留，格式、6面和mip链不变。
+      this._farRT = new THREE.WebGLCubeRenderTarget(this.textureProfile.farReflectionSize, {
         type: THREE.HalfFloatType, format: THREE.RGBAFormat, colorSpace: THREE.NoColorSpace,
         generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter,
       });

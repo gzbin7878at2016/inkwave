@@ -233,3 +233,9 @@
 - 按UUID去重，区分立方体6面、数组层与mip，未知格式不估算；结果明确为JS引用的颜色存储估算，不冒充GPU驻留/总显存、更新频率或GPU耗时。立方体/mip/数组/去重合成检查及语法检查通过。
 - 用法：先tools/start-usb-debug.ps1，设置ANDROID_SERIAL，TEXTURE_MAP=current或halyard，再node tools/check-phone-textures.mjs。工具启动后采集、截图、真实上传核对源码、关闭；固定输出为带时间戳的releases/investigation/phone-textures-*。halyard仅资源巡检，不冒充性能实战。
 - 当前先运行原v17一分钟Boss基线；本工具先中文提交推送再真机使用。未改APK或候选分辨率，具体结论另行记录。
+
+## 2026-10-26：v18远景反射手机分级（待构建与真机验证）
+
+- v17真机纹理清单确认tidewater没有远景反射，halyard启用512平方6面反射，颜色+mip估算16MiB；手机low平面反射未启用。不能把该资源优化宣称为tidewater Boss提帧。
+- 新增环境纹理平台档案，保留现有手机云512×160/PC2048×640，仅手机远景反射512→256；PC512、格式/mip/玩法/2倍/SMAA保持。其他候选不改。v18待提交后构建安装、3次冷启动、海港纹理/真实截图和一分钟Boss回归。
+- v17本轮原始Boss基线61.2105秒、1782帧、平均29.113FPS、p95=33.4ms、p99=50.1ms、100ms以上6帧，USB落盘且已关闭；随机/温度未完全控制，不与历史26.18直接算优化增益。

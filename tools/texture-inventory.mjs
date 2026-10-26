@@ -56,6 +56,7 @@ export function textureInventory() {
   const textures = [...entries.values()].sort((a,b) => (b.estimatedColorBytes || 0) - (a.estimatedColorBytes || 0));
   return {at: Date.now(), mode: G.mode, map: g.mapDef?.id, layout: G.level?.layout?.id,
     settings: {...g.settings}, pixelRatio: G.renderer.getPixelRatio(), dynamicScale: g.R?.dynScale,
+    environmentProfile: env?.textureProfile || null,
     marina: !!env?._marina, deckFieldEnabled: !!env?.seaMat?.defines && 'DECK_FIELD' in env.seaMat.defines,
     planarReflectionEnabled: !!env?.U?.uReflOn?.value, farReflectionEnabled: !!env?.U?.uFarOn?.value,
     targets, missing, textures, estimatedReferencedColorBytes: textures.reduce((n,t) => n+(t.estimatedColorBytes || 0),0),
