@@ -36,3 +36,9 @@ node tools/check-phone-graphics.mjs
 ### 正常入口对照采集
 
 执行node tools/check-phone-startup.mjs，从普通游戏入口做3次冷启动，先等待PID和调试通道，启动只限当前游戏PID的原生日志采集；就绪或失败后保存网页报告/USB截图，尝试真实上传按钮，再关闭。数据为phone-full-startup.json及分轮log/png。先提交工具，再实际采集；与最小页比较，不能把“采集未开始”混为shader失败。
+
+### 已取得的隔离结果与下一实验
+
+- 最小图形页最终连续3次通过，3张USB截图正常；前面的目标URL/PID采集失败不参与此判定。
+- 普通启动对照首轮先出现SharedContextState context lost / GL_UNKNOWN_CONTEXT_RESET_KHR，后出现Adreno IOCTL_KGSL_GPU_COMMAND errno35 Resource deadlock、EGL_BAD_PARAMETER和SharedImage错误；后续也出现异常。故“shader链接失败/进度闪烁”并非最早错误。
+- 下一实验用node tools/check-phone-environment.mjs，分别ENV_PROBE_MODE=skip-cloud和full。在最小页同一个WebGL上下文中只创建Environment，逐步记录云烘焙、PMREM反射、远景反射开始/结束；诊断专用gl.finish把GPU工作归属到步骤，不用于正常游戏或性能评分。每次采集当前应用PID原生日志，保存后关闭。先提交工具，再执行，不能提前认定某一步为根因。
