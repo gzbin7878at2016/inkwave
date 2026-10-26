@@ -125,6 +125,27 @@ function makeRibbon(team, life) {
   const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 2;
   return m;
 }
+
+let bossRibbonPreparation = null;
+// Boss局内保留同配方程序引用，避免最后一条尾迹dispose后下一发重新链接；不创建弹体/路径/伤害。
+export function prepareBossTracerMeshes(match) {
+  if (!globalThis.inkwaveMobile || !match?.boss) return [];
+  const actor = match.actors.find(a => a.subId === 'tracer');
+  if (!actor) return [];
+  if (bossRibbonPreparation?.match !== match) {
+    clearBossTracerPreparation();
+    const mesh = makeRibbon(actor.team, SUBS.tracer.trailLife);
+    mesh.name = 'mobile-boss-tracer-program-reference'; mesh.visible = false;
+    bossRibbonPreparation = { match, mesh };
+  }
+  return [bossRibbonPreparation.mesh];
+}
+// 取消只释放所属准备任务；旧异步任务不能销毁新一局已经准备的引用。
+export function clearBossTracerPreparation(match) {
+  if (!bossRibbonPreparation || (match && bossRibbonPreparation.match !== match)) return;
+  const mesh = bossRibbonPreparation.mesh; bossRibbonPreparation = null;
+  mesh.geometry.dispose(); mesh.material.dispose();
+}
 // 根据未过期路径点更新尾迹顶点与透明度，保持尾迹随弹头结束自然消退。
 function drawRibbon(b) {
   const R = b.rib, P = b.pts, n = P.length;
@@ -418,6 +439,7 @@ function clearAll() {
   for (const b of bolts) dispose(b);
   bolts.length = 0;
   hideGuide();
+  clearBossTracerPreparation();
 }
 
 // =============================================================================================== aim guide (local player)

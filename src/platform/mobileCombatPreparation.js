@@ -1,11 +1,13 @@
 // 手机真实开局的通用战斗首用准备：只借长期池/材质，不发射技能、不推进模拟或涂改真实墨迹。
 import { G } from '../core/ctx.js';
 import { BladeFX } from '../game/kits/blade-fx.js';
+import { prepareBossTracerMeshes, clearBossTracerPreparation } from '../game/kits/tracer.js';
 import { createMobileWarmSession, prepareMobileMesh } from './mobileWarmup.js';
 
 export async function prepareMobileCombat(game, match, { isCurrent = () => true, onProgress, diagnostics } = {}) {
   if (!isCurrent()) return false;
-  const meshes = [...(G.projectiles?.mobilePreparationMeshes?.(match.actors) || [])];
+  const tracerMeshes = prepareBossTracerMeshes(match);
+  const meshes = [...(G.projectiles?.mobilePreparationMeshes?.(match.actors) || []), ...tracerMeshes];
   G.fx?.root?.traverse(object => { if (object.isMesh || object.isPoints || object.isLine) meshes.push(object); });
   if (match.actors.some(actor => actor.weapon?.kind === 'blade' || actor.weaponId === 'blade')) meshes.push(...BladeFX.mobilePreparationMeshes());
   const unique = [...new Set(meshes)];
@@ -24,5 +26,8 @@ export async function prepareMobileCombat(game, match, { isCurrent = () => true,
   } catch (error) {
     if (!isCurrent()) { cancelled = true; return false; }
     failed = true; throw error;
-  } finally { session.finish({ cancelled, failed }); }
+  } finally {
+    if (cancelled || failed) clearBossTracerPreparation(match);
+    session.finish({ cancelled, failed });
+  }
 }
