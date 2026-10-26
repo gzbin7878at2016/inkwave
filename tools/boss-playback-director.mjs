@@ -3,17 +3,20 @@ export function createBossPlaybackDirector(game, G, actions) {
   let enabled = true, match = null, actor = null, vectors = null, target = null, route = null, ri = 1;
   let nextTarget = 0, nextPlan = 0, nextThreat = 0, lastCheck = 0, checkX = 0, checkZ = 0, recovering = 0, side = 1;
   let refill = false, nextSpecial = 0, lastPos = null, wasAlive = false, threatJump = false, threatDive = false, stationarySince = 0;
-  const stats = { revision: 1, steps: 0, pathPlans: 0, pathSuccess: 0, pathFallbacks: 0, targetSamples: 0, targetChanges: 0,
+  let refillPaintUntil = -1, nextRefillPaint = 0, paintAttempts = 0;
+  const stats = { revision: 2, steps: 0, pathPlans: 0, pathSuccess: 0, pathFallbacks: 0, targetSamples: 0, targetChanges: 0,
     stuckRecoveries: 0, movedFrames: 0, distanceTravelled: 0, weakAimFrames: 0, refillFrames: 0, phaseMask: 0,
+    groundPaintFrames: 0, ownRefillFrames: 0, dryRefillFrames: 0, specialActivations: 0,
     minBossDistance: 1e9, bossDamage: 0, weakHits: 0, maxStillSeconds: 0 };
-  let startDamage = 0, startWeak = 0;
+  let startDamage = 0, startWeak = 0, startSpecials = 0;
   const stop = () => { game.input.keys.clear(); game.input.mouse.left = false; };
   const bind = next => {
     match = next; actor = next?.local; route = target = null; ri = 1; nextTarget = nextPlan = nextThreat = 0;
     lastPos = null; wasAlive = false; refill = false; recovering = 0; lastCheck = 0;
+    refillPaintUntil = -1; nextRefillPaint = paintAttempts = 0;
     if (actor) {
       vectors = [actor.pos.clone(), actor.pos.clone(), actor.pos.clone()];
-      startDamage = actor.stats?.bossDmg || 0; startWeak = actor.stats?.weakHits || 0;
+      startDamage = actor.stats?.bossDmg || 0; startWeak = actor.stats?.weakHits || 0; startSpecials = actor.stats?.specials || 0;
     }
   };
   const chooseTarget = boss => {
@@ -75,6 +78,7 @@ export function createBossPlaybackDirector(game, G, actions) {
     const phase = boss.phase; if (phase >= 1 && phase <= 3) stats.phaseMask |= 1 << phase;
     if (!a?.alive || !vectors) { stop(); wasAlive = false; lastPos = null; route = null; return; }
     const t = activeMs / 1000; stats.steps++; stop();
+    const cost = a.specialCost?.() || 1000;
     if (!wasAlive) { lastCheck = stationarySince = t; checkX = a.pos.x; checkZ = a.pos.z; nextPlan = nextTarget = 0; }
     wasAlive = true;
     if (lastPos) {
@@ -88,27 +92,44 @@ export function createBossPlaybackDirector(game, G, actions) {
     stats.weakHits = Math.max(0, (a.stats?.weakHits || 0) - startWeak);
     const dx = boss.pos.x - a.pos.x, dz = boss.pos.z - a.pos.z, distance = Math.hypot(dx, dz);
     stats.minBossDistance = Math.min(stats.minBossDistance, distance);
+    const oldRefill = refill, ownInk = a.groundTeam === a.team + 1 && a.grounded !== false;
+    if (a.ink < 28) refill = true; if (a.ink > 85) refill = false;
+    if (refill !== oldRefill) { paintAttempts = 0; nextRefillPaint = t; nextPlan = 0; }
+    // 留少量墨用真实射击涂脚下；干地不盲按Shift，避免原规则的半速回复。
+    if (refill && !ownInk && a.grounded !== false && a.ink > 8 && paintAttempts < 2 && t >= nextRefillPaint) {
+      refillPaintUntil = t + .4; nextRefillPaint = t + 2.5; paintAttempts++;
+    }
+    const paintRefill = refill && !ownInk && t < refillPaintUntil;
+    const holdRefill = refill && (ownInk || paintRefill);
     const reach = Math.max(7, Math.min(12, (a.weapon?.range || 12.5) * .65 + 2));
     if (t >= nextTarget || target?.shape && !target.shape.active || target?.crab?.dead) { chooseTarget(boss); nextTarget = t + .25; }
     const aim = vectors[2];
     if (target?.crab) aim.set(target.crab.x, target.crab.y + .35, target.crab.z);
     else if (target?.shape) aim.copy(target.shape.pos);
     else aim.copy(boss.pos).setY(boss.pos.y + 2.5);
+    const targetDistance = Math.hypot(aim.x - a.pos.x, aim.z - a.pos.z) - (target?.shape?.r || .5);
+    const paintLane = !refill && a.ink > 35 && (!target?.los || targetDistance > (a.weapon?.range || 12.5) + .5 || !boss.visible);
+    if (paintRefill) aim.set(a.pos.x + dx / (distance || 1) * .4, a.pos.y + .03, a.pos.z + dz / (distance || 1) * .4);
+    else if (paintLane) {
+      const next = route && G.nav?.nodes[route[ri]], px = next ? next.x - a.pos.x : dx, pz = next ? next.z - a.pos.z : dz, length = Math.hypot(px, pz) || 1;
+      aim.set(a.pos.x + px / length * 1.6, a.pos.y + .03, a.pos.z + pz / length * 1.6);
+    }
     const cam = game.rig.gameCam || G.camera;
     const cameraNear = cam?.position && Math.hypot(cam.position.x - a.pos.x, cam.position.z - a.pos.z) < 12;
     const origin = cameraNear ? cam.position : vectors[0].copy(a.pos).setY(a.pos.y + 1.2);
     const ax = aim.x - origin.x, ay = aim.y - origin.y, az = aim.z - origin.z;
-    const yaw = Math.atan2(ax, az), pitch = Math.atan2(ay, Math.max(.001, Math.hypot(ax, az)));
+    const yaw = Math.atan2(ax, az), pitch = Math.max(-1.05, Math.min(1.15, Math.atan2(ay, Math.max(.001, Math.hypot(ax, az)))));
     const delta = Math.atan2(Math.sin(yaw - game.rig.yaw), Math.cos(yaw - game.rig.yaw)), turn = Math.max(.01, Math.min(.05, dt)) * 9;
     game.rig.yaw += Math.max(-turn, Math.min(turn, delta));
     game.rig.pitch += Math.max(-turn, Math.min(turn, Math.max(-1.05, Math.min(1.15, pitch)) - game.rig.pitch));
-    if (target?.weak) stats.weakAimFrames++;
-    if (t - lastCheck >= 1.2) {
+    if (target?.weak && !paintRefill && !paintLane) stats.weakAimFrames++;
+    if (holdRefill) { lastCheck = t; checkX = a.pos.x; checkZ = a.pos.z; }
+    else if (t - lastCheck >= 1.2) {
       const travelled = Math.hypot(a.pos.x - checkX, a.pos.z - checkZ);
       if (travelled < .3 && distance > 5) { stats.stuckRecoveries++; recovering = t + 1.1; side *= -1; nextPlan = recovering; route = null; stats.maxStillSeconds = Math.max(stats.maxStillSeconds, t - lastCheck); }
       checkX = a.pos.x; checkZ = a.pos.z; lastCheck = t;
     }
-    if (t >= nextPlan && t >= recovering) { plan(boss, reach); nextPlan = t + 2; }
+    if (!holdRefill && t >= nextPlan && t >= recovering) { plan(boss, reach); nextPlan = t + 2; }
     let mx, mz, edge = null;
     if (recovering > t) {
       mx = -dz * side; mz = dx * side;
@@ -127,19 +148,22 @@ export function createBossPlaybackDirector(game, G, actions) {
     }
     const length = Math.hypot(mx, mz) || 1, sy = Math.sin(game.rig.yaw), cy = Math.cos(game.rig.yaw);
     const forward = (mx * sy + mz * cy) / length, right = (-mx * cy + mz * sy) / length;
-    if (forward > .35) game.input.keys.add('KeyW'); if (forward < -.35) game.input.keys.add('KeyS');
-    if (right > .35) game.input.keys.add('KeyD'); if (right < -.35) game.input.keys.add('KeyA'); actions.move++;
-    if (a.ink < 18) refill = true; if (a.ink > 85) refill = false;
-    if (refill || threatDive) { game.input.keys.add('ShiftLeft'); actions.squid++; stats.refillFrames++; }
+    if (!holdRefill) {
+      if (forward > .35) game.input.keys.add('KeyW'); if (forward < -.35) game.input.keys.add('KeyS');
+      if (right > .35) game.input.keys.add('KeyD'); if (right < -.35) game.input.keys.add('KeyA'); actions.move++;
+    }
+    if (refill) { stats.refillFrames++; if (ownInk) stats.ownRefillFrames++; else stats.dryRefillFrames++; }
+    if (refill && ownInk || threatDive) { game.input.keys.add('ShiftLeft'); actions.squid++; }
+    else if ((paintRefill || paintLane) && Math.abs(game.rig.pitch - pitch) < .18) { game.input.mouse.left = true; actions.fire++; stats.groundPaintFrames++; }
     else if (target && (target.crab || boss.visible) && target.los
-      && Math.hypot(aim.x - a.pos.x, aim.z - a.pos.z) - (target.shape?.r || .5) <= (a.weapon?.range || 12.5) + .5) { game.input.mouse.left = true; actions.fire++; }
-    if (threatJump || recovering > t || edge?.type === 'jump' || t % 5 < .2) { game.input.keys.add('Space'); actions.jump++; }
-    if (!refill && distance < 16 && a.ink > 65 && t % 12 > 8 && t % 12 < 8.15) { game.input.keys.add('KeyE'); actions.sub++; }
-    const cost = a.specialCost?.() || 1000;
-    if (!refill && !a.specialActive && a.special >= cost && t >= nextSpecial) { game.input.keys.add('KeyQ'); actions.special++; nextSpecial = t + 3; }
+      && !refill && !paintLane && targetDistance <= (a.weapon?.range || 12.5) + .5) { game.input.mouse.left = true; actions.fire++; }
+    if (threatJump || !holdRefill && (recovering > t || edge?.type === 'jump' || !refill && t % 5 < .2)) { game.input.keys.add('Space'); actions.jump++; }
+    if (!refill && !paintLane && distance < 16 && a.ink > 65 && t % 12 > 8 && t % 12 < 8.15) { game.input.keys.add('KeyE'); actions.sub++; }
+    if (!a.specialActive && a.special >= cost && t >= nextSpecial) { game.input.keys.add('KeyQ'); actions.special++; nextSpecial = t + 3; }
   };
   return { bind, step, info: () => ({ ...stats,
     bossDamage: Math.max(0, (actor?.stats?.bossDmg || 0) - startDamage), weakHits: Math.max(0, (actor?.stats?.weakHits || 0) - startWeak),
+    specialActivations: Math.max(0, (actor?.stats?.specials || 0) - startSpecials),
     phases: [1, 2, 3].filter(phase => stats.phaseMask & 1 << phase),
     refill, target: target?.name || null, routeRemaining: route ? route.length - ri : 0 }), dispose() { enabled = false; stop(); } };
 }
