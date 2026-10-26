@@ -19,7 +19,7 @@ for (let i = 0; i < 200; i++) {
   let p; try { p = JSON.parse(await readFile(reportPath, 'utf8')); } catch (e) { if (!(e.code === 'ENOENT' || e instanceof SyntaxError)) throw e; }
   if (p) {
     if (p.status === 'aborted') throw Error('主调查已中止，不再等待或重开');
-    if(passive&&['gpuAblation','cpuAblation','uiAblation','musicAblation','pannerAblation','audioSuspend','audioGraphBypass','audioReverbBypass','domAblation','layerHints','markerVars'].some(key=>p[key]))throw Error('被动原生调查不能夹带音画/模拟旁路');
+    if(passive&&['gpuAblation','cpuAblation','uiAblation','musicAblation','pannerAblation','audioSuspend','audioGraphBypass','audioReverbBypass','domAblation','layerHints','markerVars','nativePaint'].some(key=>p[key]))throw Error('被动原生调查不能夹带音画/模拟旁路');
     const s = p.timeline.at(-1), fresh = Date.now() - Date.parse(p.startedAt) < 180000;
     if (fresh && p.methodProbe && p[flag] && p.status === 'running' && s?.state === 'playing' && s.activeMs >= (early?4000:8000)) {
       if (s.activeMs > (early?8000:13000)) throw Error('已错过切换前采集窗口，不中断或重开本局');

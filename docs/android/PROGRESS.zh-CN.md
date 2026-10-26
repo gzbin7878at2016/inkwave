@@ -618,3 +618,7 @@ v42已从干净功能源码f7bd686构建并安装：21,146,553字节、SHA256 a6
 v42已补实战CPU证据：独立方法25.322FPS、正常结束/USB191357-788467-e86bf78b源码核对/关闭，未达标。30秒V825539样本仍(program)11.54s、_drawInk842.6ms、character.update470.2ms等；3秒完整无丢失时间线UpdateLayoutTree线程CPU342.58ms、Layerize142.16ms，不与嵌套父任务相加。实战只读CPU策略0/4/7上限1228800/1324800/1651200kHz、4/7当前多次达到上限，硬件1804800/2496000/2995200；可确认当时策略受限，热因果仍非单独证明。空闲120秒24组温度46→45°C且appPID空，实战90秒18组44～48°C，记录在cpu-policy文件，不能把空闲频率当实战。
 
 下一项仅方法调查：BOSS_MARKER_VAR_PROBE=1在15～45秒把队友标签--far更新转换成相同非继承opacity/scale，减少SVG后代变量传播；完整HUD/动画/画质/玩法保持，不改产品APK。Edge数值一致/继承变量稳定/45秒和取消及原setProperty恢复通过。3秒Trace补起止标记同回调的activeMs/存活/绘制量，减少DOM映射前置时间误差。待提交推送后同局3秒前后Trace验证UpdateLayoutTree CPU，不凭假设发布新功能。
+
+距离变量方法已完成：4945次距离写入拦截、15.001秒启用/45.015秒恢复，自然60游戏秒/69.6596实际秒=23.4569FPS，USB191733-083655-8a8a00f5核对并关闭。两段均存活且Trace未丢失/截断，基线6.421～9.464秒 vs本地值20.253～23.321：UpdateLayoutTree CPU343.18→388.44ms、每事件3.69→3.92ms，Layerize149.13→164.87ms、EndRaster738.29→868.22ms；世界绘制76～84 vs94～101calls，未证明样式收益，**不产品化该假设**。
+
+新增仅方法工具BOSS_NATIVE_PAINT_PROBE=1：15～45秒对无限循环且确实涉及boxShadow/filter等重绘属性的CSS动画加原生全局steps（约15Hz）；保留原关键帧曲线/时钟，忽略有限动画、transition和纯transform，animationstart事件捕获新动画，非逐帧getAnimations/seek/pause。暂停/45秒/退出恢复原easing并拆监听，弱引用最多128条，不影响APK产品。真实Edge选择/动态动画/时钟与关键帧曲线保持/暂停恢复与重新接管通过，待提交后手机同局短Trace对照；不把15Hz装饰刷新当游戏15帧或正式成绩，PC/画质/玩法保持。
