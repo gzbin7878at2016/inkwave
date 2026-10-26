@@ -1,6 +1,6 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
-2026-10-27当前接续（优先于下方历史）：当前安装v1.0.40，干净源码baed1de，游戏关闭。v38/v39 Boss HUD动画接管未证明收益，v39正式26.076/25.783FPS、45→48℃；已撤下生产入口。v40 mobile.js/renderer/SMAA运行代码与v37 d91ba2e相同，保留SMAA正确清零，固定2倍/SMAA/8人/原玩法/PC。v40无探针26.417FPS，p95 58.3、p99 75、9次≥100，43→46℃，USB落盘162932-398191-93996896已核对关闭，未稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test38/39/40.zh-CN.md。Trace显示样式瓶颈但接管后同步刷新增加，批量读写改善仍无实战收益；不要再次盲目启用。浏览器一次新增MeshPhysical实例化程序，重跑未复现；已保留失败并增强真实材质归属，不误称SMAA重编译。下一步独立60秒方法轮统计监听器/声像器AudioParam同目标重复排期，20秒仅原样转发统计/恢复，不改声音；值得才经离线波形/移动/PC普通及退出隔离验证后Boss去重。RG8仍须正确清零+真实同HDR像素验证，不盲目扩格式。BOSS_REQUIRE_SMAA_CLEAR=1、REQUIRE_ANIMATION_CLOCK=0，其他旁路/方法/生命周期/小地图候选0；正常镜头预备1。每批中文commit/push后干净构建真机，每局60秒自然结束上传核对关闭。目标active，接续id=boss，USB常亮2，无授权阻塞，不并发CDP。
+2026-10-27当前接续（优先于下方历史）：当前安装v1.0.40，干净源码baed1de，游戏关闭。v38/v39 Boss HUD动画接管无实战收益已撤下；mobile.js/renderer/SMAA运行代码与v37 d91ba2e相同，保留SMAA正确清零、固定2倍/SMAA/8人/原玩法/PC。v40正式26.417FPS、p95 58.3/p99 75、9次≥100，未稳定30、60未开始。读docs/android/BOSS-PERFORMANCE-test40.zh-CN.md末节。新的20秒AudioParam统计已做：13182原调用、3487潜在重复26.45%，主要listener up和panner Y；244弱登记，109存活恢复/135GC，0所有权冲突/非单调/溢出，ctx running48000。观察器真实Offline equalpower/HRTF PCM差0，但未证明真正去重等价或CPU收益。方法轮25.830FPS不作成绩，已自然结束/退出恢复、实际USB日志163445-250264-20debac8源码核对关闭。下一步仅Boss参数精确同目标同时间常数去重候选，先离线静止/移动/波形/非单调/外部排期失效/上下文/PC普通/退出隔离；值得才中文commit/push、干净v41构建及真机方法+两正式。严禁先改HRTF/声音/人数。RG8仍需真实同HDR正确清零像素验证。浏览器一次MeshPhysical实例化新程序未复现，已保留失败并增强材质真实归属；不要误称SMAA重编译或已解决预热。BOSS_REQUIRE_SMAA_CLEAR=1、REQUIRE_ANIMATION_CLOCK=0，其余旁路/小地图/生命周期默认0、镜头预备1；每局60秒真实上传核对关闭。目标active，接续id=boss，USB常亮2，不并发CDP，无授权阻塞。
 
 
 
