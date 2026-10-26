@@ -584,3 +584,6 @@ v41已干净构建安装，正式25.535/26.556FPS，约31～33%原生控制事�
 
 
 v41整体DOM调查已闭环：15～45秒临时隐藏HUD/控件，前后native Main82.63→70.68%、GPU主机58.42→14.63%、Compositor40.55→9.02%，音频71.30→76.14%。是方法线索不是成绩，正常前段也近30，正式仍未达标。真实USB172936-973037-e9591dbf核对后关闭，临时样式清理；下一步按组件定位。详见BOSS-DOM-INVESTIGATION.zh-CN.md。
+
+
+HUD隔离已完成all/markers/UI动画/map/bar/special/top各60秒及20秒native，全部恢复/USB源码核对/关闭。整层明显释放Main/GPU主机/合成，但单组件仅marker/top有部分栅格线索，map/bar/special无明显Main收益。功能仍v41，不发布隐藏UI。下一步完整HUD图层提示对照，若无效再GPU/Skia细类Trace；30未稳定、60未开始。详见BOSS-DOM-INVESTIGATION.zh-CN.md。
