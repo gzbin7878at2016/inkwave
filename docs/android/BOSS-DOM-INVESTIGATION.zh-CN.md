@@ -56,3 +56,5 @@ v41-ui-native复用既有UI调查，10～20秒暂停HUD动画并取消过渡，2
 全轮1769帧/62.8707秒/28.1371FPS、p95 50.1/p99 66.7、5次≥100，42→45℃；方法成绩不作达标。真实UI上传 INKWAVE-logs-20261026-174912-335459-3dd1b502.json 源码核对后关闭，临时样式已由finally清理。
 
 动画解释一部分主线程/合成开销，解释不了整HUD约44个百分点的GPU主机差异。另做只读真实Edge API探测：CSSAnimation.effect.updateTiming的全局easing可原生steps，保留原每关键帧ease；CSSTransition则把原ease放在effect层，不能直接steps替换而声称保留曲线。CSSanimation-duration改动仍会更新duration；native linear()支持。此仅为未来方案接口探测，未接入产品、不代表性能收益。优先继续排查Canvas和高频更新部件。
+
+补充map组件枚举只隔离.iw-map，真实浏览器范围/恢复通过。native锚点增加小地图源像素/CSS显示尺寸/DPR/上下文alpha等只读信息，位于内核trace开始前；用于核查像素预算，不更改地图分辨率或游戏设置。

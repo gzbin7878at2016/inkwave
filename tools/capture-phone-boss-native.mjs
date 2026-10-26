@@ -60,6 +60,7 @@ try {
   // 前后内核uptime夹住实时游戏时钟，而不是用最多过时2秒的电脑采样点对齐。
   meta.uptimeBefore = command('shell', 'cat', '/proc/uptime').trim();
   meta.anchor = await evaluate('(async()=>({activeMs:__phonePerf.activeMs,state:__inkwave.match.state,display:await inkwaveMobile.BossDisplay.getState(),audioParams:__G.audio.bossParamDedupeInfo?.()||null,domProbe:__phonePerf.domProbe||null,uiAblationPhase:__phonePerf.uiAblationPhase,source:inkwaveDiagnostics.report().current.build.sourceCommit}))()');
+  meta.minimap=await evaluate('(()=>{const m=__inkwave.minimap,c=m.canvas,r=c.getBoundingClientRect();return{width:c.width,height:c.height,pxPerM:m.s,cssWidth:c.clientWidth,cssHeight:c.clientHeight,rectWidth:r.width,rectHeight:r.height,dpr:devicePixelRatio,context:m.ctx.getContextAttributes?.(),expanded:__inkwave.hud._mapT};})()');
   meta.uptimeAfter = command('shell', 'cat', '/proc/uptime').trim();
   if (meta.anchor.state !== 'playing' || meta.anchor.activeMs > (early?10000:14000)) throw Error('锚点已离开有效窗口');
   ws.close(); meta.hostStartedAt = Date.now(); await writeFile(base + '.meta.json', JSON.stringify(meta, null, 2));

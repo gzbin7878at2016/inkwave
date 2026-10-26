@@ -13,8 +13,8 @@ try{const p=await browser.newPage();await p.goto('http://localhost:8490/releases
   probe.update(m,'match',45000);check(getComputedStyle(root).display==='flex'&&root.getAttribute('style')===original,'45秒未恢复原样式');
   for(const [match,mode]of [[{boss:null,state:'playing'},'match'],[{boss:{},state:'playing',attract:true},'match'],[{boss:{},state:'intro'},'match'],[{boss:{},state:'playing',paused:true},'match'],[m,'menu']]){probe.update(m,'match',20000);probe.update(match,mode,20000);check(getComputedStyle(root).display==='flex','隔离/取消未恢复');}
   probe.update(m,'match',20000);probe.dispose();check(!probe.info().hidden&&!document.querySelector('[data-boss-dom-probe]')&&getComputedStyle(root).display==='flex'&&root.getAttribute('style')===original,'finally未清理');
-  root.classList.add('is-boss');root.innerHTML='<div class="iw-bb"></div><div class="iw-sp"></div><div class="iw-mks"></div>';
-  for(const [part,cls]of [['bar','iw-bb'],['special','iw-sp'],['markers','iw-mks']]){const p=create(part);p.update(m,'match',20000);check(getComputedStyle(root).display==='flex'&&[...root.children].every(el=>(getComputedStyle(el).display==='none')===el.classList.contains(cls)),part+'隔离范围越界');p.dispose();check([...root.children].every(el=>getComputedStyle(el).display!=='none'),'组件恢复失败');}
+  root.classList.add('is-boss');root.innerHTML='<div class="iw-bb"></div><div class="iw-sp"></div><div class="iw-mks"></div><div class="iw-map"></div>';
+  for(const [part,cls]of [['bar','iw-bb'],['special','iw-sp'],['markers','iw-mks'],['map','iw-map']]){const p=create(part);p.update(m,'match',20000);check(getComputedStyle(root).display==='flex'&&[...root.children].every(el=>(getComputedStyle(el).display==='none')===el.classList.contains(cls)),part+'隔离范围越界');p.dispose();check([...root.children].every(el=>getComputedStyle(el).display!=='none'),'组件恢复失败');}
   return {restored:true,canvasUnchanged:true,stats:probe.info()};
  });console.log(JSON.stringify(result));await writeFile('releases/investigation/boss-dom-probe-browser.json',JSON.stringify(result,null,2));
 }finally{await browser.close();}
