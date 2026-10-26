@@ -15,7 +15,24 @@ export async function benchmarkBossPropRanges(game,G,T,create){
  const checkTime=()=>{if(performance.now()-begin>15000)throw Error('手机副本超过15秒预算，恢复原绘制');};
  try{
   game.frozen=true;const start=performance.now();candidate=create(T,sources,{renderer:r});const buildMs=performance.now()-start;
-  const draw=(active,cull=true,read=true)=>{checkTime();candidate.setCullingEnabled(cull);active?candidate.enable():candidate.disable();const before=candidate.stats.submittedTriangles,triangles=r.info.render.triangles;game.R.render();let data=null;if(read){data=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,data);}const comp=game.R.composer,meta={time:G.time,triangles:r.info.render.triangles-triangles,input:game.R.mobileAA?._uniformsBlend?.tColor?.value?.id,read:comp.readBuffer.texture.id,write:comp.writeBuffer.texture.id,view:[...camera.matrixWorldInverse.elements],projection:[...camera.projectionMatrix.elements]};return {data,meta,submittedTriangles:candidate.stats.submittedTriangles-before};};
+  const draw=(active,cull=true,read=true)=>{
+   checkTime();candidate.setCullingEnabled(cull);active?candidate.enable():candidate.disable();const before=candidate.stats.submittedTriangles,triangles=r.info.render.triangles;game.R.render();let data=null;
+   if(read){data=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,data);}
+   const comp=game.R.composer,aa=game.R.mobileAA,meta={time:G.time,triangles:r.info.render.triangles-triangles,input:aa?._uniformsBlend?.tColor?.value?.id,read:comp.readBuffer.texture.id,write:comp.writeBuffer.texture.id,view:[...camera.matrixWorldInverse.elements],projection:[...camera.projectionMatrix.elements]};
+   // 桌面诊断专用：使用实现声明支持的读回格式，比较HDR/边缘/权重原始位模式；手机不走此分支。
+   if(read&&typeof globalThis.__writePropProbeImage==='function'){
+    const target=r.getRenderTarget(),face=r.getActiveCubeFace(),mip=r.getActiveMipmapLevel();meta.buffers=[];
+    try{for(const [name,rt] of [['input',[comp.renderTarget1,comp.renderTarget2].find(t=>t.texture===aa?._uniformsBlend?.tColor?.value)],['edges',aa?._edgesRT],['weights',aa?._weightsRT]]){
+     if(!rt)continue;r.setRenderTarget(rt);const format=gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT),type=gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE);
+     const channels=format===gl.RGBA?4:format===gl.RG?2:format===gl.RED?1:0,ArrayType=type===gl.FLOAT?Float32Array:type===gl.HALF_FLOAT||type===gl.UNSIGNED_SHORT?Uint16Array:type===gl.UNSIGNED_BYTE?Uint8Array:type===gl.UNSIGNED_INT?Uint32Array:null;
+     if(!channels||!ArrayType){meta.buffers.push({name,format,type,unsupported:true});continue;}
+     const sw=Math.min(512,rt.width),sh=Math.min(512,rt.height),values=new ArrayType(sw*sh*channels);gl.readPixels(0,0,sw,sh,format,type,values);
+     const bytes=new Uint8Array(values.buffer);let hash=2166136261;for(let i=0;i<bytes.length;i++)hash=Math.imul(hash^bytes[i],16777619);
+     meta.buffers.push({name,format,type,hash:hash>>>0});
+    }}finally{r.setRenderTarget(target,face,mip);}
+   }
+   return {data,meta,submittedTriangles:candidate.stats.submittedTriangles-before};
+  };
   const diff=(a,b)=>{let max=0,changed=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);if(d)changed++;max=Math.max(max,d);}return {max,changed};};
   const pixels=[];
   for(const [name,eye,target] of [['actual',null,null],['spawn',[0,5,-35],[0,3,0]],['left',[-12,4,-15],[0,2,0]]]){
