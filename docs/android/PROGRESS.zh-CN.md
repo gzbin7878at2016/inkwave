@@ -748,3 +748,7 @@ v49/ef0e0a1，METHOD_PROBE=0，区段副本及全部遮蔽/旁路/比较为0，�
 实际UI USB日志INKWAVE-logs-20261026-233259-724652-87d6dd73.json，源码ef0e0a1逐项核对，游戏已force-stop并确认关闭。原始报告releases/investigation/phone-boss-v49-formal-after-prop.json留本机。对照仍是原产品，不能把与39°C方法轮的差异归因于区段候选；温度、战斗相机与阶段都不同。
 
 本批没有产品功能改动、不生成新APK。下一步继续Boss主线程/提交开销定位，先建立有界、无遮蔽的同负载证据再改代码；原索引剔除方案暂缓，不能以三角减少替代实测收益。
+
+## 2026-10-27 Boss矩阵遍历调查
+
+新v49方法采样updateMatrixWorld聚合自耗时625ms/30秒；8角色各8个隐藏LOD叶仍挂场景。新增独立桌面摘挂工具，先证明像素/可见矩阵/骨骼矩阵/顺序恢复与ABBA遍历开销，再决定下一步，未改产品。方法轮24.20013FPS非成绩，USB233557-052640-20f4a9b6核对ef0关闭。见BOSS-HIDDEN-LOD-INVESTIGATION.zh-CN.md。
