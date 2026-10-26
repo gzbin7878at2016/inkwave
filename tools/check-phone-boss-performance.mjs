@@ -22,6 +22,7 @@ const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 const propRangeBenchmark=process.env.BOSS_PROP_RANGE_BENCHMARK==='1';
 const hiddenLodBenchmark=process.env.BOSS_HIDDEN_LOD_BENCHMARK==='1';
 const rayQueryBenchmark=process.env.BOSS_RAY_QUERY_BENCHMARK==='1';
+if(rayQueryBenchmark&&!['rows','cache'].includes(process.env.BOSS_RAY_QUERY_KIND||'rows'))throw Error('射线副本类型只支持rows/cache');
 if(rayQueryBenchmark&&(propRangeBenchmark||hiddenLodBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('射线副本须独占一分钟方法轮');
 if(hiddenLodBenchmark&&(propRangeBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('隐藏LOD副本须独占一分钟方法轮自然结算');
 if(propRangeBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('区段副本仅允许一分钟方法轮自然结算后执行');
@@ -193,9 +194,9 @@ try{
     aggregate(m.bossMode,'update','bossMode');aggregate(__G.projectiles,'update','projectiles');aggregate(__G.specials,'update','specials');
     if(${rayQueryBenchmark}){
      const physics=__G.physics,original=physics.raycast;let calls=0;p.rayQueries=[];
-     // 每32次采一个、最多6000条，仅复制射线输入；不替换战斗中的求交或命中结果。
+     // 每97次采一个、最多6000条，仅复制射线输入；降低早期填满和固定步长采样偏置。
      physics.raycast=function(o,d,max,out,skip){
-      if(p.match===g.match&&m.state==='playing'&&++calls%32===0&&p.rayQueries.length<6000)p.rayQueries.push([o.x,o.y,o.z,d.x,d.y,d.z,max,!!skip]);
+      if(p.match===g.match&&m.state==='playing'&&++calls%97===0&&p.rayQueries.length<6000)p.rayQueries.push([o.x,o.y,o.z,d.x,d.y,d.z,max,!!skip]);
       return original.call(this,o,d,max,out,skip);
      };restores.push(()=>physics.raycast=original);
     }
