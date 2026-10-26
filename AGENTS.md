@@ -1,6 +1,7 @@
 # 本仓库开发与跨电脑同步规则
 
-2026-10-26当前接续（优先于下方历史）：已安装v1.0.37，干净功能源码d91ba2e，游戏关闭。实际SMAA天空色伪边缘已证实并仅手机Boss修复：6144样本旧6075非二值→0、同1556×740 HDR输入与正确零边缘参考字节差0；边缘/权重/HDR仍半浮点全尺寸，PC不变。正式26.899/26.551FPS，未稳定30，60未开始，不能将视觉逻辑修复当作全部性能解决。读docs/android/BOSS-PERFORMANCE-test37.zh-CN.md末节。下一步在当前短混响/PCM/清屏修复后，做60秒独立audio-graph旁路调查，附着20秒原生sched/freq/idle（现有capture-phone-boss-native工具），不算成绩、每局USB核对关闭。若仍是DSP大开销，再实测重复AudioParam更新，验证波形等价后才去重；不先削HRTF/音量/声道/玩法，不先扩大RG8。仅Boss、2倍/SMAA/8人/PC。正常轮BOSS_REQUIRE_SMAA_CLEAR=1，BOSS_COMPARE_SMAA_CLEAR=0，其他方法/生命周期/旁路0，小地图候选0；调查轮方法1，首珠可1。每批基础检查后中文commit/push再构建真机，结果独立提交。目标active，接续id=boss，USB常亮2，不并发CDP，无授权阻塞。
+2026-10-26当前接续（优先于下方历史）：当前安装v1.0.37，干净源码d91ba2e，游戏关闭。SMAA天空色伪边缘仅手机Boss已真机修复：6144样本旧6075非二值→0，同HDR输入与正确清零参考逐字节一致；格式/全尺寸/权重/HDR/PC不变。正式26.899/26.551FPS，未稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test37.zh-CN.md末节。后续audio-graph原生20秒完整，原图/断图AudioOutputDevice约单核89.28→16.55%，主线程仍91.74→88.86%；不是正式成绩，工具15秒旁路至finally收尾恢复，已USB核对关闭。下一步单独12秒浏览器Trace复核主线程脚本/样式/布局/绘制及进程元数据（trace-phone-boss工具，方法调查60秒）；再实测监听器/声像器重复AudioParam同目标比例，无需先改声音。若值得才经离线波形/移动/恢复/PC普通隔离验证后做Boss去重；不削HRTF/声音/人数，不盲目扩RG8。正常BOSS_REQUIRE_SMAA_CLEAR=1，COMPARE_SMAA_CLEAR=0，所有方法/生命周期/旁路0，小地图候选0、镜头预备1。每批中文commit/push后再构建真机，每局60秒真实上传核对关闭。目标active，接续id=boss，USB常亮2，不并发CDP，无授权阻塞。
+
 
 
 
