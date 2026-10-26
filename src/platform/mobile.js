@@ -2,11 +2,9 @@ import { G } from '../core/ctx.js';
 import { TouchInput } from '../core/touchInput.js';
 import { MobileProfiler } from './mobileProfiler.js';
 import { createMobileBossDisplay } from './mobileBossDisplay.js';
-import { createMobileBossAnimationClock } from './mobileBossAnimationClock.js';
 
 // 手机平台边界：输入、生命周期与诊断；不改变网络协议和权威模拟。
 export function installMobile(game) {
-  const bossAnimationClock = createMobileBossAnimationClock();
   const bossDisplay = createMobileBossDisplay(window.inkwaveMobile.native ? window.inkwaveMobile.BossDisplay : null,
     (name, detail) => window.inkwaveDiagnostics?.record(name, detail));
   const touch = game.input.touch = new TouchInput(game.input, () => game.pause());
@@ -45,7 +43,6 @@ export function installMobile(game) {
   };
   const save = () => localStorage.setItem('inkwave.settings', JSON.stringify(game.settings));
   const suspend = () => {
-    bossAnimationClock.suspend();
     bossDisplay.suspend();
     if (state.suspended) return;
     state.suspended = true; state.needsResume = true; game.mobileSuspended = true;
@@ -148,11 +145,10 @@ export function installMobile(game) {
   applySize();
   game.mobile = {
     profile: new MobileProfiler(game),
-    touch, state, suspend, foreground, resume, bossAnimationClock,
+    touch, state, suspend, foreground, resume,
     recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
       bossDisplay.update(game, G.mode, state.needsResume || state.lostContext || game.mobileSuspended);
-      bossAnimationClock.update(game, G.mode, state.needsResume || state.lostContext || game.mobileSuspended);
       window.inkwaveDiagnostics?.tick();
       const live = G.mode === 'match' && game.match && !game.match.attract && game.match.state === 'playing' && !game.match.paused;
       touch.setEnabled(!!(live && !game.menus?.current && !state.needsResume && !state.lostContext && dialog.hidden));

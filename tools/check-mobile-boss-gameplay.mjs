@@ -26,7 +26,11 @@ try{
   const direct=renderer.renderBufferDirect;
   renderer.renderBufferDirect=function(...args){
    const result=direct.apply(this,args);
-   if(__knownPrograms)for(const p of this.info.programs)if(!__knownPrograms.has(p.id))__latePrograms.set(p.id,{id:p.id,name:p.name,phase:__inkwave.match.state,object:args[4]?.name,material:args[3]?.name,type:args[3]?.type,shaders:(this.getContext().getAttachedShaders(p.program)||[]).map(shader=>this.getContext().getShaderSource(shader))});
+   if(__knownPrograms)for(const p of this.info.programs)if(!__knownPrograms.has(p.id)&&!__latePrograms.has(p.id)){
+    // 新程序可能由之前的compile建立，当前draw的物体不一定是它的所有者；用材质缓存反查。
+    const owners=[];__G.scene.traverse(o=>{for(const mat of (Array.isArray(o.material)?o.material:[o.material]))if(mat&&this.properties.get(mat).programs?.get(p.cacheKey)===p)owners.push({object:o.name,type:o.type,count:o.count,material:mat.name,materialType:mat.type,geometry:o.geometry?.id,visible:o.visible,instanceColor:!!o.instanceColor,vertexColors:mat.vertexColors});});
+    __latePrograms.set(p.id,{id:p.id,name:p.name,phase:__inkwave.match.state,object:args[4]?.name,material:args[3]?.name,type:args[3]?.type,owners,cacheKey:p.cacheKey,shaders:(this.getContext().getAttachedShaders(p.program)||[]).map(shader=>this.getContext().getShaderSource(shader))});
+   }
    return result;
   };
   const timer=setInterval(()=>{
@@ -64,11 +68,11 @@ try{
    for(const c of b.crabs.values()){c.dead=true;b._crabPopFx(c,true)}
    b._crabVisuals(.2);g.R.render();b._crabVisuals(1.1);
   }
-  return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo(),animationClock:g.mobile.bossAnimationClock.info()};
+  return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo(),animationClockInstalled:!!g.mobile.bossAnimationClock};
  });
  assert.ok(reuse.samePool);assert.equal(reuse.count,12);assert.equal(reuse.free,12);assert.equal(reuse.failures.length,0);
  assert.equal(reuse.minimapInk,null,'正常实战保持原小地图计算');
- assert.ok(reuse.animationClock.active&&reuse.animationClock.frames>0&&reuse.animationClock.captured>0,'真实Boss HUD无限动画未启用采样');
+ assert.equal(reuse.animationClockInstalled,false,'无真机收益的动画接管不能留在生产入口');
  await writeFile('releases/investigation/test11-boss-gameplay.json',JSON.stringify({prepared,reuse,errors},null,2));
  assert.deepEqual(reuse.late.map(({id,name,phase})=>({id,name,phase})),[],'开场/实战和两轮小怪不得新增shader程序对象');
  assert.deepEqual(errors,[]);
