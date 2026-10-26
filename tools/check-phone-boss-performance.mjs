@@ -204,7 +204,12 @@ try{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
     activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,musicAblationPhase:p.musicAblationPhase,pannerAblationPhase:p.pannerAblationPhase,audioSuspendedForProbe:p.audioSuspendedForProbe,audioSuspendError:p.audioSuspendError,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
-    audio:${process.env.BOSS_METHOD_PROBE==='1'}?{stats:__G.audio?.stats?.(),music:__G.music?.current?.id,playerType:__G.music?.current?.constructor.name,players:__G.music?.players.length}:undefined,
+    audio:${process.env.BOSS_METHOD_PROBE==='1'}?(()=>{
+     const audio=__G.audio,stats=audio?.stats?.(),voicePanners={};let voiceNodes=0;
+     // 只统计仍在播放的单发声道；弱引用历史节点数不能冒充当前DSP负载，循环数另列stats.loops。
+     for(const v of audio?.voices||[]){if(v.v.dead||v.stolen)continue;const model=v.panner?.panningModel||'2d';voicePanners[model]=(voicePanners[model]||0)+1;voiceNodes+=v.v.nodes.length;}
+     return {stats,voicePanners,voiceNodes,music:__G.music?.current?.id,playerType:__G.music?.current?.constructor.name,players:__G.music?.players.length};
+    })():undefined,
     timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
