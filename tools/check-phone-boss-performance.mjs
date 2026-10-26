@@ -296,6 +296,8 @@ try{
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
+ report.animationClock=await c.evaluate('__inkwave.mobile.bossAnimationClock?.info()||null');
+ if(process.env.BOSS_REQUIRE_ANIMATION_CLOCK==='1'&&(!report.animationClock?.captured||!report.animationClock.frames||report.animationClock.tracked||report.animationClock.active))throw Error('HUD动画未实际采样或自然结束后未恢复');
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
  report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear||null,edgeType:__inkwave.R.mobileAA?._edgesRT.texture.type,weightsType:__inkwave.R.mobileAA?._weightsRT.texture.type,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
  if(process.env.BOSS_REQUIRE_SMAA_CLEAR==='1'&&!report.postprocess.smaaClear?.active)throw Error('本批Boss SMAA清零修复未实际启用');

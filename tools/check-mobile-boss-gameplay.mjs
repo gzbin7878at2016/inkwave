@@ -64,10 +64,11 @@ try{
    for(const c of b.crabs.values()){c.dead=true;b._crabPopFx(c,true)}
    b._crabVisuals(.2);g.R.render();b._crabVisuals(1.1);
   }
-  return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo()};
+  return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo(),animationClock:g.mobile.bossAnimationClock.info()};
  });
  assert.ok(reuse.samePool);assert.equal(reuse.count,12);assert.equal(reuse.free,12);assert.equal(reuse.failures.length,0);
  assert.equal(reuse.minimapInk,null,'正常实战保持原小地图计算');
+ assert.ok(reuse.animationClock.active&&reuse.animationClock.frames>0&&reuse.animationClock.captured>0,'真实Boss HUD无限动画未启用采样');
  await writeFile('releases/investigation/test11-boss-gameplay.json',JSON.stringify({prepared,reuse,errors},null,2));
  assert.deepEqual(reuse.late.map(({id,name,phase})=>({id,name,phase})),[],'开场/实战和两轮小怪不得新增shader程序对象');
  assert.deepEqual(errors,[]);
