@@ -25,6 +25,8 @@ export function installDiagnostics(nativePlugin) {
     responsiveness: { longTaskSupported: false, thresholdMs: 200, longTasks: [], longTaskCount: 0, maxLongTaskMs: 0, stalls: [], maxDelayMs: 0, operations: [], slowOperations: [], operationCount: 0 } };
   let previous = null, renderer = null, savedTimer = null, lastTick = 0;
   let shaderId = 0;
+  // 战斗期间不主动向GPU发同步错误查询；着色器失败/上下文丢失仍立即走原回调。
+  current.glErrorChecks = { pending: false, deferredCount: 0, completedCount: 0, lastCompletedAt: null };
   const shaderSeen = new WeakSet();
   try { const s = localStorage.getItem(STORAGE_KEY); if (s && s.length < 2000000) previous = JSON.parse(s); } catch { /* 旧日志损坏不影响启动 */ }
 
@@ -217,11 +219,24 @@ export function installDiagnostics(nativePlugin) {
       if (globalThis.inkwaveMobile?.native) nativePlugin.showGraphicsFailure().catch(e => record('native-graphics-alert-failed', e, 'error'));
     },
     finishStartup() { startupCheckpoint('interactive'); current.startup.completedAtMs = Math.round(performance.now() - started); persist(); }, tick() {
-    const now = performance.now(); if (now - lastTick < 5000) return; lastTick = now;
+    const game = globalThis.__inkwave, match = game?.match;
+    const combat = globalThis.__G?.mode === 'match' && match?.state === 'playing' && !match.attract && !match.paused;
+    const now = performance.now();
+    // 对局结束/暂停后的第一帧补查，不再额外等待下一个5秒周期。
+    if (now - lastTick < 5000 && !(current.glErrorChecks.pending && !combat)) return; lastTick = now;
     // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串。
     const snapshot = sceneSnapshot(); delete snapshot.profile;
     record('scene-snapshot', snapshot);
-    if (renderer) { const gl = renderer.getContext(); const errors = []; for (let i = 0; i < 4; i++) { const e = gl.getError(); if (!e) break; errors.push(e); } if (errors.length) record('webgl-errors', errors, 'error'); }
+    if (renderer) {
+      if (combat) { current.glErrorChecks.pending = true; current.glErrorChecks.deferredCount++; }
+      else {
+        current.glErrorChecks.pending = false; current.glErrorChecks.completedCount++;
+        current.glErrorChecks.lastCompletedAt = new Date().toISOString();
+        const gl = renderer.getContext(), errors = [];
+        for (let i = 0; i < 4; i++) { const e = gl.getError(); if (!e) break; errors.push(e); }
+        if (errors.length) record('webgl-errors', { errors, note: '补查时间不是错误发生时间；错误可能产生于上次查询之后。' }, 'error');
+      }
+    }
     persist();
   } };
   globalThis.inkwaveDiagnostics = manager;
