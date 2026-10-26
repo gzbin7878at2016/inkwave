@@ -47,21 +47,26 @@ try {
       const ctx = new OfflineAudioContext(2, 96000, 48000);
       const audio = new AudioEngine({ context: ctx, music: false, seed: 9, raw: true }).init();
       audio._bossSamples = cache; audio._bossSampleEnabled = () => enabled;
-      const before = cache.stats.hits, voice = audio.play('shoot_shooter', { pitch: 1, pos: { x: 2, y: 0, z: 1 } });
-      check(!!voice && !!voice.panner && !!voice.send, '空间声道/混响丢失');
-      check(cache.stats.hits - before === Number(enabled), '非Boss/PC隔离失败');
-      if (enabled) check(voice.v.nodes.length === 5 && voice.v.srcs.length === 1, '缓存没有减少节点');
+      const voices = [];
+      for (const name of BOSS_CACHED_SOUNDS) {
+        const before = cache.stats.hits, voice = audio.play(name, { pitch: 1, pos: { x: 2, y: 0, z: 1 } });
+        check(!!voice && !!voice.panner && !!voice.send, name + '空间声道/混响丢失');
+        check(cache.stats.hits - before === Number(enabled), name + '非Boss/PC隔离失败');
+        if (enabled) check(voice.v.nodes.length === 5 && voice.v.srcs.length === 1, name + '缓存没有减少节点');
+        voices.push(voice);
+      }
       const rejected = new V(ctx, ctx.destination, 0, mulberry32(1));
       check(!cache.play(rejected, 'shoot_shooter', 1, { custom: 1 }), '未知参数应走原配方');
       check(!cache.play(rejected, 'shoot_shooter', 0.5, {}), '大幅变调应走原配方');
       check(rejected.nodes.length === 0, '回退前不应创建节点');
-      await ctx.startRendering(); check(voice.v.dead && voice.done, '播放后未释放');
+      await ctx.startRendering();
+      check(voices.every(voice => voice.v.dead && voice.done), '播放后未释放');
     }
     const pc = new AudioEngine({ music: false }); pc.ctx = {};
     check((await pc.prepareBossSample('shoot_shooter')).skipped && !pc._bossSamples, 'PC不应准备缓存');
     return { sounds, stats: cache.stats, checks: 'PCM一致、4变体、容量、取消/异常、上下文隔离、原空间/混响、参数回退、播放释放通过' };
   });
-  assert.equal(report.sounds.length, 3);
+  assert.equal(report.sounds.length, 14);
   await writeFile('releases/investigation/boss-audio-cache-browser.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally { await browser.close(); }

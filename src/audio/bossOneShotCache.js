@@ -1,7 +1,12 @@
 import { V, mulberry32 } from './music.js';
 
-// 真机调查中建图最重的三种短音；排除连击计数、循环和依赖调用参数的配方。
-export const BOSS_CACHED_SOUNDS = Object.freeze(['roller_flick', 'splat_small', 'shoot_shooter']);
+// 只列入真机高频、无状态且一秒内结束的配方；连击计数、循环和调用参数配方不缓存。
+// 手机Boss加载期合成，保留原配方音色、空间定位与混响，避免实战反复建振荡器/滤波图。
+export const BOSS_CACHED_SOUNDS = Object.freeze([
+  'roller_flick', 'splat_small', 'shoot_shooter',
+  'step_ink', 'step_dry', 'step_enemy', 'squid_in', 'squid_out', 'jump', 'land',
+  'boss_step', 'shoot_blaster', 'blaster_pump', 'blaster_boom',
+]);
 const VARIANTS = 4, MAX_SECONDS = 1, MAX_BYTES = 8 * 1024 * 1024;
 const PLAY_OPTIONS = new Set(['pos', 'volume', 'pitch', 'at', 'delay']);
 
