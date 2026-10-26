@@ -48,6 +48,7 @@
 
 import { DEFAULT_SETTINGS } from '../config.js';
 import { BossOneShotCache } from './bossOneShotCache.js';
+import { BossParamDedupe } from './mobileBossParamDedupe.js';
 import {
   V, music as musicSingleton, makeImpulse, noiseBuffer, mulberry32, mtof, perc, ahr, adsr, pts, sweep, strokeWave, pulseWave,
   kick, snare, crash, tom, brass, bell, pad, bass,
@@ -227,6 +228,18 @@ export class AudioEngine {
     this.sfxBus.gain.setTargetAtTime(taper(this.vol.sfx), t, 0.04);
   }
 
+  // 只允许手机Boss调用；停用释放弱缓存，只留下有界计数供结束验收。
+  setBossParamDedupe(active) {
+    active=!!active&&!!globalThis.inkwaveMobile&&!!this.ctx;
+    if(!active){
+      if(this._bossParamDedupe)this._bossParamLast=this._bossParamDedupe.info();
+      this._bossParamDedupe=null;this._bossParamContext=null;return;
+    }
+    if(this._bossParamContext!==this.ctx){this._bossParamDedupe=new BossParamDedupe();this._bossParamContext=this.ctx;}
+  }
+
+  bossParamDedupeInfo(){return {active:!!this._bossParamDedupe,...(this._bossParamDedupe?.info()||this._bossParamLast||{})};}
+
   // 【听者跟相机】每帧由相机位置/朝向调用;优先用 positionX 等 AudioParam
   // 平滑逼近(常数 0.01s),老浏览器回退 setPosition/setOrientation。
   setListener(pos, forward, up) {
@@ -236,6 +249,13 @@ export class AudioEngine {
     const okF = validPos(forward) && (forward.x || forward.y || forward.z);
     const u = validPos(up) && (up.x || up.y || up.z) ? up : { x: 0, y: 1, z: 0 };
     if (l.positionX) {
+      const d=this._bossParamDedupe;
+      if(d){
+        d.target(l.positionX,pos.x,t,.01);d.target(l.positionY,pos.y,t,.01);d.target(l.positionZ,pos.z,t,.01);
+        if(okF){d.target(l.forwardX,forward.x,t,.01);d.target(l.forwardY,forward.y,t,.01);d.target(l.forwardZ,forward.z,t,.01);
+          d.target(l.upX,u.x,t,.01);d.target(l.upY,u.y,t,.01);d.target(l.upZ,u.z,t,.01);}
+        return;
+      }
       l.positionX.setTargetAtTime(pos.x, t, 0.01); l.positionY.setTargetAtTime(pos.y, t, 0.01); l.positionZ.setTargetAtTime(pos.z, t, 0.01);
       if (okF) {
         l.forwardX.setTargetAtTime(forward.x, t, 0.01); l.forwardY.setTargetAtTime(forward.y, t, 0.01); l.forwardZ.setTargetAtTime(forward.z, t, 0.01);
@@ -266,6 +286,14 @@ export class AudioEngine {
   _setPos(voice, pos, t) {
     if (!voice.panner || !validPos(pos)) return;
     const p = voice.panner;
+    const cache=this._bossParamDedupe;
+    if(cache&&p.positionX){
+      cache.target(p.positionX,pos.x,t,.02);cache.target(p.positionY,pos.y,t,.02);cache.target(p.positionZ,pos.z,t,.02);
+      const d=this._dist(pos)*(voice.dk||1);
+      cache.target(voice.lp.frequency,distCut(d),t,.05);
+      if(voice.send)cache.target(voice.send.gain,voice.rev*this._sendScale(d),t,.05);
+      return;
+    }
     if (p.positionX) { p.positionX.setTargetAtTime(pos.x, t, 0.02); p.positionY.setTargetAtTime(pos.y, t, 0.02); p.positionZ.setTargetAtTime(pos.z, t, 0.02); }
     else p.setPosition(pos.x, pos.y, pos.z);
     const d = this._dist(pos) * (voice.dk || 1);

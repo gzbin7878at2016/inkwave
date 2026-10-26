@@ -12,6 +12,7 @@ try{
  page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
  await page.goto('http://localhost:8490/dist-mobile/',{waitUntil:'domcontentloaded'});
  await page.waitForFunction(()=>window.__inkwave?.mobile,{timeout:120000});
+ await page.mouse.click(2,2); // 正常用户手势解锁音频，避免仅在未建音频图时验证空路径。
  assert.equal(await page.evaluate(()=>__inkwave.settings.fpsCap),30);
  await page.evaluate(weapon=>{
   if(weapon)__inkwave.profile.weapon=weapon;
@@ -68,11 +69,12 @@ try{
    for(const c of b.crabs.values()){c.dead=true;b._crabPopFx(c,true)}
    b._crabVisuals(.2);g.R.render();b._crabVisuals(1.1);
   }
-  return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo(),animationClockInstalled:!!g.mobile.bossAnimationClock};
+  return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo(),animationClockInstalled:!!g.mobile.bossAnimationClock,audioParams:__G.audio.bossParamDedupeInfo(),audioState:__G.audio.ctx?.state};
  });
  assert.ok(reuse.samePool);assert.equal(reuse.count,12);assert.equal(reuse.free,12);assert.equal(reuse.failures.length,0);
  assert.equal(reuse.minimapInk,null,'正常实战保持原小地图计算');
  assert.equal(reuse.animationClockInstalled,false,'无真机收益的动画接管不能留在生产入口');
+ assert.ok(reuse.audioParams.active&&reuse.audioParams.skipped>0&&reuse.audioState==='running','真实音频上下文未启用Boss参数去重');
  await writeFile('releases/investigation/test11-boss-gameplay.json',JSON.stringify({prepared,reuse,errors},null,2));
  assert.deepEqual(reuse.late.map(({id,name,phase})=>({id,name,phase})),[],'开场/实战和两轮小怪不得新增shader程序对象');
  assert.deepEqual(errors,[]);
@@ -80,7 +82,7 @@ try{
  // 实际准备中的后台取消必须在恢复后回到菜单，不能留下覆盖层或旧init对局。
  await page.evaluate(()=>{__inkwave.debug.unfreeze();window.__cancelResult=null;__inkwave.startMatch({mode:'boss',mapId:'tidewater'}).then(r=>__cancelResult=r)});
  await page.waitForSelector('#mobile-preparation:not([hidden])');
- await page.evaluate(()=>{__inkwave.mobile.suspend();__inkwave.mobile.foreground()});
+ assert.equal(await page.evaluate(()=>{__inkwave.mobile.suspend();const active=__G.audio.bossParamDedupeInfo().active;__inkwave.mobile.foreground();return active;}),false,'挂起未释放Boss音频参数缓存');
  await page.waitForFunction(()=>!document.getElementById('mobile-dialog').hidden);
  await page.click('#mobile-dialog button');
  await page.waitForFunction(()=>!__inkwave._mobilePreparation&&!__inkwave._mobilePreparationError&&!document.getElementById('mobile-preparation'),{timeout:30000});

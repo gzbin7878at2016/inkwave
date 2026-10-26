@@ -296,6 +296,8 @@ try{
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
+ report.audioParams=await c.evaluate('__G.audio.bossParamDedupeInfo?.()||null');
+ if(process.env.BOSS_REQUIRE_AUDIO_PARAM_DEDUPE==='1'&&(!report.audioParams?.skipped||!report.audioParams.submitted||report.audioParams.active||report.audioParams.invalidated))throw Error('Boss音频参数去重未实际运行或自然结束未释放/发生失效');
  report.animationClock=await c.evaluate('__inkwave.mobile.bossAnimationClock?.info()||null');
  if(process.env.BOSS_REQUIRE_ANIMATION_CLOCK==='1'&&(!report.animationClock?.captured||!report.animationClock.frames||report.animationClock.tracked||report.animationClock.active))throw Error('HUD动画未实际采样或自然结束后未恢复');
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
