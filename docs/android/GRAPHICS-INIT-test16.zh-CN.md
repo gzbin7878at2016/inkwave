@@ -24,3 +24,7 @@ node tools/check-phone-graphics.mjs
 每次先force-stop，带参数启动新进程；读取窗口中的真实编译/链接状态、GL错误、像素、DOM刷新次数，收集USB截图，保存到releases/investigation/phone-minimal-graphics.json及同名前缀截图，然后关闭游戏。诊断资料通过USB直接采集到项目目录，不冒充游戏上传按钮测试。
 
 判定：若最小页也失败，继续追踪WebView/驱动/原生合成路径；若连续最小页通过，再逐级增加游戏渲染器、后处理、场景预热做对照。一次通过不等于已确定根因；截图需与读回像素和DOM计数对应，内部JS成功不能替代手机画面证据。测试结束保持游戏关闭。
+
+### 诊断连接修正
+
+最小页首次3次采集均未连上调试目标，不能算GPU失败：原工具只选择https://localhost/，而loadDataWithBaseURL生成的调试目标实际为about:blank、标题“最小图形诊断”。已按当前应用PID下的确切URL/标题增加匹配；修正先提交，再重跑。未放宽到其他应用或任意标签页。

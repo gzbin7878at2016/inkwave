@@ -5,7 +5,7 @@ export async function androidCDP(){
  const command=(...args)=>execFileSync(adb,[...target,...args],{encoding:'utf8',timeout:15000});
  const pid=command('shell','pidof','com.demoink.inkwave').trim();if(!/^\d+$/.test(pid))throw Error('游戏进程未运行');
  command('forward','tcp:9223',`localabstract:webview_devtools_remote_${pid}`);
- let page;for(let i=0;i<20;i++){try{page=(await(await fetch('http://127.0.0.1:9223/json',{signal:AbortSignal.timeout(3000)})).json()).find(t=>t.url==='https://localhost/');if(page)break;}catch{}await new Promise(r=>setTimeout(r,500));}if(!page)throw Error('WebView调试目标未出现');
+ let page;for(let i=0;i<20;i++){try{page=(await(await fetch('http://127.0.0.1:9223/json',{signal:AbortSignal.timeout(3000)})).json()).find(t=>t.url==='https://localhost/'||(t.url==='about:blank'&&t.title==='最小图形诊断'));if(page)break;}catch{}await new Promise(r=>setTimeout(r,500));}if(!page)throw Error('WebView调试目标未出现');
  const ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j});let id=0;const pending=new Map();
  // USB断线立即拒绝未完成请求，避免等待数分钟后丢失故障证据。
  const fail=reason=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error(reason))}pending.clear()};
