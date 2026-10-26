@@ -4,11 +4,13 @@ import { MobileProfiler } from './mobileProfiler.js';
 import { createMobileBossDisplay } from './mobileBossDisplay.js';
 import { syncMobileBossParamDedupe } from '../audio/mobileBossParamDedupe.js';
 import { createMobileBossRasterHints } from './mobileBossRasterHints.js';
+import { createMobileBossHudDecorations } from './mobileBossHudDecorations.js';
 import { clearMobileBossMinimapWorkerForMatch } from './mobileBossMinimapWorker.js';
 
 // 手机平台边界：输入、生命周期与诊断；不改变网络协议和权威模拟。
 export function installMobile(game) {
   const bossRasterHints = createMobileBossRasterHints();
+  const bossHudDecorations = createMobileBossHudDecorations();
   const bossDisplay = createMobileBossDisplay(window.inkwaveMobile.native ? window.inkwaveMobile.BossDisplay : null,
     (name, detail) => window.inkwaveDiagnostics?.record(name, detail));
   const touch = game.input.touch = new TouchInput(game.input, () => game.pause());
@@ -47,6 +49,7 @@ export function installMobile(game) {
   };
   const save = () => localStorage.setItem('inkwave.settings', JSON.stringify(game.settings));
   const suspend = () => {
+    bossHudDecorations.clear();
     clearMobileBossMinimapWorkerForMatch(game.match, 'suspend');
     bossRasterHints.clear();
     G.audio?.setBossParamDedupe?.(false);
@@ -152,11 +155,12 @@ export function installMobile(game) {
   applySize();
   game.mobile = {
     profile: new MobileProfiler(game),
-    touch, state, suspend, foreground, resume, bossRasterHints,
+    touch, state, suspend, foreground, resume, bossRasterHints, bossHudDecorations,
     recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
       if (game.match?.paused) clearMobileBossMinimapWorkerForMatch(game.match, 'paused');
       bossRasterHints.update(game.hud?.el,game.match,G.mode,state.needsResume||state.lostContext||game.mobileSuspended);
+      bossHudDecorations.update(game.hud?.el,game.match,G.mode,state.needsResume||state.lostContext||game.mobileSuspended);
       syncMobileBossParamDedupe(G.audio,game.match,G.mode,state.needsResume||state.lostContext||game.mobileSuspended);
       bossDisplay.update(game, G.mode, state.needsResume || state.lostContext || game.mobileSuspended);
       window.inkwaveDiagnostics?.tick();

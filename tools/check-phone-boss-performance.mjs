@@ -295,6 +295,10 @@ try{
    report.displayDuringPlay=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
    if(report.displayDuringPlay.observedWidth!==report.displayBeforeBoss.observedWidth||report.displayDuringPlay.observedHeight!==report.displayBeforeBoss.observedHeight)throw Error('Boss窗口实验改变了实际物理分辨率');
   }
+  if(process.env.BOSS_REQUIRE_HUD_DECOR==='1'&&report.methodProbe&&sample.state==='playing'&&sample.activeMs>=5000&&!report.hudDecorStyles){
+   report.hudDecorStyles=await c.evaluate(`(()=>{const root=__inkwave.hud.el,selectors=['.iw-sp__wave','.iw-sp__wave2','.iw-sp__bub','.iw-timer__drip','.iw-bb__embsplat','.iw-bb__stripes'];return {active:root.matches('.iw-hud.is-boss.iw-mobile-boss-decor'),decorations:selectors.flatMap(selector=>[...root.querySelectorAll(selector)].map(el=>({selector,name:getComputedStyle(el).animationName}))),self:getComputedStyle(root.querySelector('.iw-sq.is-self .iw-sq__you')).animationName};})()`);
+   if(!report.hudDecorStyles.active||report.hudDecorStyles.decorations.length<8||report.hudDecorStyles.decorations.some(x=>x.name!=='none')||report.hudDecorStyles.self!=='iw-you')throw Error('手机实际HUD装饰未静态化或本人标记丢失');
+  }
   if(verifyDisplayLifecycle&&sample.state==='playing'&&sample.activeMs>=20000&&!report.displayLifecycle){
    const query='(async()=>({native:await inkwaveMobile.BossDisplay.getState(),app:await inkwaveMobile.App.getState(),hidden:document.hidden,suspended:!!__inkwave.mobileSuspended,needsResume:__inkwave.mobile.state.needsResume,paused:__inkwave.match.paused}))()';
    report.displayLifecycle={before:await c.evaluate(query)};
@@ -345,6 +349,8 @@ try{
  if(nativePaint&&(!report.nativePaintProbe?.adopted||report.nativePaintProbe.active||report.nativePaintProbe.errors||!report.nativePaintProbe.restored))throw Error('原生装饰动画分档未生效或未恢复/发生异常');
  if(markerVars&&(!report.markerVarProbe?.intercepted||!report.markerVarProbe.transitions.some(t=>t.phase==='restored')||report.markerVarProbe.active))throw Error('标签变量调查未生效或未恢复');
  report.bossRasterHints=await c.evaluate('__inkwave.mobile.bossRasterHints?.info()||null');
+ report.bossHudDecorations=await c.evaluate('__inkwave.mobile.bossHudDecorations?.info()||null');
+ if(process.env.BOSS_REQUIRE_HUD_DECOR==='1'&&(!report.bossHudDecorations?.activations||report.bossHudDecorations.active||!report.bossHudDecorations.releases))throw Error('Boss装饰策略未实际启用或结算未释放');
  if(process.env.BOSS_REQUIRE_RASTER_HINTS==='1'&&(!report.bossRasterHints?.activations||report.bossRasterHints.active||!report.bossRasterHints.releases))throw Error('Boss标签缓存未实际启用或结束未释放');
  if(layerHints&&(!report.layerProbe?.transitions.some(t=>t.phase==='hinted')||!report.layerProbe.transitions.some(t=>t.phase==='restored')||report.layerProbe.active))throw Error('标签图层提示未生效或未恢复');
  if(domAblation&&(!report.domProbe?.transitions.some(t=>t.phase==='dom-hidden')||!report.domProbe.transitions.some(t=>t.phase==='restored')||report.domProbe.hidden))throw Error('DOM隔离未生效或未恢复');

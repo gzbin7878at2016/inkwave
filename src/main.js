@@ -818,6 +818,7 @@ class Game {
     clearMobileBossMinimapWorkerForMatch(this.match, 'prepare-next');
     G.audio?.setBossParamDedupe?.(false); // 换局的异步准备期间不保留上一局音频参数缓存。
     this.mobile?.bossRasterHints?.clear(); // 准备期间释放上一局标签栅格缓存提示。
+    this.mobile?.bossHudDecorations?.clear(); // 准备时还原原动画，新的真实Boss开战后再接管装饰。
     this.R.mobileAA?.clearBossEdges?.(); // 新局准备开始前释放旧局专用的边缘格式。
     const token = { cancelled: false, retry };
     token.done = new Promise(resolve => { token.finish = resolve; });
@@ -1219,6 +1220,7 @@ class Game {
     if (window.inkwaveMobile) clearMobileBossMinimapWorkerForMatch(this.match, 'quit');
     if (window.inkwaveMobile) G.audio?.setBossParamDedupe?.(false); // 先释放Boss独占缓存，再等待淡出/准备取消。
     if (window.inkwaveMobile) this.mobile?.bossRasterHints?.clear();
+    if (window.inkwaveMobile) this.mobile?.bossHudDecorations?.clear();
     if (window.inkwaveMobile) this.R.mobileAA?.clearBossEdges?.();
     const preparation = this._mobilePreparation;
     if (preparation) { preparation.cancelled = true; preparation.keepUntilMenu = true; }
