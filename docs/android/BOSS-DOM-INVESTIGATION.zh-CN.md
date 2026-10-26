@@ -111,3 +111,10 @@ v41-bar-native只隐藏.iw-bb，仍更新原状态与声音。原生20秒覆盖8
 BOSS_TRACE_RENDERING=1时先向当前WebView实际查询Tracing.getCategories，只启用存在的cc/viz/skia及有限的disabled-by-default Skia/GPU service/Viz debug类别。仍独立方法轮12秒，完整HUD、正常模拟/输入/声音、不与其他Trace并行。记录起止performance.mark定位本页PID/TID和实际范围、buffer峰值/dataLoss字段、事件截断状态。
 
 补齐trace-event-collector：除X还正确合成跨批B/E嵌套作用域，跨线程独立栈，保留tts/tdur；只比较完整区间，不能把GPU主机线程的墙钟当GPU硬件时间。渲染调查阈值50微秒、最多200000条，其余默认100微秒/80000条；任何截断/丢失必须标注，不用缺失数据宣称收益。分批嵌套/跨线程/CPU时间/阈值/标记/元数据/容量单元验证通过，脚本语法通过。先中文提交再真机附着，工具不创建/拆除主轮ADB转发，采集完成主轮仍自然结束、USB上传核对后关闭。
+
+
+首次渲染细类轮 v41-rendering-trace：实际WebView类别包含Skia/GPU service，但ReportEvents结束导出15秒超时，received=0，无可用Trace；不能分析这个失败文件或宣称已定位渲染函数。主局自然完成1673帧/68.1159秒/24.5611FPS、p95 66.7/p99 83.4、8次≥100，真实USB INKWAVE-logs-20261026-182902-558706-03d30337.json 核对源码后关闭；不是正式成绩。
+
+调整工具而非重启同一局：去掉最密集的逐GL命令gpu.service，只保留实际支持的cc/viz/skia/SkiaGPU；采用ReturnAsStream按1MiB分块读，最大256MiB、始终关闭句柄；导出完成有界等60秒，避免重复请求Tracing.end。先读本机/json/protocol确认traceBufferSizeInKb再用64MiB配置，不支持则记录并使用原参数。独立方法轮结束最多等20秒本轮Trace尾部导出，然后仍上传关闭；正式轮不加此分支。
+
+混合文本/base64/UTF8/EOF/容量失败关闭单元通过；真实Edge ReturnAsStream 61723字节/5事件，中文标记保留、dataLoss=false、句柄确认关闭通过。真机调整结果待验证，未把超时当作USB断线或游戏图形错误。

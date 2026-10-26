@@ -2,7 +2,8 @@
 // 只能配合BOSS_METHOD_PROBE=1，Trace本身有开销，禁止当正式FPS成绩。
 import {mkdir,writeFile} from 'node:fs/promises';
 import {createTraceEventCollector} from './trace-event-collector.mjs';
-let ws,seq=0,tracing=false,complete;
+import {readCdpTraceStream} from './read-cdp-trace-stream.mjs';
+let ws,seq=0,tracing=false,ending=false,complete,streamHandle;
 const rendering=process.env.BOSS_TRACE_RENDERING==='1';
 const pending=new Map(),collector=createTraceEventCollector({limit:rendering?200000:80000,minUs:rendering?50:100}),events=collector.events;
 const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
@@ -10,7 +11,7 @@ if(!Number.isFinite(seconds)||seconds<1||seconds>45)throw Error('BOSS_TRACE_SECO
 const report={status:'waiting',requestedSeconds:seconds,renderingProbe:rendering,eventsTruncated:false,performanceTest:false};
 const base=`releases/investigation/boss-trace-${new Date().toISOString().replace(/[:.]/g,'-')}`;
 const call=(method,params={})=>new Promise((resolve,reject)=>{
- const id=++seq,timer=setTimeout(()=>{pending.delete(id);reject(Error(`${method}超时`))},20000);
+ const id=++seq,timer=setTimeout(()=>{pending.delete(id);reject(Error(`${method}超时`))},method==='Tracing.end'?60000:20000);
  pending.set(id,{resolve,reject,timer});ws.send(JSON.stringify({id,method,params}));
 });
 const evaluate=async expression=>{const r=await call('Runtime.evaluate',{expression,returnByValue:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
@@ -29,7 +30,7 @@ try {
   else if(v.method==='Tracing.dataCollected'){
    collector.add(v.params.value);
   }else if(v.method==='Tracing.bufferUsage')report.maxBufferUsage=Math.max(report.maxBufferUsage||0,v.params.percentFull||0);
-  else if(v.method==='Tracing.tracingComplete'){report.dataLossOccurred=v.params?.dataLossOccurred??null;complete?.();}
+  else if(v.method==='Tracing.tracingComplete'){report.dataLossOccurred=v.params?.dataLossOccurred??null;streamHandle=v.params?.stream;complete?.();}
  };
  ws.onclose=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('调试目标关闭'))}pending.clear()};
  let ready=false;
@@ -42,14 +43,24 @@ try {
  const available=(await call('Tracing.getCategories')).categories;
  report.availableRenderingCategories=available.filter(c=>/gpu|skia|viz|^cc/.test(c));
  const categories=['devtools.timeline','disabled-by-default-devtools.timeline','blink.user_timing','v8','gpu'];
- if(rendering)for(const name of ['cc','viz','skia','disabled-by-default-skia','disabled-by-default-skia.gpu','disabled-by-default-gpu.service','disabled-by-default-viz.debug'])if(available.includes(name))categories.push(name);
+ if(rendering)for(const name of ['cc','viz','skia','disabled-by-default-skia','disabled-by-default-skia.gpu'])if(available.includes(name))categories.push(name);
  report.categories=categories;
- await call('Tracing.start',{categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:'ReportEvents'});tracing=true;
+ const params={categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:rendering?'ReturnAsStream':'ReportEvents'};
+ if(rendering){
+  try{const schema=await(await fetch('http://127.0.0.1:9223/json/protocol',{signal:AbortSignal.timeout(3000)})).json();
+   report.bufferConfigSupported=!!schema.domains.find(d=>d.domain==='Tracing')?.types?.find(t=>t.id==='TraceConfig')?.properties?.some(p=>p.name==='traceBufferSizeInKb');
+  }catch(error){report.protocolSchemaError=String(error);}
+  if(report.bufferConfigSupported){delete params.categories;delete params.options;params.traceConfig={recordMode:'recordContinuously',traceBufferSizeInKb:65536,includedCategories:categories};}
+  await evaluate('window.__inkwaveRenderTrace={pending:true,startedAt:Date.now()};true');
+ }
+ report.transferMode=params.transferMode;
+ await call('Tracing.start',params);tracing=true;
  await evaluate('performance.mark("inkwave-render-start");true');
  await new Promise(r=>setTimeout(r,seconds*1000));
- const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),15000);complete=()=>{clearTimeout(timer);resolve()}});
+ const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),60000);complete=()=>{clearTimeout(timer);resolve()}});
  await evaluate('performance.mark("inkwave-render-end");true');
- await call('Tracing.end');await done;tracing=false;
+ ending=true;await Promise.all([call('Tracing.end'),done]);tracing=false;
+ if(rendering){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
  Object.assign(report,collector.info());
  report.markers=events.filter(e=>e.name?.startsWith('inkwave-render-')).map(e=>({name:e.name,pid:e.pid,tid:e.tid,ts:e.ts}));
  report.status='collected';
@@ -59,7 +70,8 @@ try {
  report.longEvents=events.filter(e=>e.ph==='X'&&e.dur>=50000).map(e=>({pid:e.pid,tid:e.tid,name:e.name,ms:e.dur/1000,ts:e.ts,args:e.args})).slice(0,100);
 }catch(error){report.status='failed';report.error=String(error);process.exitCode=1;}
 finally{
- if(tracing&&ws?.readyState===WebSocket.OPEN)await call('Tracing.end').catch(()=>{});
+ if(tracing&&!ending&&ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({id:++seq,method:'Tracing.end'}));
+ if(rendering&&ws?.readyState===WebSocket.OPEN)await evaluate('if(window.__inkwaveRenderTrace)__inkwaveRenderTrace.pending=false;true').catch(()=>{});
  ws?.close();
  Object.assign(report,collector.info());
  await writeFile(`${base}.json`,JSON.stringify({report,traceEvents:events}));

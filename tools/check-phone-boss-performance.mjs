@@ -343,6 +343,8 @@ try{
 finally{
  if(!report.diagnostics)report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})').catch(()=>null);
  await save();
+ // 只在独立方法轮等待本轮渲染Trace完成导出；正式轮无此分支，不能无限阻止上传关闭。
+ if(report.methodProbe){const waitStart=Date.now();for(let i=0;i<40;i++){const pending=await c.evaluate('!!window.__inkwaveRenderTrace?.pending').catch(()=>false);if(!pending)break;await new Promise(r=>setTimeout(r,500));}report.renderTraceTailWaitMs=Date.now()-waitStart;}
  // 断线立即失败；恢复原方法，不将自动操作留给下一轮人工试玩。
  await c.evaluate('window.__phoneCleanup?.()').catch(()=>{});
  if(domAblation)report.domCleanup=await c.evaluate('({remaining:!!document.querySelector("[data-boss-dom-probe]"),controlsDisplay:getComputedStyle(document.getElementById("mobile-controls")).display})').catch(e=>({error:String(e)}));
