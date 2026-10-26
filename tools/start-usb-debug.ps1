@@ -3,7 +3,8 @@ param([string]$AdbPath = "$env:USERPROFILE/.cache/demoink-android/sdk/platform-t
 $ErrorActionPreference = 'Stop'
 $usbProject = Split-Path -Parent $PSScriptRoot
 if (!(Test-Path -LiteralPath $AdbPath)) { throw '未找到adb，请通过-AdbPath指定Android SDK platform-tools/adb.exe' }
-$usbTarget = if ($Serial) { @('-s', $Serial) } else { @('-d') }
+# 中文说明：外层数组保留单个-d参数，防止PowerShell将标量字符串展开成字符。
+$usbTarget = @(if ($Serial) { '-s'; $Serial } else { '-d' })
 $usbState = & $AdbPath @usbTarget get-state
 if ($LASTEXITCODE -ne 0 -or $usbState -ne 'device') { throw '请连接一台USB手机，开启USB调试并允许电脑授权；多台设备用-Serial指定' }
 New-Item -ItemType Directory -Path "$usbProject/releases/logs" -Force | Out-Null
