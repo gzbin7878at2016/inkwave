@@ -52,7 +52,7 @@ export async function benchmarkBossPropRanges(game,G,T,create){
    }
    if(stable<2)throw Error('原参考持续不稳定，拒绝比较：'+JSON.stringify({view:name,referenceWarmup}));
    const b1=draw(true),b=draw(true),after=draw(false),full=draw(true,false);
-   const p={view:name,referenceWarmup,referenceRepeat:referenceWarmup.at(-1),referenceAcross:diff(a.data,after.data),candidateFirst:diff(a.data,b1.data),candidateRepeat:diff(b1.data,b.data),candidate:diff(a.data,b.data),withoutCulling:diff(a.data,full.data),submittedTriangles:b.submittedTriangles};pixels.push(p);
+   const p={view:name,referenceWarmup,referenceRepeat:referenceWarmup.at(-1),referenceAcross:diff(a.data,after.data),candidateFirst:diff(a.data,b1.data),candidateRepeat:diff(b1.data,b.data),candidate:diff(a.data,b.data),withoutCulling:diff(a.data,full.data),submittedTriangles:b.submittedTriangles,frameMeta:{reference:a.meta,candidate:b.meta,after:after.meta,full:full.meta}};pixels.push(p);
    if([p.referenceRepeat,p.referenceAcross,p.candidateFirst,p.candidateRepeat,p.candidate,p.withoutCulling].some(d=>d.max))throw Error('手机实际像素或重复参考不一致：'+JSON.stringify(p));
    if(gl.getError()!==gl.NO_ERROR)throw Error('手机区段副本出现GL错误');
    await yieldTurn();

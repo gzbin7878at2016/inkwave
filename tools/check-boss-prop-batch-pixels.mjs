@@ -1,18 +1,19 @@
 // 在独立桌面浏览器比较真实Boss完整画面的A/B/A；不是手机性能成绩，也不写产品源码。
 import puppeteer from 'puppeteer-core';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile,access} from 'node:fs/promises';
 import {resolveBundledThree} from './resolve-bundled-three.mjs';
 import {benchmarkBossPropRanges} from './phone-prop-range-benchmark.mjs';
 import {createBossPropRangeCandidate} from './boss-prop-range-candidate.mjs';
 await mkdir('releases/investigation',{recursive:true});
 const browser=await puppeteer.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true,args:['--no-sandbox','--enable-unsafe-swiftshader'],protocolTimeout:240000});
 const report={status:'loading',performanceTest:false,productModified:false,errors:[]};
+let page;
 report.groupMode=process.env.BOSS_PROP_GROUP_MODE||'cells';
 report.benchmark=process.env.BOSS_PROP_BENCHMARK==='1';
 report.backend=process.env.BOSS_PROP_BACKEND||'batch';
 report.threeModulePath=await resolveBundledThree();
 try{
- const page=await browser.newPage();await page.setViewport({width:778,height:370,deviceScaleFactor:2,isMobile:true,hasTouch:true});
+ page=await browser.newPage();await page.setViewport({width:778,height:370,deviceScaleFactor:2,isMobile:true,hasTouch:true});
  if(process.env.BOSS_PROP_PHONE_CORE==='1'){
   report.images=[];const prefix='releases/investigation/prop-reference-'+Date.now()+'-';
   await page.exposeFunction('__writePropProbeImage',async(name,url)=>{if(!/^[a-z-]+$/.test(name)||!url.startsWith('data:image/png;base64,'))throw Error('诊断PNG参数无效');const path=prefix+name+'.png';await writeFile(path,Buffer.from(url.split(',')[1],'base64'));report.images.push(path);});
@@ -74,4 +75,15 @@ try{
  }
  if(report.status!=='matched')process.exitCode=1;
 }catch(error){report.status='failed';report.error=String(error);process.exitCode=1;}
-finally{await browser.close();await writeFile('releases/investigation/boss-prop-batch-pixels.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));}
+finally{
+ await writeFile('releases/investigation/boss-prop-batch-pixels.json',JSON.stringify(report,null,2));
+ // 调查时保留同一静态世界，避免每个诊断都重新启动/编译；10分钟硬上限，支持明确停止文件。
+ if(process.env.BOSS_PROP_KEEP_BROWSER==='1'&&page&&!page.isClosed()){
+  await page.evaluate(()=>{if(window.__inkwave)__inkwave.frozen=true;}).catch(()=>{});
+  const stopPath='releases/investigation/prop-browser-stop-'+process.pid+'-'+Date.now(),meta={status:'waiting',ownerPid:process.pid,endpoint:browser.wsEndpoint(),stopPath,url:page.url()};
+  await writeFile('releases/investigation/prop-browser-session.json',JSON.stringify(meta));console.log(JSON.stringify({fixtureWaiting:true,ownerPid:process.pid}));
+  const begin=Date.now();while(Date.now()-begin<600000&&browser.connected){try{await access(stopPath);break;}catch{}await new Promise(r=>setTimeout(r,500));}
+  await writeFile('releases/investigation/prop-browser-session.json',JSON.stringify({...meta,status:'closed'}));
+ }
+ await browser.close();await writeFile('releases/investigation/boss-prop-batch-pixels.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+}
