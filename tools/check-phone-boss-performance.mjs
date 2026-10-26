@@ -2,6 +2,9 @@
 import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
+import {computeMinimapInkBand} from './minimap-band-kernel.mjs';
+import {createMinimapBandWorker,applyMinimapBand} from './minimap-band-worker.mjs';
+import {benchmarkMinimapWorker} from './minimap-worker-benchmark.mjs';
 import {compareBossSmaaClear} from './compare-boss-smaa-clear.mjs';
 import {createBossDomProbe} from './boss-dom-probe.mjs';
 import {createBossLayerHintProbe} from './boss-layer-hint-probe.mjs';
@@ -34,10 +37,12 @@ if(!['all','bar','special','markers','map','top','crosshair','controls','panel']
 if(domAblation&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyBossExit||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_COMPARE_SMAA_CLEAR==='1'||process.env.BOSS_MINIMAP_BENCHMARK==='1'))throw Error('DOM隔离仅允许独占一分钟方法调查，不能作正式成绩或混用其他旁路');
 if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
+const minimapWorkerBenchmark=process.env.BOSS_MINIMAP_WORKER_BENCHMARK==='1';
 const compareSmaaClear=process.env.BOSS_COMPARE_SMAA_CLEAR==='1';
 const compareSmaaEdges=process.env.BOSS_COMPARE_SMAA_EDGES==='1';
 const edgeFormat=process.env.BOSS_EDGE_FORMAT||'rg8';if(!['rg8','rg16f'].includes(edgeFormat))throw Error('BOSS_EDGE_FORMAT只支持rg8/rg16f');
 if(compareSmaaEdges&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('SMAA边缘格式比较仅供结算后独立方法调查');
+if(minimapWorkerBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaEdges||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('Worker比较仅允许结算后独立一分钟方法轮');
 if(compareSmaaClear&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('SMAA同输入比较仅允许一分钟独立方法调查');
 if(minimapBenchmark && (process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('小地图计算对照仅允许一分钟方法调查轮');
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
@@ -352,6 +357,14 @@ try{
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
  if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
+ if(minimapWorkerBenchmark){
+  if(!report.roundCompleted)throw Error('必须自然结算后才运行副本Worker实验');
+  report.minimapWorkerBenchmark=[];
+  for(const scenario of ['empty','snapshot','sparse','dense']){
+   const result=await c.evaluate(`(${benchmarkMinimapWorker.toString()})(__inkwave.minimap,(${computeMinimapInkBand.toString()}),(${createMinimapBandWorker.toString()}),(${applyMinimapBand.toString()}),${JSON.stringify([scenario])})`);
+   report.minimapWorkerBenchmark.push(...result);await save();
+  }
+ }
  if(compareSmaaClear)report.smaaClearComparison=await c.evaluate(`(${compareBossSmaaClear.toString()})(__inkwave)`);
  if(compareSmaaEdges){const half=edgeFormat==='rg16f';report.smaaEdgesComparison=await c.evaluate(`(${compareBossSmaaEdges.toString()})(__inkwave,${JSON.stringify({format:RGFormat,type:half?HalfFloatType:UnsignedByteType,internalFormat:half?'RG16F':'RG8',expectedBits:half?[16,16,0,0]:[8,8,0,0]})})`);if(!report.smaaEdgesComparison.restored||report.smaaEdgesComparison.maxByteDifference||report.smaaEdgesComparison.nonBinary)throw Error(`SMAA ${edgeFormat}未逐字节匹配参考或恢复失败`);}
  if(verifyBossExit){
