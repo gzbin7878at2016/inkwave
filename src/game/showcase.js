@@ -3346,12 +3346,16 @@ export class Showcase {
   // 全程保存并还原渲染器状态(目标、清屏色、autoClear)。
   render() {
     if (this._pq.length) this._portraitStep();
-    const r = this.r, W = innerWidth, H = innerHeight;
+    const r = this.r, mobileBoss = !!globalThis.inkwaveMobile && !!G.match?.boss && G.mode === 'match';
+    let W, H;
+    // 手机Boss实战通常没有展台；先确认需要绘制，再读取会触发布局的窗口尺寸。
+    if (!mobileBoss) { W = innerWidth; H = innerHeight; }
     this._fdt = 1 / 60;
     const L = this.lob, setA = L && L.ready && L.set ? L.k : 0;
     const om = OVERLAY.has(this.mode) ? this.mode : this._out > 0 ? this._lastMode : null;
     const ov = !!(om && this.chars.length);
     if (setA <= 0 && !ov) return;
+    if (mobileBoss) { W = innerWidth; H = innerHeight; }
     const prevRT = r.getRenderTarget(), prevAuto = r.autoClear, prevAlpha = r.getClearAlpha();
     r.getClearColor(this._clr);
     r.autoClear = false;
