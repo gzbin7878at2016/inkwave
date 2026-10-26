@@ -28,6 +28,11 @@ try{
    const wrap=(o,k,label)=>{const fn=o[k],values=p.methods[label]=[];o[k]=function(...args){const start=performance.now();try{return fn.apply(this,args)}finally{if(values.length<10000)values.push(performance.now()-start)}};restores.push(()=>o[k]=fn);};
    for(const k of ['_updCrosshair','_updTank','_updSpecial','_updMap','_updMarkers','_updSquads','_updPrompt'])wrap(g.hud,k,k);
    wrap(g.hud.boss,'update','bossHud');
+   // 同步诊断/存储/GL查询可能在战斗帧外阻塞，调查时单独计时，不计作正式成绩。
+   wrap(g.R,'resize','rendererResize');
+   wrap(window.inkwaveDiagnostics,'tick','diagnosticsTick');
+   wrap(Storage.prototype,'setItem','storageWrite');
+   wrap(g.R.renderer.getContext(),'getError','glGetError');
   }
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
