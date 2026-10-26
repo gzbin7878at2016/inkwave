@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>最小图形诊断</title>
+<style>body{margin:20px;background:#142436;color:white;font:20px sans-serif}canvas{border:3px solid white;width:128px;height:128px}pre{white-space:pre-wrap;font-size:14px}#tick{display:inline-block;padding:10px;background:#315275}</style>
+<h1>最小图形诊断（未加载游戏）</h1><p id="tick">界面刷新检查</p>
+<p>左：Canvas 2D；右：WebGL 2</p><canvas id="flat" width="128" height="128"></canvas><canvas id="gpu" width="128" height="128"></canvas><pre id="result"></pre>
+<script>
+// 此页只有一个WebGL上下文；不导入Three.js、不创建游戏、角色、纹理或预热资源。
+const report=window.__graphicsProbe={started:Date.now(),gamePresent:!!window.__inkwave,ticks:0,complete:false,errors:[]};
+const output=()=>document.querySelector('#result').textContent=JSON.stringify(report,null,2);
+const timer=setInterval(()=>{report.ticks++;document.querySelector('#tick').textContent='界面刷新次数：'+report.ticks;output();if(report.ticks>=8)clearInterval(timer)},250);
+try{
+ const flat=document.querySelector('#flat').getContext('2d');flat.fillStyle='#20a060';flat.fillRect(0,0,128,128);report.canvas2D=[...flat.getImageData(64,64,1,1).data];
+ const gl=document.querySelector('#gpu').getContext('webgl2',{alpha:false,antialias:false});
+ if(!gl)throw Error('WebGL2上下文创建失败');
+ const ext=gl.getExtension('WEBGL_debug_renderer_info');report.renderer=gl.getParameter(ext?ext.UNMASKED_RENDERER_WEBGL:gl.RENDERER);report.version=gl.getParameter(gl.VERSION);report.attributes=gl.getContextAttributes();
+ const compile=(type,source)=>{const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);return shader};
+ const vertex=compile(gl.VERTEX_SHADER,'#version 300 es\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0,1);}');
+ const fragment=compile(gl.FRAGMENT_SHADER,'#version 300 es\nprecision highp float;out vec4 c;void main(){c=vec4(0.25,0.75,0.5,1.0);}');
+ report.vertex={compiled:gl.getShaderParameter(vertex,gl.COMPILE_STATUS),log:gl.getShaderInfoLog(vertex)};
+ report.fragment={compiled:gl.getShaderParameter(fragment,gl.COMPILE_STATUS),log:gl.getShaderInfoLog(fragment)};
+ const program=gl.createProgram();gl.attachShader(program,vertex);gl.attachShader(program,fragment);gl.linkProgram(program);report.linked=gl.getProgramParameter(program,gl.LINK_STATUS);report.programLog=gl.getProgramInfoLog(program);
+ gl.viewport(0,0,128,128);gl.clearColor(1,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
+ if(report.linked){gl.useProgram(program);gl.drawArrays(gl.TRIANGLES,0,3)}
+ const pixel=new Uint8Array(4);gl.readPixels(64,64,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);report.pixel=[...pixel];
+ for(let i=0;i<8;i++){const e=gl.getError();if(!e)break;report.errors.push(e)}
+ report.contextLost=gl.isContextLost();report.passed=report.linked&&report.errors.length===0&&report.pixel.every((v,i)=>Math.abs(v-[64,191,128,255][i])<=1);
+}catch(error){report.error=String(error);report.passed=false}
+report.complete=true;output();
+</script></html>

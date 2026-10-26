@@ -12,8 +12,8 @@ try{
  report.device.thermalBefore=c.command('shell','dumpsys','thermalservice');
  let ready=false;
  for(let i=0;i<180;i++){
-  const state=await c.evaluate('({ready:!!window.__inkwave?.mobile&&!__inkwave._building,suspended:!!window.__inkwave?.mobileSuspended})');
-  if(state.suspended)throw Error('手机已安全暂停，先排查图形/前后台日志，不强行开始对局');
+  const state=await c.evaluate('({ready:!!window.__inkwave?.mobile&&!__inkwave._building,suspended:!!window.__inkwave?.mobileSuspended,failed:!!document.getElementById("mobile-gpu-error")||document.getElementById("boot-error")?.style.display==="block"})');
+  if(state.suspended||state.failed)throw Error('手机已安全暂停或启动失败，先排查日志，不强行开始对局');
   if(state.ready){ready=true;break}await new Promise(r=>setTimeout(r,1000));
  }
  if(!ready)throw Error('手机游戏未就绪');
