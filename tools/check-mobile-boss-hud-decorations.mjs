@@ -22,19 +22,24 @@ try {
     hud.sp.querySelector('.iw-sp__pct').textContent = '100%'; hud.timerTxt.textContent = '0:20';
     await document.fonts.ready; await new Promise(r => setTimeout(r, 500)); await new Promise(requestAnimationFrame);
     const q = selector => { const element = hud.el.querySelector(selector); check(!!element, '真实HUD缺少：' + selector); return element; };
-    const decorations = ['.iw-sq:not(.is-self) .iw-sq__you', '.iw-timer__drip', '.iw-sp__wave', '.iw-sp__wave2', '.iw-sp__bub', '.iw-sp.is-ready .iw-sp__orb', '.iw-sp.is-ready .iw-sp__icon', '.iw-bb__embsplat', '.iw-bb__stripes'];
+    const decorations = ['.iw-sq:not(.is-self) .iw-sq__you'];
+    const visible = ['.iw-timer__drip', '.iw-sp__wave', '.iw-sp__wave2', '.iw-sp__bub', '.iw-sp.is-ready .iw-sp__orb', '.iw-sp.is-ready .iw-sp__icon', '.iw-bb__embsplat', '.iw-bb__stripes'];
     const critical = ['.iw-sq.is-self .iw-sq__you', '.iw-sq.is-ready .iw-sq__spark', '.iw-sp__ready', '.iw-sp__spin', '.iw-sp__rim', '.iw-sp__ring', '.iw-timer__blob', '.iw-bb__stars i', '.iw-bb__clip', '.iw-shield svg', '.iw-tank__low', '.iw-hit i', '.iw-ret'];
     const anim = el => { const s = getComputedStyle(el); return { name: s.animationName, duration: s.animationDuration, iterations: s.animationIterationCount, easing: s.animationTimingFunction, display: s.display, visibility: s.visibility }; };
     const before = critical.map(selector => ({ selector, ...anim(q(selector)) }));
     check(before.every(x => x.name !== 'none'), '关键信号基线动画未真正启用');
     const decorBefore = decorations.flatMap(selector => [...hud.el.querySelectorAll(selector)].map(el => ({ selector, ...anim(el) })));
-    check(decorBefore.length === 17 && decorBefore.every(x => x.name !== 'none'), '预期17个真实装饰动画未覆盖');
+    check(decorBefore.length === 7 && decorBefore.every(x => x.name !== 'none'), '预期7个不可见箭头动画未覆盖');
+    const visibleBefore = visible.flatMap(selector => [...hud.el.querySelectorAll(selector)].map(el => ({ selector, ...anim(el) })));
+    check(visibleBefore.length === 10 && visibleBefore.every(x => x.name !== 'none'), '可见装饰基线未播放');
     const stateText = hud.el.textContent;
     const observer = new MutationObserver(() => {}); observer.observe(hud.el, { attributes: true, attributeFilter: ['class'] });
     for (let i = 0; i < 120; i++) profile.update(hud.el, match, 'match', false);
     check(observer.takeRecords().length === 1, '稳定状态仍逐帧写类'); observer.disconnect();
     const after = critical.map(selector => ({ selector, ...anim(q(selector)) }));
     check(JSON.stringify(before) === JSON.stringify(after), '关键告警/命中动画、时长或曲线变化');
+    const visibleAfter = visible.flatMap(selector => [...hud.el.querySelectorAll(selector)].map(el => ({ selector, ...anim(el) })));
+    check(JSON.stringify(visibleBefore) === JSON.stringify(visibleAfter), '可见波纹/气泡/光晕等未恢复');
     check(decorations.every(selector => [...hud.el.querySelectorAll(selector)].every(el => getComputedStyle(el).animationName === 'none')), '装饰仍在无限播放');
     check(hud.el.textContent === stateText && getComputedStyle(q('.iw-sp__ready')).opacity === '1', '信息文本或就绪标记丢失');
     // 液面高度/数字依旧跟随状态，停止波纹不能冻结充能显示。
@@ -61,7 +66,7 @@ try {
     check(!replacement.classList.contains('iw-mobile-boss-decor'), '主动退出未释放');
     profile.update(hud.el, match, 'match', false);
     globalThis.decorFixture = { hud, profile, match };
-    return { decorations: decorBefore.length, critical: before, charges, released, info: profile.info(), checks: '真实HUD17装饰停止，13组关键动画/数字/液面/文本保持，脏类写入/暂停/背景/普通演示/PC/退出/替换通过' };
+    return { decorations: decorBefore.length, visibleRestored: visibleAfter.length, critical: before, charges, released, info: profile.info(), checks: '仅7不可见箭头停止，10可见装饰和13组关键动画/数字/液面/文本保持，脏类写入/暂停/背景/普通演示/PC/退出/替换通过' };
   });
   const client = await page.createCDPSession(); await client.send('Performance.enable');
   const metrics = async () => Object.fromEntries((await client.send('Performance.getMetrics')).metrics.map(x => [x.name, x.value]));

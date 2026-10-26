@@ -764,17 +764,8 @@ body.iw-dio-on .iw-spl__tint { visibility: hidden; }
   .iw-bn--go .iw-bn__drop, .iw-sp__rays { display: none; }
 }
 
-/* 手机真实Boss实战的纯装饰降载：保留就绪标记/闪光、弱点/危险预警与命中反馈。
-   液面高度和充能数值仍实时更新；只将波纹、气泡、背景旋转等设为静态。 */
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-sq:not(.is-self) .iw-sq__you,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-timer__drip,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-sp__wave,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-sp__wave2,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-sp__bub,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-sp.is-ready .iw-sp__orb,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-sp.is-ready .iw-sp__icon,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-bb__embsplat,
-.iw-hud.is-boss.iw-mobile-boss-decor .iw-bb__stripes { animation: none; }
+/* 手机Boss只清理非本人、opacity0的箭头；v46可见装饰降质未证明收益，已恢复原动画。 */
+.iw-hud.is-boss.iw-mobile-boss-decor .iw-sq:not(.is-self) .iw-sq__you { animation: none; }
 
 /* ------------------------------------------------------------------ "Yeah!" cheer bubbles */
 .iw-cheers { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
