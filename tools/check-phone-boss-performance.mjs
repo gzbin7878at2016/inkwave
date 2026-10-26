@@ -262,6 +262,7 @@ try{
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
  report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
+ if(process.env.BOSS_REQUIRE_MINIMAP_CACHE==='1' && (!report.minimapInk?.active || !report.minimapInk.calls))throw Error('本批要求小地图缓存实际启用并处理像素，不能将未启用的原路径当作优化结果');
  report.simulationProbe=await c.evaluate('({stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
  report.pannerTransitions=await c.evaluate('window.__phonePerf.pannerTransitions||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');

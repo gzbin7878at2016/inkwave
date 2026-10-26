@@ -43,7 +43,9 @@ try {
       pairs++;
     };
     const a = make(), b = make(), random = rng(991);
-    check(prepare(b, match).prepared, '加载期准备失败');
+    G.mode = 'menu'; check(prepare(b, match).prepared, '实际加载菜单阶段准备失败');
+    check(info(b) && !info(b).active, '加载阶段错误激活'); G.mode = 'match';
+    check(info(b).active, '切换实际对局后未激活');
     a.paint.grid.fill(1); b.paint.grid.fill(1);
     a._drawInk(Math.floor(a.h / 3), Math.floor(a.h * 2 / 3)); b._drawInk(Math.floor(b.h / 3), Math.floor(b.h * 2 / 3)); equal(a, b);
     for (let n = 0; n < 360; n++) {

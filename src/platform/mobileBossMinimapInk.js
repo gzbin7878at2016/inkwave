@@ -7,7 +7,8 @@ const refs = map => [map.pixCell, map.pixFx, map.pixFy, map.pixSx, map.pixSy, ma
 
 // 只在Boss加载期分配；每像素6字节、每行1字节和96个采样码。实战不首次分配大数组。
 export function prepareMobileBossMinimapInk(map, match) {
-  if (!map || !inBoss(match)) return { skipped: true };
+  // 实际加载时G.mode仍是menu，准备完成后才切match；这里只核对当前正式Boss身份。
+  if (!map || !globalThis.inkwaveMobile || !match?.boss || match.attract || G.match !== match) return { skipped: true };
   clearMobileBossMinimapInk(map);
   map.ensure();
   const n = map.w * map.h, bytes = n * 6 + map.h + SAMPLES * 2;
