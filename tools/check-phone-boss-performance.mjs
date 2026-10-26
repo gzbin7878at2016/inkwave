@@ -7,12 +7,14 @@ if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称
 const ablation=process.env.BOSS_GPU_ABLATION==='1';
 const cpuAblation=process.env.BOSS_CPU_ABLATION==='1';
 const uiAblation=process.env.BOSS_UI_ABLATION==='1';
+const musicAblation=process.env.BOSS_MUSIC_ABLATION==='1';
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
 if(uiAblation&&(ablation||cpuAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('UI分组须独占一分钟带探针调查轮');
+if(musicAblation&&(ablation||cpuAblation||uiAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音乐分组须独占一分钟带探针调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -31,6 +33,12 @@ try{
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
   if(${JSON.stringify(testWeapon)}){const old=g.profile.weapon;g.profile.weapon=${JSON.stringify(testWeapon)};restores.push(()=>g.profile.weapon=old);}
+  const musicAblationEnabled=${musicAblation},music=__G.music,musicPlay=music?.play;
+  if(musicAblationEnabled){
+   if(!musicPlay)throw Error('音乐引擎不存在，不能进行音乐隔离');
+   music.play=function(track,...args){if(track!=null){p.musicWanted=track;if(p.musicAblationPhase==='music-stopped')return;}return musicPlay.call(this,track,...args);};
+   restores.push(()=>{music.play=musicPlay;if(p.musicAblationPhase==='music-stopped'&&g.match?.state==='playing')musicPlay.call(music,p.musicWanted||'boss',{fade:0.03});});
+  }
   const uiAblationEnabled=${uiAblation};
   let pauseStyle,flatStyle;
   if(uiAblationEnabled){
@@ -115,6 +123,13 @@ try{
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
+   if(musicAblationEnabled&&live){
+    const phase=Math.floor(p.activeMs/15000)%2?'music-stopped':'music-restored';
+    if(p.musicAblationPhase!==phase){const previous=p.musicAblationPhase;p.musicAblationPhase=phase;
+     if(phase==='music-stopped'){p.musicWanted=music.current?.id||p.musicWanted;musicPlay.call(music,null,{fade:0.03});}
+     else if(previous==='music-stopped')musicPlay.call(music,p.musicWanted||'boss',{fade:0.03});
+    }
+   }
    if(uiAblationEnabled&&live){
     const phase=['baseline','animations-paused','baseline-restored','filters-flat','baseline-restored-2','animations-paused-2'][Math.min(5,Math.floor(p.activeMs/10000))];
     if(p.uiAblationPhase!==phase){pauseStyle.media=phase.startsWith('animations-paused')?'all':'not all';flatStyle.media=phase==='filters-flat'?'all':'not all';p.uiAblationPhase=phase;}
@@ -157,7 +172,8 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,musicAblationPhase:p.musicAblationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    audio:${process.env.BOSS_METHOD_PROBE==='1'}?{stats:__G.audio?.stats?.(),music:__G.music?.current?.id,playerType:__G.music?.current?.constructor.name,players:__G.music?.players.length}:undefined,
     timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
