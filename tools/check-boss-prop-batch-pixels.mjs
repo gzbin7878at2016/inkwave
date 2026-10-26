@@ -17,6 +17,11 @@ try{
  await page.goto('http://localhost:8490/dist-mobile/',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>window.__inkwave?.mobile,{timeout:120000});await page.mouse.click(2,2);
  await page.evaluate(()=>{window.__batchReady=null;__inkwave.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>__batchReady=v,e=>__batchReady=String(e));});
  await page.waitForFunction(()=>window.__batchReady!==null,{timeout:180000});
+ if(process.env.BOSS_PROP_PHONE_CORE==='1'){
+  report.phoneProbe=await page.evaluate(`(async()=>{const {three_module_exports:T}=await import(new URL(${JSON.stringify(report.threeModulePath)},location.href).href);return (${benchmarkBossPropRanges.toString()})(__inkwave,__G,T,(${createBossPropRangeCandidate.toString()}));})()`);
+  if(!report.phoneProbe.restored||report.phoneProbe.status!=='matched')throw Error('手机核心的桌面预检未通过');
+  report.status='matched';
+ }else{
  report.result=await page.evaluate(async({groupMode,benchmark,backend,threeModulePath})=>{
   if(__batchReady!==true)throw Error('正常Boss加载失败：'+__batchReady);
   const {three_module_exports:T}=await import(new URL(threeModulePath,location.href).href);
@@ -62,9 +67,6 @@ try{
  report.result.restored=true;
  const unstable=report.result.pixels.some(p=>p.referenceRepeat.max||p.referenceRepeatAfter.max||p.referenceAcross.max||p.candidateRepeat.max);
  report.status=unstable?'inconclusive':report.errors.length||report.result.pixels.some(p=>p.candidate.max)?'mismatch':'matched';
- if(process.env.BOSS_PROP_PHONE_CORE==='1'){
-  report.phoneProbe=await page.evaluate(`(async()=>{const {three_module_exports:T}=await import(new URL(${JSON.stringify(report.threeModulePath)},location.href).href);return (${benchmarkBossPropRanges.toString()})(__inkwave,__G,T,(${createBossPropRangeCandidate.toString()}));})()`);
-  if(!report.phoneProbe.restored||report.phoneProbe.status!=='matched')throw Error('手机核心的桌面预检未通过');
  }
  if(report.status!=='matched')process.exitCode=1;
 }catch(error){report.status='failed';report.error=String(error);process.exitCode=1;}

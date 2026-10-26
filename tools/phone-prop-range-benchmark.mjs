@@ -22,9 +22,13 @@ export async function benchmarkBossPropRanges(game,G,T,create){
    if(eye){camera.position.set(...eye);camera.lookAt(...target);camera.updateMatrixWorld(true);}
    // 切相机/绘制路径后先让原onBeforeRender和材质状态稳定；真正采样仍必须连续重复一致。
    for(let i=0;i<3;i++)draw(false,true,false);for(let i=0;i<3;i++)draw(true,true,false);for(let i=0;i<3;i++)draw(false,true,false);
-   const a1=draw(false),a=draw(false),b1=draw(true),b=draw(true),after=draw(false),full=draw(true,false);
-   const p={view:name,referenceRepeat:diff(a1.data,a.data),referenceAcross:diff(a.data,after.data),candidateRepeat:diff(b1.data,b.data),candidate:diff(a.data,b.data),withoutCulling:diff(a.data,full.data),submittedTriangles:b.submittedTriangles};pixels.push(p);
-   if([p.referenceRepeat,p.referenceAcross,p.candidateRepeat,p.candidate,p.withoutCulling].some(d=>d.max))throw Error('手机实际像素或重复参考不一致：'+JSON.stringify(p));
+   // 参考侧最多5张，要求连续两对一致；所有预热差保留。绝不重试候选首张以掩盖候选错误。
+   const referenceWarmup=[];let a=draw(false),stable=0;
+   for(let i=0;i<5&&stable<2;i++){const next=draw(false),d=diff(a.data,next.data);referenceWarmup.push(d);stable=d.max?0:stable+1;a=next;}
+   if(stable<2)throw Error('原参考持续不稳定，拒绝比较：'+JSON.stringify({view:name,referenceWarmup}));
+   const b1=draw(true),b=draw(true),after=draw(false),full=draw(true,false);
+   const p={view:name,referenceWarmup,referenceRepeat:referenceWarmup.at(-1),referenceAcross:diff(a.data,after.data),candidateFirst:diff(a.data,b1.data),candidateRepeat:diff(b1.data,b.data),candidate:diff(a.data,b.data),withoutCulling:diff(a.data,full.data),submittedTriangles:b.submittedTriangles};pixels.push(p);
+   if([p.referenceRepeat,p.referenceAcross,p.candidateFirst,p.candidateRepeat,p.candidate,p.withoutCulling].some(d=>d.max))throw Error('手机实际像素或重复参考不一致：'+JSON.stringify(p));
    if(gl.getError()!==gl.NO_ERROR)throw Error('手机区段副本出现GL错误');
    await yieldTurn();
   }
