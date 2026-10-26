@@ -226,3 +226,10 @@
 - 对照实际源码调查远景/环境反射、海岸/泡沫距离场、材质数组、壁画、大厅和屏幕特效；标明仅启动收益、地图专属路径及手机low已关闭的效果。
 - 新增[纹理分级方案](DEVICE-TEXTURE-SCALABILITY.zh-CN.md)，引用UE4.27官方设备档案、纹理LOD、伸缩和移动渲染文档，设计平台档案/分组预算、玩法保护及分批验证。建议值待验证，不宣称无损或必达30帧。
 - 本轮仅调查和文档，不改游戏、不构建新APK；后续先登记运行资源，优先评估远景反射，保护2倍/SMAA及PC原设置。已核对本地引用与差异格式。
+
+## 2026-10-26：纹理真机清单工具（待真机验证）
+
+- 用户已授权测试。新增tools/texture-inventory.mjs及check-phone-textures.mjs，通过USB读取已有环境、材质、后处理和场景纹理引用，不修改画质，不进行GPU同步读回。支持当前场景与halyard海港独立资源检查。
+- 按UUID去重，区分立方体6面、数组层与mip，未知格式不估算；结果明确为JS引用的颜色存储估算，不冒充GPU驻留/总显存、更新频率或GPU耗时。立方体/mip/数组/去重合成检查及语法检查通过。
+- 用法：先tools/start-usb-debug.ps1，设置ANDROID_SERIAL，TEXTURE_MAP=current或halyard，再node tools/check-phone-textures.mjs。工具启动后采集、截图、真实上传核对源码、关闭；固定输出为带时间戳的releases/investigation/phone-textures-*。halyard仅资源巡检，不冒充性能实战。
+- 当前先运行原v17一分钟Boss基线；本工具先中文提交推送再真机使用。未改APK或候选分辨率，具体结论另行记录。
