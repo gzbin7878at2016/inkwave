@@ -590,3 +590,9 @@ HUD隔离已完成all/markers/UI动画/map/bar/special/top各60秒及20秒native
 
 
 复核补充：top轮18～21秒死亡导致calls约99→49，GPU下降不能独立归因顶部栏；其余隔离窗口采样均存活。整HUD前后calls107～113/约794k～805k接近，仍有较强渲染负载线索。下一步先GPU/Skia/Viz细类Trace，不基于混杂数据盲改图标缓存。
+
+## 2026-10-27 Boss渲染Trace工具兼容修复（待手机验证）
+
+用户再次确认只优化Boss场景。v41渲染调查第一轮自然结束并上传关闭，24.561FPS仅为Trace方法轮，导出超时、无可分析事件；第二轮应用在读取WebView `/json/protocol` 时原生SIGTRAP/NOTREACHED退出，USB仍在线，不能当作游戏shader故障或性能成绩。时间相关性提示端点兼容问题，尚无符号级因果证明。
+
+移除该HTTP端点访问，仅用已验证CDP方法；新增 `node tools/check-phone-trace-stream.mjs`，在菜单进行1秒blink.user_timing流式导出、标记/进程一致/丢失核对，始终关闭应用，不进入Boss、不计成绩。语法与分块读取单测通过，须先提交推送再真机执行。手机成功后才继续完整HUD、60秒自然结束、正常操作/USB上传关闭的Boss调查。功能APK仍v41/252fcda，正式25.535/26.556FPS，30未稳定、60未开始，PC与游戏功能未改。

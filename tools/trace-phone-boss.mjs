@@ -47,10 +47,8 @@ try {
  report.categories=categories;
  const params={categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:rendering?'ReturnAsStream':'ReportEvents'};
  if(rendering){
-  try{const schema=await(await fetch('http://127.0.0.1:9223/json/protocol',{signal:AbortSignal.timeout(3000)})).json();
-   report.bufferConfigSupported=!!schema.domains.find(d=>d.domain==='Tracing')?.types?.find(t=>t.id==='TraceConfig')?.properties?.some(p=>p.name==='traceBufferSizeInKb');
-  }catch(error){report.protocolSchemaError=String(error);}
-  if(report.bufferConfigSupported){delete params.categories;delete params.options;params.traceConfig={recordMode:'recordContinuously',traceBufferSizeInKb:65536,includedCategories:categories};}
+  // 当前WebView访问/json/protocol时出现原生NOTREACHED/SIGTRAP；只用已验证的CDP方法。
+  report.protocolQuerySkipped=true;
   await evaluate('window.__inkwaveRenderTrace={pending:true,startedAt:Date.now()};true');
  }
  report.transferMode=params.transferMode;
