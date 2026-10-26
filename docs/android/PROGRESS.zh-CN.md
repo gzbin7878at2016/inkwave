@@ -309,3 +309,9 @@
 - 新增纯函数mobileFrameDue：30～144Hz下按目标截止时间推进，短晚到后恢复相位；超过完整帧的长停顿重置排期，不突发补历史帧。切换30/60/不限速与时间戳重置均验证，保留原2ms容差。
 - 仅手机loop采用新排期，PC原判定保留。Timer仍用真实rAF时间，记录真实帧间隔，物理dt钳制和统计未改，不虚构帧；图像密度、SMAA、人数和模拟规则保持。
 - 212文件语法及排期单元检查通过，先提交推送再构建、真机短轮对照。平均FPS回升也不等于消除了长停顿，仍按尾部帧耗验收。
+
+## 2026-10-26：USB供电保持亮屏
+
+- 用户要求测试期间不要自动熄屏。当前ALP-AN00通过ADB设置svc power stayon usb，global stay_on_while_plugged_in由0变2；复核USB powered=true、mStayOn=true、Awake。
+- 原系统screen_off_timeout读到600000ms（10分钟），没有修改；USB拔出后恢复按原熄屏时长。若用户要求撤销，执行adb -s A38YUT3C19022796 shell svc power stayon false恢复原值0。此为设备设置，不随Git迁移，原值另存本地releases/usb-power-state.json。
+- 亮屏可避免熄屏干扰测试，不将此前USB断线原因直接认定为熄屏。正在运行的Boss性能测试继续，数据如有系统操作干扰需在结果中标明。
