@@ -3,7 +3,9 @@
 import {mkdir,writeFile} from 'node:fs/promises';
 let ws,seq=0,tracing=false,complete;
 const pending=new Map(),events=[];
-const report={status:'waiting',eventsTruncated:false,performanceTest:false};
+const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
+if(!Number.isFinite(seconds)||seconds<1||seconds>45)throw Error('BOSS_TRACE_SECONDS须为1～45');
+const report={status:'waiting',requestedSeconds:seconds,eventsTruncated:false,performanceTest:false};
 const base=`releases/investigation/boss-trace-${new Date().toISOString().replace(/[:.]/g,'-')}`;
 const call=(method,params={})=>new Promise((resolve,reject)=>{
  const id=++seq,timer=setTimeout(()=>{pending.delete(id);reject(Error(`${method}超时`))},20000);
@@ -31,12 +33,12 @@ try {
  let ready=false;
  for(let i=0;i<100;i++){
   const state=await evaluate('({probe:!!window.__phonePerf?.methods,live:window.__phonePerf?.match===window.__inkwave?.match&&__inkwave.match?.state==="playing",active:window.__phonePerf?.activeMs||0})');
-  if(state.probe&&state.live){if(state.active>40000)throw Error('调查轮剩余时间不足');ready=true;break;}
+  if(state.probe&&state.live){if(state.active>(55-seconds)*1000)throw Error('调查轮剩余时间不足');ready=true;break;}
   await new Promise(r=>setTimeout(r,500));
  }
  if(!ready)throw Error('没有运行带探针的Boss实战');
  await call('Tracing.start',{categories:'devtools.timeline,disabled-by-default-devtools.timeline,blink.user_timing,v8,gpu',transferMode:'ReportEvents'});tracing=true;
- await new Promise(r=>setTimeout(r,12000));
+ await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),15000);complete=()=>{clearTimeout(timer);resolve()}});
  await call('Tracing.end');await done;tracing=false;
  report.status='collected';
