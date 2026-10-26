@@ -2,6 +2,7 @@
 import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
+import {compareBossSmaaClear} from './compare-boss-smaa-clear.mjs';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
@@ -17,6 +18,8 @@ const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
 const verifyDisplayLifecycle=process.env.BOSS_VERIFY_DISPLAY_LIFECYCLE==='1';
 if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
+const compareSmaaClear=process.env.BOSS_COMPARE_SMAA_CLEAR==='1';
+if(compareSmaaClear&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('SMAA同输入比较仅允许一分钟独立方法调查');
 if(minimapBenchmark && (process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('小地图计算对照仅允许一分钟方法调查轮');
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
@@ -294,7 +297,8 @@ try{
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
- report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
+ report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear||null,edgeType:__inkwave.R.mobileAA?._edgesRT.texture.type,weightsType:__inkwave.R.mobileAA?._weightsRT.texture.type,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
+ if(process.env.BOSS_REQUIRE_SMAA_CLEAR==='1'&&!report.postprocess.smaaClear?.active)throw Error('本批Boss SMAA清零修复未实际启用');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
  report.lensInk=await c.evaluate('({preparation:__inkwave._bossLensPreparation||null,programId:__G.renderer.properties.get(__inkwave.screenfx.lens.mat).currentProgram?.id,draws:__phonePerf.lensDraws||0,firstDraw:__phonePerf.firstLensDraw||null})');
  if(process.env.BOSS_REQUIRE_LENS_PREPARATION==='1'&&(!report.lensInk.preparation?.prepared||report.lensInk.programId!==report.lensInk.preparation.programId))throw Error('Boss镜头墨水准备缺失或实际程序与准备不一致');
@@ -306,12 +310,14 @@ try{
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
  if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
+ if(compareSmaaClear)report.smaaClearComparison=await c.evaluate(`(${compareBossSmaaClear.toString()})(__inkwave)`);
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
   report.bossExit=await c.evaluate(`(async()=>{const oldMap=__inkwave.minimap;await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
-   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,fusion:__inkwave.R.mobileAA?.bossOutput,minimapInk:__inkwave.minimap.bossInkInfo?.()||null,oldMinimapInk:oldMap.bossInkInfo?.()||null};})()`);
+   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,fusion:__inkwave.R.mobileAA?.bossOutput,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear,minimapInk:__inkwave.minimap.bossInkInfo?.()||null,oldMinimapInk:oldMap.bossInkInfo?.()||null};})()`);
   const e=report.bossExit;e.ok=e.mode==='menu'&&!e.boss&&e.info?.active===false&&e.info.restored===2&&e.sfxSeconds===1.5&&e.musicSeconds===2.2&&e.sfxNormalize&&e.musicNormalize;
   if(report.postprocess.fusion?.enabled)e.ok=e.ok&&e.outputEnabled===true&&e.fusion?.enabled===false;
+  if(report.postprocess.smaaClear?.active)e.ok=e.ok&&e.smaaClear?.active===false;
   if(report.minimapInk?.active)e.ok=e.ok&&e.minimapInk===null&&e.oldMinimapInk===null;
   if(report.displayBeforeBoss){e.display=await c.evaluate('inkwaveMobile.BossDisplay.getState()');e.ok=e.ok&&!e.display.owned&&e.display.preferredDisplayModeId===report.displayBeforeBoss.preferredDisplayModeId&&Math.abs(e.display.preferredRefreshRate-report.displayBeforeBoss.preferredRefreshRate)<.01;}
   if(!e.ok)throw Error('回菜单未完全恢复原混响');

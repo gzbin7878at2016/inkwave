@@ -16,6 +16,8 @@ export class MobileSMAAPass extends SMAAPass {
     for (const stage of ['Edges', 'Weights', 'Blend']) this[`_material${stage}`].name = `SMAA${stage}Shader`;
     this._originalBlend = this._materialBlend;
     this.bossOutput = { ready: false, enabled: false };
+    this.bossSmaaClear = { active: false };
+    this._bossClearColor = new THREE.Color();
   }
   setSize(width, height) { super.setSize(Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))); }
 
@@ -91,9 +93,25 @@ export class MobileSMAAPass extends SMAAPass {
   }
   render(renderer, ...args) {
     if (this.bossOutput.enabled) this._syncOutput(renderer);
-    super.render(renderer, ...args);
+    if (!this.bossSmaaClear.active) { super.render(renderer, ...args); return; }
+    // 边缘shader会discard无边缘像素，必须清零；天空色不能留在边缘纹理中冒充边缘。
+    // 仅包住手机Boss的SMAA三阶段，主场景天空色及其他Pass状态在finally恢复。
+    renderer.getClearColor(this._bossClearColor);
+    const alpha = renderer.getClearAlpha(), auto = renderer.autoClear, color = renderer.autoClearColor, clear = this.clear;
+    try {
+      renderer.setClearColor(0x000000, 0); renderer.autoClear = true; renderer.autoClearColor = true; this.clear = false;
+      super.render(renderer, ...args);
+    } finally {
+      renderer.setClearColor(this._bossClearColor, alpha); renderer.autoClear = auto; renderer.autoClearColor = color; this.clear = clear;
+    }
+  }
+  syncBossSmaaClear(match, mode) {
+    // 手机加载预检仍可能是menu/init；退出、普通局、演示和PC保留原路径。
+    this.bossSmaaClear.active = !!globalThis.inkwaveMobile && !!match?.boss && !match.attract && (mode === 'match' || match.state === 'init');
+    return this.bossSmaaClear.active;
   }
   dispose() {
+    this.bossSmaaClear.active = false;
     this.disableBossOutput(); this._bossMatch = null;
     this._fused?.dispose(); this._fused = null; super.dispose();
   }

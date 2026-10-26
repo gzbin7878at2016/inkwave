@@ -301,7 +301,7 @@ export class Renderer {
       this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2];
     }
     // 必须在Composer决定最后一个enabled pass之前切换；菜单/普通对局自动回原三阶段+Output。
-    if (this.mobileSafety) this.mobileAA?.syncBossOutput?.(G.match, G.mode);
+    if (this.mobileSafety) { this.mobileAA?.syncBossSmaaClear?.(G.match, G.mode); this.mobileAA?.syncBossOutput?.(G.match, G.mode); }
     this.composer.render();
   }
 

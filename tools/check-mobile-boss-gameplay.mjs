@@ -42,11 +42,12 @@ try{
  const prepared=await page.evaluate(()=>{
   const g=__inkwave,r=__G.renderer;
   const ready=inkwaveDiagnostics.report().current.events.filter(e=>e.category==='mobile-preparation-ready').at(-1);
-  return {result:__bossResult,trace:__bossProgress,ready:ready&&JSON.parse(ready.detail),scene:inkwaveDiagnostics.report().current.scene,pool:g.match.boss?.crabletPool?.models.size,minimapInk:g.minimap.bossInkInfo(),lens:g._bossLensPreparation};
+  return {result:__bossResult,trace:__bossProgress,ready:ready&&JSON.parse(ready.detail),scene:inkwaveDiagnostics.report().current.scene,pool:g.match.boss?.crabletPool?.models.size,minimapInk:g.minimap.bossInkInfo(),lens:g._bossLensPreparation,smaaClear:g.R.mobileAA.bossSmaaClear};
  });
  assert.equal(prepared.result,true);assert.equal(prepared.pool,12);
  assert.equal(prepared.minimapInk,null,'真机无收益的候选不得在正常加载中分配');
  assert.ok(prepared.lens?.prepared&&prepared.lens.draws===1,'真实加载必须准备镜头墨水');
+ assert.ok(prepared.smaaClear?.active,'真实Boss加载预检必须启用SMAA清零');
  assert.ok(prepared.trace.length>1);assert.ok(prepared.trace.some(p=>p.value<100));assert.ok(prepared.trace.some(p=>p.value===100));
  for(let i=1;i<prepared.trace.length;i++)assert.ok(prepared.trace[i].value>=prepared.trace[i-1].value);
  assert.ok(prepared.trace.every(p=>p.state==='complete'||p.match!=='intro'));
