@@ -3,6 +3,7 @@ import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
 import {compareBossSmaaClear} from './compare-boss-smaa-clear.mjs';
+import {createBossDomProbe} from './boss-dom-probe.mjs';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
@@ -16,6 +17,8 @@ const audioGraphBypass=process.env.BOSS_AUDIO_GRAPH_BYPASS==='1';
 const audioReverbBypass=process.env.BOSS_AUDIO_REVERB_BYPASS==='1';
 const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
 const verifyDisplayLifecycle=process.env.BOSS_VERIFY_DISPLAY_LIFECYCLE==='1';
+const domAblation=process.env.BOSS_DOM_ABLATION==='1';
+if(domAblation&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyBossExit||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_COMPARE_SMAA_CLEAR==='1'||process.env.BOSS_MINIMAP_BENCHMARK==='1'))throw Error('DOM隔离仅允许独占一分钟方法调查，不能作正式成绩或混用其他旁路');
 if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
 const compareSmaaClear=process.env.BOSS_COMPARE_SMAA_CLEAR==='1';
@@ -32,7 +35,7 @@ if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerA
 if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',domAblation,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -51,6 +54,7 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  const domProbe=${domAblation}?(${createBossDomProbe.toString()})():null;if(domProbe)restores.push(()=>domProbe.dispose());
   const audioSuspendEnabled=${audioSuspend},audioGraphBypassEnabled=${audioGraphBypass},audioReverbBypassEnabled=${audioReverbBypass};
   if(audioSuspendEnabled||audioGraphBypassEnabled){
    const audio=__G.audio;if(!audio)throw Error('音频引擎不存在');
@@ -199,6 +203,7 @@ try{
      else if(previous==='music-stopped')musicPlay.call(music,p.musicWanted||'boss',{fade:0.03});
     }
    }
+   if(domProbe){domProbe.update(p.match===m?m:null,__G.mode,p.activeMs);p.domProbe=domProbe.info();}
    if(uiAblationEnabled&&live){
     const phase=['baseline','animations-paused','baseline-restored','filters-flat','baseline-restored-2','animations-paused-2'][Math.min(5,Math.floor(p.activeMs/10000))];
     if(p.uiAblationPhase!==phase){pauseStyle.media=phase.startsWith('animations-paused')?'all':'not all';flatStyle.media=phase==='filters-flat'?'all':'not all';p.uiAblationPhase=phase;}
@@ -241,7 +246,7 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,musicAblationPhase:p.musicAblationPhase,pannerAblationPhase:p.pannerAblationPhase,audioSuspendedForProbe:p.audioSuspendedForProbe,audioSuspendError:p.audioSuspendError,audioBypassedForProbe:p.audioBypassedForProbe,reverbBypassedForProbe:p.reverbBypassedForProbe,audioBypassError:p.audioBypassError,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,domProbe:p.domProbe,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,musicAblationPhase:p.musicAblationPhase,pannerAblationPhase:p.pannerAblationPhase,audioSuspendedForProbe:p.audioSuspendedForProbe,audioSuspendError:p.audioSuspendError,audioBypassedForProbe:p.audioBypassedForProbe,reverbBypassedForProbe:p.reverbBypassedForProbe,audioBypassError:p.audioBypassError,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
     audio:${process.env.BOSS_METHOD_PROBE==='1'}?(()=>{
      const audio=__G.audio,stats=audio?.stats?.(),voicePanners={};let voiceNodes=0;
      // 只统计仍在播放的单发声道；弱引用历史节点数不能冒充当前DSP负载，循环数另列stats.loops。
@@ -296,6 +301,8 @@ try{
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
+ report.domProbe=await c.evaluate('__phonePerf.domProbe||null');
+ if(domAblation&&(!report.domProbe?.transitions.some(t=>t.phase==='dom-hidden')||!report.domProbe.transitions.some(t=>t.phase==='restored')||report.domProbe.hidden))throw Error('DOM隔离未生效或未恢复');
  report.audioParams=await c.evaluate('__G.audio.bossParamDedupeInfo?.()||null');
  if(process.env.BOSS_REQUIRE_AUDIO_PARAM_DEDUPE==='1'&&(!report.audioParams?.skipped||!report.audioParams.submitted||report.audioParams.active||report.audioParams.invalidated))throw Error('Boss音频参数去重未实际运行或自然结束未释放/发生失效');
  report.animationClock=await c.evaluate('__inkwave.mobile.bossAnimationClock?.info()||null');
@@ -336,6 +343,8 @@ finally{
  await save();
  // 断线立即失败；恢复原方法，不将自动操作留给下一轮人工试玩。
  await c.evaluate('window.__phoneCleanup?.()').catch(()=>{});
+ if(domAblation)report.domCleanup=await c.evaluate('({remaining:!!document.querySelector("[data-boss-dom-probe]"),controlsDisplay:getComputedStyle(document.getElementById("mobile-controls")).display})').catch(e=>({error:String(e)}));
+ if(domAblation&&(report.domCleanup?.remaining||report.domCleanup?.error)){process.exitCode=1;report.domCleanupFailed=true;}
  try{
   // 用户要求每轮上传确认落盘后关闭；直接驱动真实按钮，复用原生USB链路。
   const status=await c.evaluate(`(async()=>{const b=document.querySelector('#mobile-log-upload');if(!b)throw Error('上传按钮不存在');if(b.disabled)throw Error('已有上传尚未结束');b.click();for(let i=0;i<180;i++){await new Promise(r=>setTimeout(r,100));if(!b.disabled)return document.querySelector('#mobile-log-status')?.textContent;}throw Error('上传超时')})()`);
