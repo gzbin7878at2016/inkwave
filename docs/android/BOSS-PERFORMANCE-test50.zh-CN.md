@@ -19,3 +19,11 @@ BossDisplay.getState增加只读applicationCategory与API31以上gameMode；旧�
 实际Java插件替身编译/执行通过：原同分辨率/窗口偏好所有权/后台恢复/外部改值保护不变，新增分类读取、API29跳过、GameManager缺失/权限异常容错。XML格式通过；实际SDK资源和Java编译由后续干净Android构建核对。
 
 先中文提交推送，再干净构建v1.0.50/code50；核对签名、SHA256、资源逐字节一致与manifest编译后实际属性，安装并只读查询系统分类/模式。先60游戏秒方法轮核对原画质与正常操作/退出恢复/上传关闭，再正式无探针轮。结果单独中文提交，不把方法轮、较凉手机或系统分类声明当作稳定30帧成绩。射线/隐藏LOD/静态props候选全部不混入本包；v49最新正式27.23281FPS仍未稳定30，60未开始。
+
+## 干净构建、安装与实际分类
+
+v1.0.50/code50，源码6686333b01dedcfed193f9ddd8c31d5fb385b3a4，trackedChanges=false。APK releases/INKWAVE-android-test50-6686333.apk，21,159,263字节；SHA256 0068fd95035055a8e92014dc109595c13766084823882281581f888e2bfde0b4。v2签名验证通过，证书201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69；398个同步public资源逐字节一致，其中396个dist-mobile资源全部匹配，另外2个为Capacitor同步生成的cordova文件，须对照android/app/src/main/assets/public而非dist-mobile。原始第一轮脚本用错对照目录曾失败，已用正确目录重做全部检查通过。
+
+aapt2核对编译后application appCategory=0，game_mode_config两项allow均false，元数据引用存在；ADB覆盖安装成功。实际cmd game list-modes从v49 unsupported/[]变为v50 standard/[standard,custom]；原生getState实际applicationCategory=0、gameMode=1。dumpsys game仅显示无该包intervention，未提供可验证GAME Power HAL实际策略的字段，不能把分类当系统提升频率的证据。
+
+同ef0e0a1比较src目录Git内容无差异，游戏JS与PC源码保持。当前正在方法轮正常一分钟Boss与只读CPU策略采样，尚无正式帧率结论。
