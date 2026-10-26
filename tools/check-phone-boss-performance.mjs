@@ -11,6 +11,7 @@ const musicAblation=process.env.BOSS_MUSIC_ABLATION==='1';
 const pannerAblation=process.env.BOSS_PANNER_ABLATION==='1';
 const audioSuspend=process.env.BOSS_AUDIO_SUSPEND==='1';
 const audioGraphBypass=process.env.BOSS_AUDIO_GRAPH_BYPASS==='1';
+const audioReverbBypass=process.env.BOSS_AUDIO_REVERB_BYPASS==='1';
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
 if(uiAblation&&(ablation||cpuAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('UI分组须独占一分钟带探针调查轮');
@@ -18,9 +19,10 @@ if(musicAblation&&(ablation||cpuAblation||uiAblation||process.env.BOSS_METHOD_PR
 if(pannerAblation&&(ablation||cpuAblation||uiAblation||musicAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('声像器分组须独占一分钟带探针调查轮');
 if(audioSuspend&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音频挂起须独占一分钟带探针调查轮');
 if(audioGraphBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音频图旁路须独占一分钟带探针调查轮');
+if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('混响旁路须独占一分钟带探针调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -38,7 +40,7 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
-  const audioSuspendEnabled=${audioSuspend},audioGraphBypassEnabled=${audioGraphBypass};
+  const audioSuspendEnabled=${audioSuspend},audioGraphBypassEnabled=${audioGraphBypass},audioReverbBypassEnabled=${audioReverbBypass};
   if(audioSuspendEnabled||audioGraphBypassEnabled){
    const audio=__G.audio;if(!audio)throw Error('音频引擎不存在');
    const noop={set(){},stop(){},playing:false};
@@ -160,6 +162,15 @@ try{
      tone.connect(gain);gain.connect(ctx.destination);tone.start();
     }catch(e){p.audioBypassError=String(e)}
    }
+   if(audioReverbBypassEnabled&&live&&!p.reverbBypassedForProbe&&p.activeMs>=15000){p.reverbBypassedForProbe=true;
+    try{
+     const audio=__G.audio,music=__G.music,conv=music._nodes.find(n=>n instanceof ConvolverNode);
+     if(!audio.conv||!conv)throw Error('未找到两条原始卷积混响');
+     // 只断混响输入，保留全部干声、声像、音乐和限幅；原尾音自然结束，finally重接。
+     audio.revSend.disconnect(audio.conv);restores.push(()=>audio.revSend.connect(audio.conv));
+     music.revIn.disconnect(conv);restores.push(()=>music.revIn.connect(conv));
+    }catch(e){p.audioBypassError=String(e)}
+   }
    if(pannerAblationEnabled&&live){
     const phase=Math.floor(p.activeMs/15000)%2?'equalpower':'original';
     if(p.pannerAblationPhase!==phase){p.pannerAblationPhase=phase;const models={};
@@ -216,7 +227,7 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,musicAblationPhase:p.musicAblationPhase,pannerAblationPhase:p.pannerAblationPhase,audioSuspendedForProbe:p.audioSuspendedForProbe,audioSuspendError:p.audioSuspendError,audioBypassedForProbe:p.audioBypassedForProbe,audioBypassError:p.audioBypassError,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,musicAblationPhase:p.musicAblationPhase,pannerAblationPhase:p.pannerAblationPhase,audioSuspendedForProbe:p.audioSuspendedForProbe,audioSuspendError:p.audioSuspendError,audioBypassedForProbe:p.audioBypassedForProbe,reverbBypassedForProbe:p.reverbBypassedForProbe,audioBypassError:p.audioBypassError,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
     audio:${process.env.BOSS_METHOD_PROBE==='1'}?(()=>{
      const audio=__G.audio,stats=audio?.stats?.(),voicePanners={};let voiceNodes=0;
      // 只统计仍在播放的单发声道；弱引用历史节点数不能冒充当前DSP负载，循环数另列stats.loops。

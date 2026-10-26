@@ -472,3 +472,9 @@
 - v29音乐隔离完整游玩、USB文件INKWAVE-logs-20261026-122750-262611-adee6267.json核对关闭；25.287FPS只是调查。21秒后players=0，原战斗音效仍在，原生20.0005秒、1201267/1201267记录、锚点±125ms；12～14.2秒和22～28.5秒完整覆盖，AudioOutput单核81.34%→75.12%，主线程89.63%→88.40%。窗口/声道数不同，不据此量化音乐真实成本，未见大幅减负，不改正式BGM。
 - 下一独立BOSS_AUDIO_GRAPH_BYPASS=1探针在15秒断开原主限幅器到destination输出，只保留80Hz/百万分之一振幅单振荡器；上下文保持running，用于区分整个DSP图与输出设备/回调负担。阻止新音效/循环/切歌，原音乐音序仍可排期但图不输出；finally停止试验音源并重接原限幅器，创建失败也恢复。新增采样率/baseLatency/outputLatency，捕获类型audio-graph。
 - 此轮会静音原游戏声音，严格互斥、只许一分钟带探针，不进入APK/正式成绩；不得以静音实现性能目标。先语法检查中文提交，再采集。图未连接与ctx挂起是两个不同条件，需实际state确认。
+
+### 处理图旁路证实负载下降，继续仅隔离混响
+
+- 图旁路轮完整结束、USB文件INKWAVE-logs-20261026-123132-108703-fbf79fef.json核对关闭；27.774FPS仅为静音/跟踪调查。上下文始终running、48kHz、baseLatency=4ms/outputLatency=40ms；原生20.0004秒、1167397/1167397记录、锚点±115ms，12～14.2秒/18～28.5秒音频89.02%→18.80%单核。图和单发建图同时被旁路，不能仅归因某个滤波器，但不支持“纯输出设备开销”作为全部解释。
+- 下一独立BOSS_AUDIO_REVERB_BYPASS=1轮只在15秒断开SFX和音乐卷积混响输入，保留全部干声、音乐、声像和限幅，尾音自然结束；finally重接、异常传出，互斥且不作成绩。正式APK声音未改。
+- 新增profile-phone-boss-audio.mjs只读WebAudio.enable/getRealtimeData，独立方法轮6～13秒附着，最多40次/约40秒、到30秒战斗停止，禁覆盖/有超时、结束disable，不抢转发。BOSS_AUDIO_PROFILE_NAME与主轮新名称一致。平台指标参考[Chrome官方说明](https://developer.chrome.com/docs/devtools/webaudio)；原始renderCapacity保留，[DevTools前端](https://raw.githubusercontent.com/ChromeDevTools/devtools-frontend/main/front_end/panels/web_audio/WebAudioView.ts)实际乘100显示百分比，避免与协议注释单位混淆。先检查中文提交，再真机。
