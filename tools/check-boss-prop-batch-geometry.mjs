@@ -10,6 +10,13 @@ const triangles=(geometry,start=0,count=geometry.index.count)=>{
  const attrs=Object.keys(geometry.attributes).sort(),result=[];
  for(let i=start;i<start+count;i+=3){const values=[];for(let n=0;n<3;n++){const id=geometry.index.getX(i+n);for(const key of attrs){const a=geometry.getAttribute(key);for(let k=0;k<a.itemSize;k++)values.push(a.array[id*a.itemSize+k]);}}result.push(JSON.stringify(values));}return result.sort();
 };
+// none与runs都必须维持全局原始三角次序，不仅仅是多重集相等。
+const ordered=geometry=>{const result=[];for(let i=0;i<geometry.index.count;i+=3)result.push(triangles(geometry,i,3)[0]);return result;};
+for(const groupMode of ['none','runs']){
+ const probe=create(T,[m],{groupMode});
+ const seq=probe.entries.flatMap(e=>e.geometryIds.flatMap(id=>{const range=e.batch.getGeometryRangeAt(id),out=[];for(let i=range.indexStart;i<range.indexStart+range.indexCount;i+=3)out.push(triangles(e.batch.geometry,i,3)[0]);return out;}));
+ assert.deepEqual(seq,ordered(g));probe.dispose();
+}
 const candidate=create(T,[m]);const actual=candidate.entries.flatMap(e=>e.geometryIds.flatMap(id=>{const range=e.batch.getGeometryRangeAt(id);return triangles(e.batch.geometry,range.indexStart,range.indexCount);})).sort();
 assert.deepEqual(actual,triangles(g));assert.ok(candidate.stats.chunks>1);assert.ok(candidate.stats.attributesChecked>0);
 assert.ok(candidate.entries[0].batch.boundingSphere.equals(g.boundingSphere));assert.ok(candidate.entries[0].batch.boundingBox.equals(g.boundingBox));

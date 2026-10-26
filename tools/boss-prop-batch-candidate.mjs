@@ -1,7 +1,8 @@
 // 工具级副本：完整三角形按空间分组后，用公开BatchedMesh接口批量提交；不接入产品加载。
-export function createBossPropBatchCandidate(T,sources,{cellSize=8,maxBytes=32*1024*1024}={}){
+export function createBossPropBatchCandidate(T,sources,{cellSize=8,maxBytes=32*1024*1024,groupMode='cells'}={}){
  if(!Number.isFinite(cellSize)||cellSize<4||!Number.isFinite(maxBytes)||maxBytes<=0)throw Error('剔除网格或预算无效');
- const entries=[],stats={triangles:0,chunks:0,vertices:0,geometryBytes:0,textureBytes:0,attributesChecked:0,active:false,disposed:false};
+ if(!['cells','none','runs'].includes(groupMode))throw Error('分组模式无效');
+ const entries=[],stats={groupMode,triangles:0,chunks:0,vertices:0,geometryBytes:0,textureBytes:0,attributesChecked:0,active:false,disposed:false};
  const dispose=()=>{if(stats.disposed)return;for(const e of entries){if(stats.active)e.source.visible=e.visible;e.batch.removeFromParent();e.batch.dispose();}stats.active=false;stats.disposed=true;};
  try{
   for(const source of sources){
@@ -9,13 +10,16 @@ export function createBossPropBatchCandidate(T,sources,{cellSize=8,maxBytes=32*1
    if(!p||!idx||g.groups.length||g.drawRange.start!==0||g.drawRange.count!==Infinity||Object.keys(g.morphAttributes).length||!mat?.isMeshStandardMaterial||mat.transparent)throw Error('只支持原完整不透明静态Standard/Physical索引桶');
    const attrs=Object.entries(g.attributes);
    if(attrs.some(([,a])=>a.isInterleavedBufferAttribute||a.count!==p.count))throw Error('属性布局暂不支持，保留原几何');
-   const cells=new Map(),a=new T.Vector3(),b=new T.Vector3(),c=new T.Vector3();
+   const cells=new Map(),a=new T.Vector3(),b=new T.Vector3(),c=new T.Vector3();let lastCell=null,run=-1;
    for(let i=0;i<idx.count;i+=3){
     const ids=[idx.getX(i),idx.getX(i+1),idx.getX(i+2)];
     if(ids.some(id=>!Number.isInteger(id)||id<0||id>=p.count))throw Error('原索引无效');
     a.fromBufferAttribute(p,ids[0]).applyMatrix4(source.matrixWorld);b.fromBufferAttribute(p,ids[1]).applyMatrix4(source.matrixWorld);c.fromBufferAttribute(p,ids[2]).applyMatrix4(source.matrixWorld);
     const x=(a.x+b.x+c.x)/3,z=(a.z+b.z+c.z)/3;if(!Number.isFinite(x+z))throw Error('原位置含非有限值');
-    const key=Math.floor(x/cellSize)+','+Math.floor(z/cellSize);let cell=cells.get(key);
+    const spatial=Math.floor(x/cellSize)+','+Math.floor(z/cellSize);
+    if(spatial!==lastCell){lastCell=spatial;run++;}
+    // none用于隔离batch着色路径；runs保持原始全局三角形次序，区分空间合并带来的顺序差异。
+    const key=groupMode==='none'?'all':groupMode==='runs'?String(run):spatial;let cell=cells.get(key);
     if(!cell)cells.set(key,cell={indices:[],vertices:new Map()});
     for(const id of ids){if(!cell.vertices.has(id))cell.vertices.set(id,cell.vertices.size);cell.indices.push(id);}
    }
