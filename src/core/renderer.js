@@ -26,6 +26,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
+import { mobileViewport } from '../platform/mobileViewport.js';
 import { installMobileGpuSafety } from '../platform/mobileGpu.js';
 import { QUALITY } from '../config.js';
 import { G } from './ctx.js';
@@ -279,7 +280,10 @@ export class Renderer {
   }
 
   resize() {
-    const w = window.innerWidth, h = window.innerHeight;
+    // 手机逐帧只读缓存，避免HUD写入后的窗口尺寸查询强制同步布局。
+    // resize/orientationchange会更新缓存；PC仍直接读取原生窗口尺寸。
+    const viewport = window.inkwaveMobile ? mobileViewport() : null;
+    const w = viewport ? viewport.width : window.innerWidth, h = viewport ? viewport.height : window.innerHeight;
     if (w === this._w && h === this._h) return;
     this._w = w; this._h = h;
     this.renderer.setSize(w, h);
