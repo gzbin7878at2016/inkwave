@@ -661,3 +661,6 @@ Boss小地图Worker工具离线通过420组真实原入口/Canvas/halo/owner/闪
 
 
 Worker真实手机副本通过像素/owner/Canvas：392×658，54次snapshot原154.4ms→Main显式54.2ms，但Worker计算194.7ms、往返P95 45.6ms；empty P95 59.9ms超过一帧，单在途方案暂不产品化。自然一分钟方法26.67758FPS不是Worker成绩；退出恢复/USB202510-547496-daa88d4a核对219源码后关闭。详见BOSS-MINIMAP-WORKER末节；下一步先验证有界流水线及显示年龄，不靠降低刷新率掩盖延迟。
+
+
+Worker有界流水线工具：maxPending最多3、逐ID/在途缓冲预算/全取消；桌面120帧72段全部同序、像素/owner/Canvas一致，年龄均1帧、P95显示30.7ms、无>3帧/100ms。420组及三请求/取消检查通过；先中文提交，再手机结算后副本验证。尚未接入APK，不称实战收益。

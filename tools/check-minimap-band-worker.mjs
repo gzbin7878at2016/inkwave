@@ -76,9 +76,21 @@ try {
     const timed = create(state(b), function () { while (true) { /* 由宿主超时终止 */ } }, { timeoutMs: 1000 }); await timed.ready;
     check(await timed.draw(a.paint.grid, 0, a.h, a._rgb).then(() => false, () => true), '超时未拒绝'); timed.dispose();
     check((() => { try { create(state(b), kernel, { maxBytes: 1 }); return false; } catch { return true; } })(), '预算');
+    const triple = create(state(b), kernel, { maxPending: 3 }); await triple.ready;
+    try {
+      const jobs = [0, 1, 2].map(band => triple.draw(a.paint.grid, Math.floor(a.h * band / 3), Math.floor(a.h * (band + 1) / 3), a._rgb));
+      check(await triple.draw(a.paint.grid, 0, a.h, a._rgb).then(() => false, () => true), '三个在途上限');
+      const rows = await Promise.all(jobs);
+      check(rows.every((row, i) => !i || row.id > rows[i - 1].id), '三请求乱序');
+      const cancelJobs = [0, 1, 2].map(band => triple.draw(a.paint.grid, Math.floor(a.h * band / 3), Math.floor(a.h * (band + 1) / 3), a._rgb));
+      const settled = Promise.allSettled(cancelJobs); triple.dispose();
+      check((await settled).every(x => x.status === 'rejected'), '取消未拒绝全部请求');
+    } finally { triple.dispose(); }
     const { benchmarkMinimapWorker: benchmark } = await import('/tools/minimap-worker-benchmark.mjs');
     const benches = await benchmark(make(392, 658, 64, 96), kernel, create, apply);
-    return { comparisons, checks: '原入口/Canvas/halo/owner/闪光/换色/清除/在途/取消/异常/超时/预算通过', benches };
+    const { benchmarkMinimapWorkerPipeline: pipeline } = await import('/tools/minimap-worker-pipeline.mjs');
+    const pipe = await pipeline(make(392, 658, 64, 96), kernel, create, apply);
+    return { comparisons, checks: '原入口/Canvas/halo/owner/闪光/换色/清除/在途/取消/异常/超时/预算通过', benches, pipeline: pipe };
   });
   await writeFile('releases/investigation/minimap-worker-browser.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
