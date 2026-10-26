@@ -3,12 +3,12 @@
 ## 当前接续（2026-10-27，优先于历史版本说明）
 
 - 仅Android Boss；先稳定30再60，固定2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB常亮2，ADB串号A38YUT3C19022796。所有构建/手机测试句柄已终止，游戏已关闭，无授权阻塞；不得并发拥有CDP9223转发。
-- 当前安装v1.0.47/code47，干净源码510c8fa87d904fc9214c457a8a6613aa079106fa。见docs/android/BOSS-PERFORMANCE-test47.zh-CN.md：撤回v46全部可见装饰静态化，仅7非本人opacity0箭头停转；本人/全部可见装饰/关键反馈保留，strategy=hidden-arrows。v45 Worker与RG16F等保留。
-- v47 APK releases/INKWAVE-android-test47-510c8fa.apk，21,158,133字节，SHA256 22ec75fb9c774048f6254730b8cbff82db74755dd784cb5edb34d3e05207dd6d，v2证书201c792d…/398资产一致。273JS/真实HUD7隐藏+10可见/13关键反馈/PC普通与生命周期通过；手机实际7箭头none、8常驻可见动画与本人iw-you恢复，启用/释放1/1、退出恢复/USB213002-962822-0249a772核对510后关闭。
-- v47恢复方法26.64600FPS，1719/64.5125秒，P95 58.3/P99 66.8ms、>=100ms9次，43→46°C；非正式/非提升，30未稳/60未开始。Worker1016提交/1015应用回收、grid3/行3套、peak3、max3帧/220.5ms、无回退，结算inactive收尾同步整图一次。
+- 当前安装v1.0.48/code48，干净源码5092f51c7c1f7fe6a5ac2d7183b828f22de80dd9。仅Boss涂地得分等价关键帧重播去同步布局，原可见动画/PC/普通模式保持；v45 Worker、RG16F等保留。见docs/android/BOSS-PERFORMANCE-test48.zh-CN.md。
+- v48 APK releases/INKWAVE-android-test48-5092f51.apk，21,158,553字节，SHA256 4f7827ca7ebe22dead494e4edd84c844a9020f3bbc6b1b23376d92ead904b104；v2证书201c792d…/398资产一致，安装成功。275JS/9等价关键帧/8组重播与真实_turfPop的PC普通Boss隔离5/5/0读检查通过。
+- v48方法17.46010FPS，1476/84.5356秒，P95 83.4/P99 108.4ms、>=100ms39次；实际涂地属性a/iw-turf-tick/0.35s及原曲线成立。实际178.57m/13284伤害116弱点/阶段[1,2]，无实际大招。Worker一次result-age回退max286.9ms，安全回原同步未放宽；USB221034-149447-ce400939核对509/退出恢复后关闭。30未稳，方法非正式，下一步无探针保留完整Worker门槛。
 - v46停止17装饰桌面布局89→0但正式27.38524/27.46147，无明确实战收益，已撤回可见改动；见test46。USB211620-216495-cef16aae/212051-518851-dcb17061核对a824并关闭，勿把桌面CSS计数当手机成功。v45正式27.27766/27.34379，温度44→46/46→48°C，仍有长帧；v43低值17.428保留。
 - Director revision2仅tools已真机控制验证通过（a73318e，APK仍510）：180.26m/29导航/13068伤害128弱点/2原大招，观察阶段[1,2]，补墨189/1589帧；原射击涂地/自家墨潜墨，干地不盲Shift，不改资源规则。USB215812-662682-bba62f1f核对APK/退出恢复后关闭。同rev2正式两局25.45858/24.09174FPS，P95 58.4/66.8ms、>=100ms12/14次，44→46/47→48°C；实际173/172m、12809/13155伤害、均[1,2]。Worker无回退，UI USB220113-e17f8531/220314-c2d6442a核对510后关闭。30未稳/三期未验；下一步有界CPU采样定位，旧legacy不能直接因果比较。见BOSS-PLAYBACK-REV1.zh-CN.md。
-- v48候选仅手机Boss涂地得分图标重播去同步布局：新30秒V8的_turfPop→_restart自耗时295.51ms；复用等价关键帧属性切换，保留0.35s/曲线/缩放旋转/+Np气泡及计分。9关键帧/8组真实浏览器重播/实际_turfPop上限清理与PC普通回退5/5/0读检查、275JS通过。先中文提交再干净构建安装/方法真实样式/正式验证；当前手机仍47。见BOSS-PERFORMANCE-test48.zh-CN.md，不以此小点承诺30。
+- v48仅手机Boss涂地得分图标重播去同步布局：新30秒V8的_turfPop→_restart自耗时295.51ms；已安装/真机方法生效，当前无正式收益结论，不能以小点承诺30。方法期只读热状态3、电池约48°C，未改系统策略；下一步正式结果包含低值和回退，不隐藏热机退化。
 - 正式METHOD_PROBE=0，全部ablation/DOM/layer/marker/nativePaint/格式比较/生命周期/minimapBenchmark与Worker副本flags均0；REQUIRE_HUD_DECOR/MINIMAP_WORKER/SMAA_EDGES/RASTER_HINTS/AUDIO_PARAM_DEDUPE/SMAA_CLEAR/LENS_PREPARATION=1，ANIMATION_CLOCK/MINIMAP_CACHE/LENS_DRAW/REQUIRE_LOG_EDGES=0。v47方法5秒核对恢复样式；方法verifyBossExit1上传菜单不要求旧Boss Worker，正式结算上传核对字段。
 - v45 Worker：加载最终视角后准备，3请求/主循环按序应用、3帧或250ms失效回原整图、grid/行回收、暂停背景/取消/旧局保护；84段/420内核/原公式/打包/PC回归通过。RG16F仅减未用通道，手机最终像素差0，RG8手机max102拒绝，逻辑省4.39MiB不能当功耗或FPS。
 - Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB，仅已验3秒短Trace/20秒native，绑定本页PID/严格CPU字段/完整buffer。SDK View.setRequestedFrameRate自API35，手机34不能用；不加隐藏反射/虚假Surface/全局性能显示改动。原始系统线程只留releases，保留用户Logs/、play.bat、start-game.bat。基础检查后中文commit/push fork，再干净构建安装测试，结果独立中文提交。
