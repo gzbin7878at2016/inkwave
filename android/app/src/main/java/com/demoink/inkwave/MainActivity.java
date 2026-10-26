@@ -16,7 +16,8 @@ public class MainActivity extends BridgeActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
         // 仅调试APK、显式ADB参数启用最小图形页，排除游戏场景与预热代码。
-        if (BuildConfig.DEBUG && getIntent().getBooleanExtra("inkwave.graphicsProbe", false)) {
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                && getIntent().getBooleanExtra("inkwave.graphicsProbe", false)) {
             try (java.io.InputStream input = getAssets().open("graphics-probe.html")) {
                 java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
                 byte[] bytes = new byte[4096]; int n;
