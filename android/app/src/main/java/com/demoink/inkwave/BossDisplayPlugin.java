@@ -1,5 +1,7 @@
 package com.demoink.inkwave;
 
+import android.app.GameManager;
+import android.os.Build;
 import android.view.Display;
 import android.view.Window;
 import android.view.WindowManager;
@@ -62,6 +64,16 @@ public class BossDisplayPlugin extends Plugin {
         Window window = getActivity().getWindow();
         Display display = window.getDecorView().getDisplay();
         JSObject result = new JSObject();
+        // 只读分类与模式，供Boss真机对照；不切换系统游戏模式或修改电源/热策略。
+        result.put("applicationCategory", getContext().getApplicationInfo().category);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                GameManager manager = getContext().getSystemService(GameManager.class);
+                result.put("gameMode", manager == null ? 0 : manager.getGameMode());
+            } catch (RuntimeException error) {
+                result.put("gameModeQueryError", error.getClass().getSimpleName());
+            }
+        }
         result.put("requested", requested); result.put("owned", owned); result.put("foreground", foreground); result.put("reason", reason);
         result.put("preferredRefreshRate", window.getAttributes().preferredRefreshRate);
         result.put("savedRefreshRate", savedRefreshRate);

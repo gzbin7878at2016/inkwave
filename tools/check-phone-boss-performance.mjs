@@ -90,6 +90,11 @@ try{
   if(state.ready){ready=true;break}await new Promise(r=>setTimeout(r,1000));
  }
  if(!ready)throw Error('手机游戏未就绪');
+ if(process.env.BOSS_REQUIRE_GAME_CATEGORY==='1'){
+  // 开局前只读一次原生分类；正式战斗内不轮询，也不切系统模式。
+  report.gameIdentity=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
+  if(report.gameIdentity.applicationCategory!==0)throw Error('安装包未被识别为标准游戏分类');
+ }
  if(report.methodProbe)report.displayBeforeBoss=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
  await c.evaluate(`(()=>{
   window.__phoneCleanup?.();
