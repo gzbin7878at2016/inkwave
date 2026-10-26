@@ -3,10 +3,12 @@ import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const ablation=process.env.BOSS_GPU_ABLATION==='1';
+const cpuAblation=process.env.BOSS_CPU_ABLATION==='1';
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
+if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -24,6 +26,13 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  const cpuAblationEnabled=${cpuAblation};
+  if(cpuAblationEnabled){
+   // 只做时间有限的工作量隔离，不改变物理/AI/人数；旧地图画面会暂时停更。
+   const skip=(o,k,phase)=>{const fn=o[k];o[k]=function(...args){if(p.cpuAblationPhase===phase)return;return fn.apply(this,args)};restores.push(()=>o[k]=fn);};
+   skip(g,'_updateHud','hud');skip(g.minimap,'update','minimap');skip(g.minimap,'_compose','map-composite');
+   if(__G.audio)skip(__G.audio,'play','oneshot-audio');
+  }
   // 仅诊断：按十秒阶段隐藏渲染组，碰撞/AI/血量仍正常；所有状态在finally恢复。
   const ablationEnabled=${ablation};
   const groups={sea:[__G.env?.sea],background:['city','terrain','staticScenery','ferris','trees','sailInst','gullInst'].map(k=>__G.env?.[k]),props:[g.props?.group]};
@@ -53,10 +62,13 @@ try{
    wrap(window.inkwaveDiagnostics,'tick','diagnosticsTick');
    wrap(Storage.prototype,'setItem','storageWrite');
    wrap(g.R.renderer.getContext(),'getError','glGetError');
+   wrap(g.minimap,'update','minimapUpdate');wrap(g.minimap,'_compose','minimapCompose');
+   if(__G.audio)wrap(__G.audio,'play','audioPlay');
   }
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
+   if(cpuAblationEnabled&&live)p.cpuAblationPhase=['baseline','minimap','hud','oneshot-audio','map-composite','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
    if(ablationEnabled&&live){
     const phase=['baseline','sea','background','props','hud','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
     if(p.ablationPhase!==phase){g.hud.el.style.visibility=phase==='hud'?'hidden':hudVisibility;p.ablationPhase=phase;}
@@ -84,7 +96,7 @@ try{
    if(live&&p.lastPlaying){p.intervals.push(ms);p.activeMs+=ms;}p.lastPlaying=live;
    return record.call(this,ms);
   };
-  window.__phoneCleanup=()=>{for(const restore of restores)restore();g._frame=frame;g.mobile.recordFrame=record;g.input.keys.clear();g.input.mouse.left=false;delete window.__phoneCleanup;};
+  window.__phoneCleanup=()=>{for(const restore of [...restores].reverse())restore();g._frame=frame;g.mobile.recordFrame=record;g.input.keys.clear();g.input.mouse.left=false;delete window.__phoneCleanup;};
   // 用户要求每局1分钟；只改自动测试的对局参数，不改正式游戏默认时长。
   window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v)p.match=g.match},e=>__phoneStarted=String(e));};
   __phoneStart();return true;
@@ -94,7 +106,7 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
     timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
