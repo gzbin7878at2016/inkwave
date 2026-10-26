@@ -6,7 +6,7 @@
 
 后续纹理优化参考[PC/手机纹理分级与UE4思路](android/DEVICE-TEXTURE-SCALABILITY.zh-CN.md)：第一批v18已应用并巡检手机海港远景反射256（PC512），详见[纹理test18](android/TEXTURE-test18.zh-CN.md)。其余候选尚未降档，继续逐项真机对照。
 
-最新补充：当前已安装v1.0.25（干净功能源码dfe1513），游戏关闭。只优化Boss，先稳定30再60，仍未达标。v25减少手机Boss反馈重启的同步布局，组件热点下降但正式25.784/24.576FPS，见[Boss test25](android/BOSS-PERFORMANCE-test25.zh-CN.md)；下批只处理手机Boss空展台render的窗口读取，不能把同步成本移位当总体提帧。v24候选短音记录见[Boss test24](android/BOSS-PERFORMANCE-test24.zh-CN.md)。持续目标active，USB供电常亮2，每30分钟空闲接续已建，不并发争抢USB；每局60秒设置、上传核对后关闭，PC/2倍/SMAA/8人/玩法保持。
+最新补充：当前已安装v1.0.26（干净功能源码c8235a7），游戏关闭。只优化Boss，先稳定30再60，仍未达标。v25重启热点与v26空展台窗口读取已减少，但v26正式25.439/25.171FPS，见[Boss test26](android/BOSS-PERFORMANCE-test26.zh-CN.md)；下步分别定位模拟/晚程序和浏览器合成/HUD动画原生开销，不能把同步成本移位当总体提帧。v24候选短音记录见[Boss test24](android/BOSS-PERFORMANCE-test24.zh-CN.md)。持续目标active，USB供电常亮2，每30分钟空闲接续已建，不并发争抢USB；每局60秒设置、上传核对后关闭，PC/2倍/SMAA/8人/玩法保持。
 
 ## 1. 先读结论
 

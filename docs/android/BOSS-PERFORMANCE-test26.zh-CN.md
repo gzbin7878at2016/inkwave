@@ -7,3 +7,27 @@ v25的30秒CPU采样中，Showcase.render自耗时1737.8ms。源码在确认没�
 基础检查node tools/check-boss-showcase-idle.mjs执行真实Showcase.render：8种手机/PC、Boss/普通、菜单/对局组合各10次，只有手机Boss实战空路径窗口读取0，其他20；装备/结算/退出过渡/后巷4条活动路径各读取2并进入原绘制；肖像任务仍执行。该入口检查不替代完整视觉或真机性能验收。
 
 先语法和专项检查，中文commit/push，再干净构建v1.0.26/code26并USB安装。先带探针确认实际Showcase窗口读取与热点，再无探针两轮60秒实战，固定2倍/SMAA/8人、正常输入，每轮上传核对关闭。同步成本可能部分移到浏览器原本需要的布局阶段，只有真实尾部帧耗通过才算稳定30，不预先承诺收益。
+
+## 真机闭环：无用读取消除，整体仍不达标
+
+干净源码c8235a71f03c58452012b44cd619f9854e062dd6，v1.0.26/code26；releases/INKWAVE-android-test26-c8235a7.apk，21122769字节。SHA-256：1d6a22a5d4b8476dccc0703a3feb2f1ea548a68469953fb2d178714b591c20bd。签名验证通过，证书SHA-256仍201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69；372资源逐字节一致，218文件语法及移动网络检查通过。USB安装成功，构建元数据trackedChanges=false；完整稳定验收未通过，deviceTested保留false。
+
+真机playing中临时包裹原生窗口getter，连续10次实际showcase.render读取0；随后恢复getter，原始记录v26-phone-showcase-reads.json。30秒V8 profile全部节点的Showcase.render自耗时约6.7ms（v25约1738.9ms）；但未归因于JS的(program)约11783.4ms、idle约880ms，不能把局部同步成本降低当作整体胜出，不同热状态/随机场景也有影响。
+
+| 轮次 | 实战秒数/帧数 | 平均FPS | p95/p99（ms） | ≥100ms | 电池温度 |
+| --- | --- | --- | --- | --- | --- |
+| 方法+CPU采样，不计成绩 | 67.0085/1668 | 24.892 | 58.4/75.1 | 11 | 43→45°C |
+| 正式1 | 66.1982/1684 | 25.439 | 58.4/75.2 | 6 | 44→47°C |
+| 正式2 | 66.5056/1674 | 25.171 | 58.4/83.3 | 12 | 47→48°C |
+
+设置游戏时钟60秒，实际墙钟在慢帧钳制下超过60；原间隔完整保留，不压时长。两正式轮无方法/CPU探针或遮蔽/跳过工作，2倍/SMAA/8人真实输入游玩；三轮均自然结束、USB源码核对后关闭，无shader失败/安全暂停。**稳定30仍未通过，60尚未开始。**
+
+正式1有129ms CPU帧，simulation104.7ms、新增程序0；正式2有多个慢帧，部分simulation占主导，另外两帧新增程序各1，其中一次draw85.7ms。这里只说明存在晚创建程序与慢帧的相关性，尚未定位具体材质，也不能把全部停顿归因shader。开场intro另有UI102.5ms帧，不计playing成绩，初始化体验仍需保留关注。下一步分别定位模拟调用/晚程序，以及浏览器合成与HUD动画原生开销；可做有明确标记的UI动画暂停/滤镜隔离调查，不把临时画面削减当正式成绩。
+
+本地资料：releases/investigation/phone-boss-v26-cpu-profile.json、phone-boss-v26-full-1.json、phone-boss-v26-full-2.json，CPU为boss-cpu-2026-10-26T10-54-45-006Z.json。USB文件依次：
+
+- INKWAVE-logs-20261026-105622-213789-cc58076f.json
+- INKWAVE-logs-20261026-105854-146612-edc39b46.json
+- INKWAVE-logs-20261026-110040-029013-cf731d4b.json
+
+当前安装v26，游戏已关闭；APK/日志/原始profile在忽略目录，不随Git同步。用户离开期间目标active，仅Boss，USB供电常亮仍开启。未取得总体FPS收益的候选不能宣传为已稳定；后续证据若显示回退，应单独回退并记录。
