@@ -40,6 +40,8 @@ if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
 const minimapWorkerBenchmark=process.env.BOSS_MINIMAP_WORKER_BENCHMARK==='1';
 const minimapWorkerPipeline=process.env.BOSS_MINIMAP_WORKER_PIPELINE==='1';
+const minimapWorkerPipelinePhase=process.env.BOSS_MINIMAP_WORKER_PIPELINE_PHASE||'finish';
+if(!['finish','playing'].includes(minimapWorkerPipelinePhase))throw Error('流水线阶段须为finish/playing');
 const compareSmaaClear=process.env.BOSS_COMPARE_SMAA_CLEAR==='1';
 const compareSmaaEdges=process.env.BOSS_COMPARE_SMAA_EDGES==='1';
 const edgeFormat=process.env.BOSS_EDGE_FORMAT||'rg8';if(!['rg8','rg16f'].includes(edgeFormat))throw Error('BOSS_EDGE_FORMAT只支持rg8/rg16f');
@@ -313,6 +315,11 @@ try{
     &&!e.resumed.hidden&&!e.resumed.suspended&&!e.resumed.paused&&e.resumed.native.owned&&e.resumed.native.preferredDisplayModeId===e.resumed.native.requestedModeId;
    if(!e.ok)throw Error('后台窗口恢复/前台重新申请验证失败');
   }
+  if(minimapWorkerPipeline&&minimapWorkerPipelinePhase==='playing'&&sample.state==='playing'&&sample.activeMs>=20000&&!report.minimapWorkerPipeline){
+   report.minimapWorkerPipelineStartMs=sample.activeMs;
+   report.minimapWorkerPipeline=await c.evaluate(`(${benchmarkMinimapWorkerPipeline.toString()})(__inkwave.minimap,(${computeMinimapInkBand.toString()}),(${createMinimapBandWorker.toString()}),(${applyMinimapBand.toString()}))`);
+   report.minimapWorkerPipelinePhase='playing';await save();
+  }
   if(report.methodProbe&&sample.state==='playing'&&sample.activeMs>=40000&&!report.displayLatePlay)report.displayLatePlay=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
   await save();console.log(JSON.stringify({state:sample.state,fps:sample.fps,ratio:sample.ratio,activeSeconds:Math.round(sample.activeMs/1000),position:sample.position,fire:sample.fire,actions:sample.actions}));
   if(sample.audioSuspendError)throw Error(sample.audioSuspendError);
@@ -368,11 +375,13 @@ try{
    report.minimapWorkerBenchmark.push(...result);await save();
   }
  }
- if(minimapWorkerPipeline){
+ if(minimapWorkerPipeline&&minimapWorkerPipelinePhase==='finish'){
   if(!report.roundCompleted)throw Error('必须自然结算后才运行流水线副本');
   report.minimapWorkerPipeline=await c.evaluate(`(${benchmarkMinimapWorkerPipeline.toString()})(__inkwave.minimap,(${computeMinimapInkBand.toString()}),(${createMinimapBandWorker.toString()}),(${applyMinimapBand.toString()}))`);
+  report.minimapWorkerPipelinePhase='finish';
   await save();
  }
+ if(minimapWorkerPipeline&&!report.minimapWorkerPipeline)throw Error('未执行指定阶段流水线副本验证');
  if(compareSmaaClear)report.smaaClearComparison=await c.evaluate(`(${compareBossSmaaClear.toString()})(__inkwave)`);
  if(compareSmaaEdges){const half=edgeFormat==='rg16f';report.smaaEdgesComparison=await c.evaluate(`(${compareBossSmaaEdges.toString()})(__inkwave,${JSON.stringify({format:RGFormat,type:half?HalfFloatType:UnsignedByteType,internalFormat:half?'RG16F':'RG8',expectedBits:half?[16,16,0,0]:[8,8,0,0]})})`);if(!report.smaaEdgesComparison.restored||report.smaaEdgesComparison.maxByteDifference||report.smaaEdgesComparison.nonBinary)throw Error(`SMAA ${edgeFormat}未逐字节匹配参考或恢复失败`);}
  if(verifyBossExit){

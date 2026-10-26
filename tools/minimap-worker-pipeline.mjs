@@ -13,7 +13,7 @@ export async function benchmarkMinimapWorkerPipeline(map, kernel, create, apply,
   };
   const a = clone(), b = clone();
   const worker = create({ ...b, grid: b.paint.grid, ink: b.inkImg.data, flash: b.flashImg.data }, kernel, { maxPending: 3 });
-  const ready = [], ages = [], elapsed = [], sequence = [];
+  const ready = [], ages = [], elapsed = [], sequence = [], delayed = [], gaps = [];
   let error = null, queued = 0, applied = 0, inFlight = 0, peak = 0, originalMs = 0, mainMs = 0, seed = 719;
   const random = () => { seed = Math.imul(seed, 1664525) + 1013904223 | 0; return (seed >>> 0) / 4294967296; };
   const tick = () => new Promise(resolve => requestAnimationFrame(resolve));
@@ -21,13 +21,16 @@ export async function benchmarkMinimapWorkerPipeline(map, kernel, create, apply,
   let last = await tick(), frame = 0;
   try {
     while (frame < frames || inFlight || ready.length) {
-      const now = await tick(); if (now - last < 32) continue; last = now;
+      const now = await tick(); if (now - last < 32) continue;
+      if (now - last > 100 && gaps.length < 12) gaps.push({ frame, ms: now - last }); last = now;
       if (error) throw error;
       while (ready.length) {
         const row = ready.shift();
         if (row.order !== applied) throw Error('Worker输出顺序改变');
         const start = performance.now(); apply(b, row.result); mainMs += performance.now() - start + row.result.enqueueMs + row.result.callbackMs;
-        ages.push(frame - row.frame); elapsed.push(performance.now() - row.start); sequence.push(row.result.id); applied++;
+        const ageMs = performance.now() - row.start;
+        ages.push(frame - row.frame); elapsed.push(ageMs); sequence.push(row.result.id); applied++;
+        if (ageMs > 100 && delayed.length < 12) delayed.push({ frame, submitFrame: row.frame, ageMs, roundtripMs: row.result.roundtripMs });
       }
       if (frame < frames && frame % 5 < 3) {
         for (let i = 0; i < 4; i++) a.paint.grid[Math.floor(random() * a.paint.grid.length)] = Math.floor(random() * 3);
@@ -53,6 +56,6 @@ export async function benchmarkMinimapWorkerPipeline(map, kernel, create, apply,
       ageFramesP50: percentile(ages, .5), ageFramesP95: percentile(ages, .95), ageFramesMax: Math.max(...ages),
       displayAgeP50: percentile(elapsed, .5), displayAgeP95: percentile(elapsed, .95), displayAgeMax: Math.max(...elapsed),
       over3Frames: ages.filter(x => x > 3).length, over100ms: elapsed.filter(x => x > 100).length,
-      ordered: sequence.every((v, i) => !i || v > sequence[i - 1]), pixelEqual: true };
+      ordered: sequence.every((v, i) => !i || v > sequence[i - 1]), pixelEqual: true, gaps, delayed };
   } finally { worker.dispose(); }
 }
