@@ -5,7 +5,7 @@ import { Network } from '@capacitor/network';
 import { installMobile } from './src/platform/mobile.js';
 import { installDiagnostics } from './src/platform/diagnostics.js';
 
-window.inkwaveMobile = { native: Capacitor.isNativePlatform(), App, Network };
+window.inkwaveMobile = { native: Capacitor.isNativePlatform(), App, Network, BossDisplay: registerPlugin('BossDisplay') };
 installDiagnostics(registerPlugin('GameDiagnostics'));
 document.documentElement.classList.add('iw-mobile');
 // boot() 异步完成后才有完整 Game；只安装一次平台适配，不另起游戏循环。

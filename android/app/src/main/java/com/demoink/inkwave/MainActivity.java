@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(GameDiagnosticsPlugin.class); // 必须在Bridge构建前注册，启动失败时也能导出日志。
+        registerPlugin(BossDisplayPlugin.class); // Boss实战窗口节奏，离开或后台自动恢复。
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();

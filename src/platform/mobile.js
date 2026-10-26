@@ -1,9 +1,12 @@
 import { G } from '../core/ctx.js';
 import { TouchInput } from '../core/touchInput.js';
 import { MobileProfiler } from './mobileProfiler.js';
+import { createMobileBossDisplay } from './mobileBossDisplay.js';
 
 // 手机平台边界：输入、生命周期与诊断；不改变网络协议和权威模拟。
 export function installMobile(game) {
+  const bossDisplay = createMobileBossDisplay(window.inkwaveMobile.native ? window.inkwaveMobile.BossDisplay : null,
+    (name, detail) => window.inkwaveDiagnostics?.record(name, detail));
   const touch = game.input.touch = new TouchInput(game.input, () => game.pause());
   // 取消手势与正常松手不同：丢弃蓄力/投掷意图，不能回前台自动扔出副武器。
   touch.onCancel = () => {
@@ -40,6 +43,7 @@ export function installMobile(game) {
   };
   const save = () => localStorage.setItem('inkwave.settings', JSON.stringify(game.settings));
   const suspend = () => {
+    bossDisplay.suspend();
     if (state.suspended) return;
     state.suspended = true; state.needsResume = true; game.mobileSuspended = true;
     if (game.hud) game.hud.paused = true;
@@ -144,6 +148,7 @@ export function installMobile(game) {
     touch, state, suspend, foreground, resume,
     recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
+      bossDisplay.update(game, G.mode, state.needsResume || state.lostContext || game.mobileSuspended);
       window.inkwaveDiagnostics?.tick();
       const live = G.mode === 'match' && game.match && !game.match.attract && game.match.state === 'playing' && !game.match.paused;
       touch.setEnabled(!!(live && !game.menus?.current && !state.needsResume && !state.lostContext && dialog.hidden));
