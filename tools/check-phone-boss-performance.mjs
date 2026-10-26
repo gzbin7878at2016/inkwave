@@ -285,7 +285,7 @@ try{
      for(const v of audio?.voices||[]){if(v.v.dead||v.stolen)continue;const model=v.panner?.panningModel||'2d';voicePanners[model]=(voicePanners[model]||0)+1;voiceNodes+=v.v.nodes.length;}
      return {stats,voicePanners,voiceNodes,sampleRate:audio?.ctx?.sampleRate,baseLatency:audio?.ctx?.baseLatency,outputLatency:audio?.ctx?.outputLatency,music:__G.music?.current?.id,playerType:__G.music?.current?.constructor.name,players:__G.music?.players.length};
     })():undefined,
-    timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
+    timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,bossMaxHp:m?.boss?.maxHp,bossPhase:m?.boss?.phase,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
    if(m?.state==='results'&&${duration}>60&&p.activeMs<${duration}*1000)__phoneStart();return sample;
