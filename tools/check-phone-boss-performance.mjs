@@ -4,11 +4,13 @@ import {writeFile,mkdir,readFile} from 'node:fs/promises';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const ablation=process.env.BOSS_GPU_ABLATION==='1';
 const cpuAblation=process.env.BOSS_CPU_ABLATION==='1';
+const uiAblation=process.env.BOSS_UI_ABLATION==='1';
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
+if(uiAblation&&(ablation||cpuAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('UI分组须独占一分钟带探针调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -26,6 +28,16 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  const uiAblationEnabled=${uiAblation};
+  let pauseStyle,flatStyle;
+  if(uiAblationEnabled){
+   // 只隔离浏览器HUD工作；不改变Canvas像素密度、物理或AI。调查结束移除整张临时样式。
+   const roots=['.iw-hud.is-boss','.iw-hud-over.is-boss'];
+   const selectors=roots.flatMap(s=>[s,s+' *',s+'::before',s+'::after',s+' *::before',s+' *::after']).join(',');
+   const add=css=>{const s=document.createElement('style');s.media='not all';s.textContent=selectors+'{'+css+'}';document.head.appendChild(s);restores.push(()=>s.remove());return s;};
+   pauseStyle=add('animation-play-state:paused!important;transition:none!important;');
+   flatStyle=add('filter:none!important;backdrop-filter:none!important;box-shadow:none!important;text-shadow:none!important;');
+  }
   const cpuAblationEnabled=${cpuAblation};
   if(cpuAblationEnabled){
    // 只做时间有限的工作量隔离，不改变物理/AI/人数；旧地图画面会暂时停更。
@@ -54,6 +66,25 @@ try{
   // 可选方法级调查会增加计时开销，单独标记，不能混充无探针基线。
   if(${process.env.BOSS_METHOD_PROBE==='1'}){
    p.methods={};
+   p.simulationStats={};p.slowMethods=[];p.newPrograms=[];
+   const aggregate=(o,k,label,actor)=>{if(!o||typeof o[k]!=='function')return;const fn=o[k],row=p.simulationStats[label]??={calls:0,totalMs:0,maxMs:0};
+    o[k]=function(...args){const start=performance.now();try{return fn.apply(this,args)}finally{
+     if(p.match===g.match&&g.match?.state==='playing'){const ms=performance.now()-start;row.calls++;row.totalMs+=ms;row.maxMs=Math.max(row.maxMs,ms);
+      if(ms>=20&&p.slowMethods.length<100)p.slowMethods.push({label,actor,ms,at:Date.now(),activeMs:p.activeMs});}
+    }};restores.push(()=>o[k]=fn);
+   };
+   p.installMatchProbe=m=>{
+    aggregate(m,'update','match');
+    for(const a of m.actors){aggregate(a,'update','actor',a.name);aggregate(a.bot,'update','bot',a.name);aggregate(a.character,'update','character',a.name);aggregate(a.weaponRunner,'update','weapon',a.name);}
+    aggregate(m.bossMode,'update','bossMode');aggregate(__G.projectiles,'update','projectiles');aggregate(__G.specials,'update','specials');
+   };
+   const renderer=g.R.renderer,direct=renderer.renderBufferDirect;
+   renderer.renderBufferDirect=function(...args){const before=this.info.programs.length;const result=direct.apply(this,args);
+    if(p.match===g.match&&g.match?.state==='playing'&&this.info.programs.length>before&&p.newPrograms.length<50){
+     const material=args[3],object=args[4];p.newPrograms.push({at:Date.now(),activeMs:p.activeMs,object:object?.name,parent:object?.parent?.name,material:material?.name,type:material?.type,
+      programs:this.info.programs.slice(before).map(v=>({id:v.id,name:v.name,cacheKey:String(v.cacheKey||'').slice(0,160)}))});}
+    return result;
+   };restores.push(()=>renderer.renderBufferDirect=direct);
    const wrap=(o,k,label)=>{const fn=o[k],values=p.methods[label]=[];o[k]=function(...args){const start=performance.now();try{return fn.apply(this,args)}finally{if(values.length<10000)values.push(performance.now()-start)}};restores.push(()=>o[k]=fn);};
    for(const k of ['_updCrosshair','_updTank','_updSpecial','_updMap','_updMarkers','_updSquads','_updPrompt'])wrap(g.hud,k,k);
    wrap(g.hud.boss,'update','bossHud');
@@ -77,6 +108,10 @@ try{
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
+   if(uiAblationEnabled&&live){
+    const phase=['baseline','animations-paused','baseline-restored','filters-flat','baseline-restored-2','animations-paused-2'][Math.min(5,Math.floor(p.activeMs/10000))];
+    if(p.uiAblationPhase!==phase){pauseStyle.media=phase.startsWith('animations-paused')?'all':'not all';flatStyle.media=phase==='filters-flat'?'all':'not all';p.uiAblationPhase=phase;}
+   }
    if(cpuAblationEnabled&&live)p.cpuAblationPhase=['baseline','minimap','hud','oneshot-audio','map-composite','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
    if(ablationEnabled&&live){
     const phase=['baseline','sea','background','props','hud','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
@@ -107,7 +142,7 @@ try{
   };
   window.__phoneCleanup=()=>{for(const restore of [...restores].reverse())restore();g._frame=frame;g.mobile.recordFrame=record;g.input.keys.clear();g.input.mouse.left=false;delete window.__phoneCleanup;};
   // 用户要求每局1分钟；只改自动测试的对局参数，不改正式游戏默认时长。
-  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v)p.match=g.match},e=>__phoneStarted=String(e));};
+  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v){p.match=g.match;p.installMatchProbe?.(g.match)}},e=>__phoneStarted=String(e));};
   __phoneStart();return true;
  })()`);
  const deadline=Date.now()+(duration+300)*1000;
@@ -115,7 +150,7 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,cpuAblationPhase:p.cpuAblationPhase,uiAblationPhase:p.uiAblationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
     timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
@@ -137,6 +172,7 @@ try{
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
+ report.simulationProbe=await c.evaluate('({stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
