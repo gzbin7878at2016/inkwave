@@ -32,14 +32,14 @@ const pages = await (await fetch('http://127.0.0.1:9223/json', { signal: AbortSi
 const page = pages.find(p => p.url === 'https://localhost/'); if (!page) throw Error('无现存游戏调试目标');
 const ws = new WebSocket(page.webSocketDebuggerUrl); let seq = 0;
 const pending = new Map(), meta = { performanceTest: false, kind, requestedSeconds: 20, categories: ['sched', 'freq', 'idle'], bufferKiBPerCpu: 16384 };
-let bindingTrace=false,traceComplete;const marker='inkwave-boss-native-process',rendererIds=new Set();
+let bindingTrace=false,traceComplete;const processMarker='inkwave-boss-native-process',rendererIds=new Set();
 const fail = () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('采集锚点调试连接断开')); } pending.clear(); };
 try {
   await new Promise((resolve, reject) => { const timer = setTimeout(() => reject(Error('调试连接超时')), 5000);
     ws.onopen = () => { clearTimeout(timer); resolve(); }; ws.onerror = () => { clearTimeout(timer); reject(Error('调试连接失败')); }; });
   ws.onclose = fail; ws.onerror = fail;
   ws.onmessage = e => { const v = JSON.parse(e.data);
-    if(v.method==='Tracing.dataCollected')for(const event of v.params.value)if(event.name===marker&&Number.isFinite(event.pid)){rendererIds.add(event.pid);meta.rendererMainTid=event.tid;}
+    if(v.method==='Tracing.dataCollected')for(const event of v.params.value)if(event.name===processMarker&&Number.isFinite(event.pid)){rendererIds.add(event.pid);meta.rendererMainTid=event.tid;}
     if(v.method==='Tracing.tracingComplete')traceComplete?.();
     const p = pending.get(v.id); if (!p) return;
     clearTimeout(p.timer); pending.delete(v.id); v.error ? p.reject(Error(JSON.stringify(v.error))) : p.resolve(v.result); };
@@ -50,7 +50,7 @@ try {
   };
   // 本页JS标记直接给出真正renderer PID/TID，不再从多个WebView的线程名猜归属。
   await call('Tracing.start',{categories:'blink.user_timing',transferMode:'ReportEvents'});bindingTrace=true;
-  await evaluate(`performance.mark('${marker}');true`);
+  await evaluate(`performance.mark('${processMarker}');true`);
   const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('进程标记Trace未结束')),5000);traceComplete=()=>{clearTimeout(timer);resolve();};});
   await call('Tracing.end');await done;bindingTrace=false;
   if(rendererIds.size!==1)throw Error('本页进程标记缺失或不唯一');meta.rendererPid=[...rendererIds][0];

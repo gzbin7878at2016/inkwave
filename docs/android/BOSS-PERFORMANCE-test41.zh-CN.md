@@ -31,3 +31,5 @@ v40原样转发的20秒真机统计13182调用，其中3487（26.45%）为同目
 待干净构建及真机。30未稳定，60未开始。
 
 原生CPU方法调查工具增加passive模式：仅无音画/模拟旁路的方法轮允许附着，仍20秒sched/freq/idle、不占用ADB转发。开始前用本页performance.mark和极短blink.user_timing Trace绑定真实renderer PID/TID，再结束浏览器Trace，之后才开始内核采集；避免根据多个WebView线程名猜归属。真实Edge标记唯一PID/TID验证通过、工具语法通过。准备对当前v40原包和v41各做一分钟方法轮，采相同8～28秒窗口；温度/战况不同仍不能把CPU差异硬称严格提帧。
+
+首次passive v40方法轮完整完成USB上传关闭，但原生工具process标记变量被后段TRACE头同名const遮蔽，进入TDZ，内核采样尚未开始；该轮无原生CPU证据。已更名processMarker消除遮蔽；失败meta保留，以新名称重采，不覆盖或把失败数据当成收益。
