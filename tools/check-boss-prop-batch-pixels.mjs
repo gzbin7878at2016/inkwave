@@ -5,13 +5,14 @@ await mkdir('releases/investigation',{recursive:true});
 const browser=await puppeteer.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true,args:['--no-sandbox','--enable-unsafe-swiftshader'],protocolTimeout:240000});
 const report={status:'loading',performanceTest:false,productModified:false,errors:[]};
 report.groupMode=process.env.BOSS_PROP_GROUP_MODE||'cells';
+report.benchmark=process.env.BOSS_PROP_BENCHMARK==='1';
 try{
  const page=await browser.newPage();await page.setViewport({width:778,height:370,deviceScaleFactor:2,isMobile:true,hasTouch:true});
  page.on('pageerror',e=>report.errors.push(e.message));page.on('console',m=>{if(m.type()==='error')report.errors.push(m.text());});
  await page.goto('http://localhost:8490/dist-mobile/',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>window.__inkwave?.mobile,{timeout:120000});await page.mouse.click(2,2);
  await page.evaluate(()=>{window.__batchReady=null;__inkwave.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>__batchReady=v,e=>__batchReady=String(e));});
  await page.waitForFunction(()=>window.__batchReady!==null,{timeout:180000});
- report.result=await page.evaluate(async groupMode=>{
+ report.result=await page.evaluate(async({groupMode,benchmark})=>{
   if(__batchReady!==true)throw Error('正常Boss加载失败：'+__batchReady);
   const T=await import('/node_modules/three/build/three.module.js'),{createBossPropBatchCandidate:create}=await import('/tools/boss-prop-batch-candidate.mjs');
   const g=__inkwave,r=__G.renderer,gl=r.getContext(),camera=__G.camera,w=gl.drawingBufferWidth,h=gl.drawingBufferHeight;
@@ -32,10 +33,22 @@ try{
     const a1=draw(false),a=draw(false),b1=draw(true),b=draw(true),repeat1=draw(false),repeat=draw(false),noCull=draw(true,false);
     pixels.push({view:name,referenceRepeat:diff(a1.data,a.data),referenceRepeatAfter:diff(repeat1.data,repeat.data),referenceAcross:diff(a.data,repeat.data),candidateRepeat:diff(b1.data,b.data),candidate:diff(a.data,b.data),withoutCulling:diff(a.data,noCull.data),originalDraw:a.counts,candidateDraw:b.counts,withoutCullingDraw:noCull.counts});
    }
+   const timings=[];
+   if(benchmark&&pixels.every(p=>!p.referenceRepeat.max&&!p.referenceRepeatAfter.max&&!p.referenceAcross.max&&!p.candidateRepeat.max&&!p.candidate.max)){
+    for(const name of ['spawn','left']){
+     const [,eye,target]=views.find(v=>v[0]===name);camera.position.set(...eye);camera.lookAt(...target);camera.updateMatrixWorld(true);
+     for(const active of [false,true,true,false,false,true,true,false]){
+      active?candidate.enable():candidate.disable();for(const e of candidate.entries)e.batch.perObjectFrustumCulled=true;
+      g.R.render();gl.finish();const begin=performance.now();let submitWallMs=0;
+      for(let i=0;i<3;i++){const a=performance.now();g.R.render();submitWallMs+=performance.now()-a;}gl.finish();
+      timings.push({view:name,active,frames:3,totalBlockedWallMs:performance.now()-begin,submitWallMs});
+     }
+    }
+   }
    if(gl.getError()!==gl.NO_ERROR)throw Error('像素比较出现WebGL错误');
-   return {width:w,height:h,buildMs,stats:{...candidate.stats},multiDraw:!!r.extensions.get('WEBGL_multi_draw'),pixels,restored:false};
+   return {width:w,height:h,buildMs,stats:{...candidate.stats},multiDraw:!!r.extensions.get('WEBGL_multi_draw'),pixels,timings,timingNote:'独立桌面同输入gl.finish有界阻塞墙钟，非纯CPU/GPU时间，不代表手机整局FPS',restored:false};
   }finally{candidate?.dispose();r.renderBufferDirect=saved.direct;camera.position.copy(saved.pos);camera.quaternion.copy(saved.q);camera.updateMatrixWorld(true);g.frozen=saved.frozen;if(sources.some(m=>!m.visible))throw Error('原对象没有恢复');}
- },report.groupMode);
+ },{groupMode:report.groupMode,benchmark:report.benchmark});
  report.result.restored=true;
  const unstable=report.result.pixels.some(p=>p.referenceRepeat.max||p.referenceRepeatAfter.max||p.referenceAcross.max||p.candidateRepeat.max);
  report.status=unstable?'inconclusive':report.errors.length||report.result.pixels.some(p=>p.candidate.max)?'mismatch':'matched';
