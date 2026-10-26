@@ -11,7 +11,9 @@ for (const [label, change, mode, suspended, expected] of [
   ['大厅演示', g => g.match.attract = true, 'match', false, false],
   ['菜单', () => {}, 'menu', false, false],
   ['加载', g => g.match.state = 'init', 'match', false, false],
-  ['开场', g => g.match.state = 'intro', 'match', false, false],
+  ['加载预检', g => {g.match.state = 'init'; g._mobilePreparation = {};}, 'menu', false, true],
+  ['失败加载', g => {g.match.state = 'init'; g._mobilePreparation = {}; g._mobilePreparationError = true;}, 'menu', false, false],
+  ['开场', g => g.match.state = 'intro', 'match', false, true],
   ['结算', g => g.match.state = 'finish', 'match', false, false],
   ['暂停', g => g.match.paused = true, 'match', false, false],
   ['后台', () => {}, 'match', true, false],
@@ -25,6 +27,13 @@ for (const [label, change, mode, suspended, expected] of [
   if (expected) { g.match.state = 'finish'; await controller.update(g, mode, suspended); assert.deepEqual(calls, [true, false]); }
 }
 const calls = [], release = [], g = game(); let concurrent = 0, peak = 0;
+const early=game(),earlyCalls=[];early.match.state='init';early._mobilePreparation={};
+const earlyController=createMobileBossDisplay({async setBossActive(v){earlyCalls.push(v.active);return v;}});
+await earlyController.update(early,'menu',false);
+early.match.state='intro';early._mobilePreparation=null;await earlyController.update(early,'match',false);
+early.match.state='playing';await earlyController.update(early,'match',false);
+assert.deepEqual(earlyCalls,[true],'加载到实战重复申请');
+early.match=null;await earlyController.update(early,'menu',false);assert.deepEqual(earlyCalls,[true,false],'取消/返回菜单未恢复');
 const c = createMobileBossDisplay({ setBossActive(v) { calls.push(v.active); peak = Math.max(peak, ++concurrent);
   return new Promise(resolve => release.push(() => { concurrent--; resolve(v); })); } });
 const pending = c.update(g, 'match', false);
@@ -37,4 +46,4 @@ for (let i = 0; i < 300; i++) await failing.update(g, 'match', false);
 assert.equal(failures, 1); assert.equal(events[0][0], 'mobile-boss-display-failed');
 await failing.suspend(); assert.equal(failures, 2);
 await createMobileBossDisplay(null).update(g, 'match', false);
-console.log('通过：13个实际场景边界、每帧去重、桥串行/暂停恢复、失败不刷屏及非原生隔离；原生是否采纳需真机验证');
+console.log('通过：15个实际场景边界、加载预检/开场提前申请、每帧去重、桥串行/暂停恢复、失败不刷屏及非原生隔离；原生是否采纳需真机验证');

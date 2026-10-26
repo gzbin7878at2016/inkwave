@@ -1,4 +1,4 @@
-// 只对真实手机Boss实战申请60Hz窗口节奏；Canvas仍按用户30/60上限、原像素密度绘制。
+// 只对真实手机Boss申请60Hz窗口节奏；提前到加载预检/开场，避免切换落进首个战斗帧。
 export function createMobileBossDisplay(plugin, record = () => {}) {
   let desired = false, attempted, pending = false;
   const pump = async () => {
@@ -17,7 +17,9 @@ export function createMobileBossDisplay(plugin, record = () => {}) {
   return {
     update(game, mode, suspended) {
       const m = game.match, cap = game.settings.fpsCap;
-      return request(!!m?.boss && !m.attract && mode === 'match' && m.state === 'playing'
+      const preparing = m?.state === 'init' && !!game._mobilePreparation && !game._mobilePreparationError;
+      const visibleMatch = mode === 'match' && (m?.state === 'intro' || m?.state === 'playing');
+      return request(!!m?.boss && !m.attract && (preparing || visibleMatch)
         && !m.paused && !suspended && (cap === 30 || cap === 60));
     },
     suspend: () => request(false),

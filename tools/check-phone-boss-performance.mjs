@@ -14,6 +14,8 @@ const audioSuspend=process.env.BOSS_AUDIO_SUSPEND==='1';
 const audioGraphBypass=process.env.BOSS_AUDIO_GRAPH_BYPASS==='1';
 const audioReverbBypass=process.env.BOSS_AUDIO_REVERB_BYPASS==='1';
 const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
+const verifyDisplayLifecycle=process.env.BOSS_VERIFY_DISPLAY_LIFECYCLE==='1';
+if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
 if(minimapBenchmark && (process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('小地图计算对照仅允许一分钟方法调查轮');
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
@@ -27,7 +29,7 @@ if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerA
 if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -40,6 +42,7 @@ try{
   if(state.ready){ready=true;break}await new Promise(r=>setTimeout(r,1000));
  }
  if(!ready)throw Error('手机游戏未就绪');
+ if(report.methodProbe)report.displayBeforeBoss=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
  await c.evaluate(`(()=>{
   window.__phoneCleanup?.();
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
@@ -248,6 +251,29 @@ try{
    if(m?.state==='results'&&${duration}>60&&p.activeMs<${duration}*1000)__phoneStart();return sample;
   })()`);
   const intervals=sample.intervals;delete sample.intervals;report.intervals.push(...intervals);report.timeline.push(sample);
+  if(report.methodProbe&&sample.state==='playing'&&sample.activeMs>=5000&&!report.displayDuringPlay){
+   report.displayDuringPlay=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
+   if(report.displayDuringPlay.observedWidth!==report.displayBeforeBoss.observedWidth||report.displayDuringPlay.observedHeight!==report.displayBeforeBoss.observedHeight)throw Error('Boss窗口实验改变了实际物理分辨率');
+  }
+  if(verifyDisplayLifecycle&&sample.state==='playing'&&sample.activeMs>=20000&&!report.displayLifecycle){
+   const query='(async()=>({native:await inkwaveMobile.BossDisplay.getState(),hidden:document.hidden,suspended:__inkwave.mobileSuspended,paused:__inkwave.match.paused}))()';
+   report.displayLifecycle={before:await c.evaluate(query)};
+   try{c.command('shell','input','keyevent','KEYCODE_HOME');await new Promise(r=>setTimeout(r,700));report.displayLifecycle.background=await c.evaluate(query);}
+   finally{c.command('shell','am','start','-n','com.demoink.inkwave/.MainActivity');}
+   let resumed=false;
+   for(let i=0;i<60;i++){
+    resumed=await c.evaluate('(()=>{const d=document.querySelector("#mobile-dialog");if(document.hidden||!d||d.hidden||!d.querySelector("button"))return false;d.querySelector("button").click();return true;})()');
+    if(resumed)break;await new Promise(r=>setTimeout(r,100));
+   }
+   if(!resumed)throw Error('前台继续按钮未出现，生命周期调查未自动恢复');
+   for(let i=0;i<60;i++){report.displayLifecycle.resumed=await c.evaluate(query);if(report.displayLifecycle.resumed.native.owned&&!report.displayLifecycle.resumed.paused)break;await new Promise(r=>setTimeout(r,100));}
+   const e=report.displayLifecycle,b=report.displayBeforeBoss;
+   e.ok=e.background.hidden&&e.background.suspended&&e.background.paused&&!e.background.native.owned
+    &&e.background.native.preferredDisplayModeId===b.preferredDisplayModeId&&Math.abs(e.background.native.preferredRefreshRate-b.preferredRefreshRate)<.01
+    &&!e.resumed.hidden&&!e.resumed.suspended&&!e.resumed.paused&&e.resumed.native.owned&&e.resumed.native.preferredDisplayModeId===e.resumed.native.requestedModeId;
+   if(!e.ok)throw Error('后台窗口恢复/前台重新申请验证失败');
+  }
+  if(report.methodProbe&&sample.state==='playing'&&sample.activeMs>=40000&&!report.displayLatePlay)report.displayLatePlay=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
   await save();console.log(JSON.stringify({state:sample.state,fps:sample.fps,ratio:sample.ratio,activeSeconds:Math.round(sample.activeMs/1000),position:sample.position,fire:sample.fire,actions:sample.actions}));
   if(sample.audioSuspendError)throw Error(sample.audioSuspendError);
   if(sample.audioBypassError)throw Error(sample.audioBypassError);
@@ -285,6 +311,7 @@ try{
   const e=report.bossExit;e.ok=e.mode==='menu'&&!e.boss&&e.info?.active===false&&e.info.restored===2&&e.sfxSeconds===1.5&&e.musicSeconds===2.2&&e.sfxNormalize&&e.musicNormalize;
   if(report.postprocess.fusion?.enabled)e.ok=e.ok&&e.outputEnabled===true&&e.fusion?.enabled===false;
   if(report.minimapInk?.active)e.ok=e.ok&&e.minimapInk===null&&e.oldMinimapInk===null;
+  if(report.displayBeforeBoss){e.display=await c.evaluate('inkwaveMobile.BossDisplay.getState()');e.ok=e.ok&&!e.display.owned&&e.display.preferredDisplayModeId===report.displayBeforeBoss.preferredDisplayModeId&&Math.abs(e.display.preferredRefreshRate-report.displayBeforeBoss.preferredRefreshRate)<.01;}
   if(!e.ok)throw Error('回菜单未完全恢复原混响');
  }
  // measured只代表采样完成；30分钟、原画质、移动/开火和尾部帧耗同时过门槛才标记稳定。
