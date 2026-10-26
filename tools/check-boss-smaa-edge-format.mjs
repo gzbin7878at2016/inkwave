@@ -12,9 +12,9 @@ try{const page=await browser.newPage();await page.goto('http://localhost:8490/re
   try{
    for(let i=0;i<100&&!(aa._areaTexture.image.complete&&aa._searchTexture.image.complete);i++)await new Promise(r=>setTimeout(r,10));
    await aa.prepareBossOutput(r,match,output);aa.syncBossOutput(match,'match');aa.syncBossSmaaClear(match,'match');r.setClearColor(0x9fd8f0);r.autoClearColor=false;
-   for(const [w,h]of [[96,64],[137,73],[256,144]])for(const mode of [0,1,2])for(const angle of [0,.37,1.16]){
+   for(const compact of [{format:T.RGFormat,type:T.UnsignedByteType,internalFormat:"RG8",expectedBits:[8,8,0,0]},{format:T.RGFormat,type:T.HalfFloatType,internalFormat:"RG16F",expectedBits:[16,16,0,0]}])for(const [w,h]of [[96,64],[137,73],[256,144]])for(const mode of [0,1,2])for(const angle of [0,.37,1.16]){
     r.setSize(w,h);c.setSize(w,h);source.uniforms.uMode.value=mode;source.uniforms.uAngle.value=angle;source.uniforms.uSize.value.set(w,h);c.render();
-    const result=compare({R:{renderer:r,composer:c,mobileAA:aa},match,frozen:false},{format:T.RGFormat,type:T.UnsignedByteType,internalFormat:'RG8'});cases.push({mode,angle,...result});
+    const result=compare({R:{renderer:r,composer:c,mobileAA:aa},match,frozen:false},compact);cases.push({mode,angle,...result});
     if(result.maxByteDifference||result.nonBinary||!result.restored)throw Error('RG8像素/二值/恢复不一致：'+JSON.stringify(cases.at(-1)));
    }
    return {cases:cases.length,maxDifference:Math.max(...cases.map(x=>x.maxByteDifference)),nonZeroEdgeSamples:cases.reduce((n,x)=>n+x.nonZero,0),allRestored:cases.every(x=>x.restored),performanceTest:false};
