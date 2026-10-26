@@ -11,7 +11,7 @@ export function benchmarkBossHiddenLod(game,G){
    if(!mesh.isSkinnedMesh||mesh.children.length||mesh.parent!==c.kid)throw Error('不支持的隐藏LOD结构');
    if(!parents.has(c.kid))parents.set(c.kid,[...c.kid.children]);removed.push({mesh,parent:c.kid});
   }}
-  const enable=()=>{if(active)return;for(const {mesh,parent}of removed){if(mesh.visible||mesh.parent!==parent)throw Error('隐藏状态已改变');parent.remove(mesh);}active=true;};
+  const enable=()=>{if(active)return;for(const {mesh,parent}of removed)if(mesh.visible||mesh.parent!==parent)throw Error('隐藏状态已改变');active=true;for(const {mesh,parent}of removed)parent.remove(mesh);};
   const disable=()=>{if(!active)return;for(const {mesh,parent}of removed)parent.add(mesh);for(const [parent,children]of parents){if(parent.children.length!==children.length||parent.children.some(c=>!children.includes(c)))throw Error('副本期间场景结构改变');parent.children.splice(0,parent.children.length,...children);}active=false;};
   const difference=(a,b)=>{let max=0,changed=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);if(d)changed++;max=Math.max(max,d);}return{max,changed};};
   const snapshot=()=>{const values=[];scene.traverseVisible(o=>values.push(...o.matrixWorld.elements));for(const a of game.match.actors){a.character.skeleton.update();values.push(...a.character.skeleton.boneMatrices);}return values;};
@@ -28,7 +28,7 @@ export function benchmarkBossHiddenLod(game,G){
    disable();const restored=[...parents].every(([p,children])=>children.every((c,i)=>p.children[i]===c));
    if(!restored||gl.getError()!==gl.NO_ERROR)throw Error('恢复或GL检查失败');
    return{performanceTest:false,removed:removed.length,pixels,matrices,timings,restored,matched:[...Object.values(pixels),...Object.values(matrices)].every(x=>!x.max),renderer:gl.getParameter(gl.RENDERER)};
-  }finally{disable();game.frozen=savedFrozen;}
+  }finally{try{disable();}finally{game.frozen=savedFrozen;}}
 }
 
 export async function runPhoneBossHiddenLod(c){
