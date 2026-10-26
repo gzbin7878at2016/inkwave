@@ -46,6 +46,10 @@ export function createBossPropBatchCandidate(T,sources,{cellSize=8,maxBytes=32*1
     }finally{part.dispose();}
     group.indices=null;group.vertices.clear();
    }
+   // Renderer用整体包围球中心排序同材质不透明物体；保留原中心，避免与原扇叶等实例件顺序变化。
+   // 逐组视锥仍使用各自完整三角形的边界，不用这个整体球替代空间剔除。
+   if(!g.boundingSphere)g.computeBoundingSphere();batch.boundingSphere=g.boundingSphere.clone();
+   if(!g.boundingBox)g.computeBoundingBox();batch.boundingBox=g.boundingBox.clone();
    const bytes=Object.values(batch.geometry.attributes).reduce((n,a)=>n+a.array.byteLength,0)+batch.geometry.index.array.byteLength;
    // 只读审计内部纹理尺寸，不改内部结构；所有构建和实例操作均走公开API。
    const textures=[batch._matricesTexture,batch._indirectTexture,batch._colorsTexture].filter(Boolean).reduce((n,t)=>n+t.image.data.byteLength,0);

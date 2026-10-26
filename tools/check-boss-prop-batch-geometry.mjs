@@ -12,6 +12,7 @@ const triangles=(geometry,start=0,count=geometry.index.count)=>{
 };
 const candidate=create(T,[m]);const actual=candidate.entries.flatMap(e=>e.geometryIds.flatMap(id=>{const range=e.batch.getGeometryRangeAt(id);return triangles(e.batch.geometry,range.indexStart,range.indexCount);})).sort();
 assert.deepEqual(actual,triangles(g));assert.ok(candidate.stats.chunks>1);assert.ok(candidate.stats.attributesChecked>0);
+assert.ok(candidate.entries[0].batch.boundingSphere.equals(g.boundingSphere));assert.ok(candidate.entries[0].batch.boundingBox.equals(g.boundingBox));
 candidate.enable();assert.equal(m.visible,false);assert.equal(scene.children.length,2);candidate.disable();assert.equal(m.visible,true);assert.equal(scene.children.length,1);
 candidate.enable();candidate.dispose();candidate.dispose();assert.equal(m.visible,true);assert.equal(scene.children.length,1);assert.throws(()=>candidate.enable(),/释放/);
 assert.deepEqual(Object.fromEntries(Object.entries(g.attributes).map(([k,a])=>[k,Buffer.from(a.array.buffer).toString('hex')])),snapshots);
