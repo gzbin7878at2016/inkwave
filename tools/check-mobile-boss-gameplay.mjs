@@ -45,7 +45,7 @@ try{
   return {result:__bossResult,trace:__bossProgress,ready:ready&&JSON.parse(ready.detail),scene:inkwaveDiagnostics.report().current.scene,pool:g.match.boss?.crabletPool?.models.size,minimapInk:g.minimap.bossInkInfo()};
  });
  assert.equal(prepared.result,true);assert.equal(prepared.pool,12);
- assert.ok(prepared.minimapInk?.active,'实际加载顺序结束后Boss小地图缓存必须启用');
+ assert.equal(prepared.minimapInk,null,'真机无收益的候选不得在正常加载中分配');
  assert.ok(prepared.trace.length>1);assert.ok(prepared.trace.some(p=>p.value<100));assert.ok(prepared.trace.some(p=>p.value===100));
  for(let i=1;i<prepared.trace.length;i++)assert.ok(prepared.trace[i].value>=prepared.trace[i-1].value);
  assert.ok(prepared.trace.every(p=>p.state==='complete'||p.match!=='intro'));
@@ -65,7 +65,7 @@ try{
   return {samePool:[...b.crabletPool.models].every(m=>models.has(m)),count:b.crabletPool.models.size,free:b.crabletPool.free.length,late:[...__latePrograms.values()],failures:inkwaveDiagnostics.report().current.shaderFailures,minimapInk:g.minimap.bossInkInfo()};
  });
  assert.ok(reuse.samePool);assert.equal(reuse.count,12);assert.equal(reuse.free,12);assert.equal(reuse.failures.length,0);
- assert.ok(reuse.minimapInk?.active && reuse.minimapInk.calls>0,'实际实战必须命中小地图入口');
+ assert.equal(reuse.minimapInk,null,'正常实战保持原小地图计算');
  await writeFile('releases/investigation/test11-boss-gameplay.json',JSON.stringify({prepared,reuse,errors},null,2));
  assert.deepEqual(reuse.late.map(({id,name,phase})=>({id,name,phase})),[],'开场/实战和两轮小怪不得新增shader程序对象');
  assert.deepEqual(errors,[]);

@@ -1,5 +1,7 @@
 # 本仓库开发与跨电脑同步规则
 
+2026-10-26第34批（优先于下方旧记录）：手机同地图快照对照缓存/原入口1.074、零散1.013，无明确收益，已撤回加载期默认准备，候选与工具留作实验。当前仍安装v33源码391966c且关闭；等待回归通过后中文提交推送、干净构建v34。新正常测试BOSS_REQUIRE_MINIMAP_CACHE=0、BOSS_MINIMAP_BENCHMARK=0，期望cache=null；保持每局60秒、2倍/SMAA/8人/玩法/PC、USB上传核对关闭。先稳定30再60，未达标。接着调查Boss实战技能特效新程序，见docs/android/BOSS-PERFORMANCE-test32.zh-CN.md末节；目标active，接续id=boss，无授权阻塞。
+
 2026-10-26第33批接续：当前安装v1.0.33，干净功能源码391966c，游戏关闭。仅手机Boss小地图缓存，1,548,466字节，实际启用及退出恢复通过；但正式28.232/26.151FPS（42→45/45→46°C），未稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test32.zh-CN.md的v33结果；新CPU缓存925.5ms对原路径624.4ms为反向线索，场景温度不同，不能认定收益。接着用BOSS_MINIMAP_BENCHMARK=1、BOSS_METHOD_PROBE=1、BOSS_REQUIRE_MINIMAP_CACHE=1、BOSS_VERIFY_BOSS_EXIT=1跑60秒调查，在结算后复制地图四种负载交替测原入口，确认后修正或撤回候选。保持2倍/SMAA/8人/玩法/PC，仅Boss；每批中文提交推送后测试，每局上传核对关闭。目标active，接续id=boss；USB常亮2，不并发CDP。以下较早版本记录仅供历史参考。
 
 本规则适用于整个仓库。用户要求每批修改及时提交GitHub并逐批汇报。
