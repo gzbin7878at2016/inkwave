@@ -7,6 +7,8 @@ import {createBossDomProbe} from './boss-dom-probe.mjs';
 import {createBossLayerHintProbe} from './boss-layer-hint-probe.mjs';
 import {createBossMarkerVarProbe} from './boss-marker-var-probe.mjs';
 import {createBossNativePaintProbe} from './boss-native-paint-probe.mjs';
+import {compareBossSmaaEdges} from './compare-boss-smaa-edges.mjs';
+import {RGFormat,UnsignedByteType} from 'three';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
@@ -33,6 +35,8 @@ if(domAblation&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyBossE
 if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
 const compareSmaaClear=process.env.BOSS_COMPARE_SMAA_CLEAR==='1';
+const compareSmaaEdges=process.env.BOSS_COMPARE_SMAA_EDGES==='1';
+if(compareSmaaEdges&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('SMAA边缘格式比较仅供结算后独立方法调查');
 if(compareSmaaClear&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('SMAA同输入比较仅允许一分钟独立方法调查');
 if(minimapBenchmark && (process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('小地图计算对照仅允许一分钟方法调查轮');
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
@@ -347,6 +351,7 @@ try{
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
  if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
  if(compareSmaaClear)report.smaaClearComparison=await c.evaluate(`(${compareBossSmaaClear.toString()})(__inkwave)`);
+ if(compareSmaaEdges){report.smaaEdgesComparison=await c.evaluate(`(${compareBossSmaaEdges.toString()})(__inkwave,${JSON.stringify({format:RGFormat,type:UnsignedByteType,internalFormat:'RG8'})})`);if(!report.smaaEdgesComparison.restored||report.smaaEdgesComparison.maxByteDifference||report.smaaEdgesComparison.nonBinary)throw Error('SMAA RG8未逐字节匹配参考或恢复失败');}
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
   report.bossExit=await c.evaluate(`(async()=>{const oldMap=__inkwave.minimap;await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
