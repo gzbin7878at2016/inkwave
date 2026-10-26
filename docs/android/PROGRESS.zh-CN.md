@@ -587,3 +587,6 @@ v41整体DOM调查已闭环：15～45秒临时隐藏HUD/控件，前后native Ma
 
 
 HUD隔离已完成all/markers/UI动画/map/bar/special/top各60秒及20秒native，全部恢复/USB源码核对/关闭。整层明显释放Main/GPU主机/合成，但单组件仅marker/top有部分栅格线索，map/bar/special无明显Main收益。功能仍v41，不发布隐藏UI。下一步完整HUD图层提示对照，若无效再GPU/Skia细类Trace；30未稳定、60未开始。详见BOSS-DOM-INVESTIGATION.zh-CN.md。
+
+
+复核补充：top轮18～21秒死亡导致calls约99→49，GPU下降不能独立归因顶部栏；其余隔离窗口采样均存活。整HUD前后calls107～113/约794k～805k接近，仍有较强渲染负载线索。下一步先GPU/Skia/Viz细类Trace，不基于混杂数据盲改图标缓存。
