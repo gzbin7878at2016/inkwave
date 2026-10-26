@@ -1,8 +1,8 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
-2026-10-26第34批（优先于下方旧记录）：手机同地图快照对照缓存/原入口1.074、零散1.013，无明确收益，已撤回加载期默认准备，候选与工具留作实验。当前仍安装v33源码391966c且关闭；等待回归通过后中文提交推送、干净构建v34。新正常测试BOSS_REQUIRE_MINIMAP_CACHE=0、BOSS_MINIMAP_BENCHMARK=0，期望cache=null；保持每局60秒、2倍/SMAA/8人/玩法/PC、USB上传核对关闭。先稳定30再60，未达标。接着调查Boss实战技能特效新程序，见docs/android/BOSS-PERFORMANCE-test32.zh-CN.md末节；目标active，接续id=boss，无授权阻塞。
+2026-10-26当前接续（优先于下方历史）：已安装v1.0.34，干净功能源码2cefb1e，游戏关闭。手机小地图缓存同图快照比原入口慢约7.4%且未见明确收益，v34已撤回默认准备，实验工具保留。正式撤回复测25.429FPS、p95/p99=58.4/83.4ms、≥100ms11次、43→45°C，cache=null；不能称提帧或稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test32.zh-CN.md末节。下一轮只Boss首用特效晚编译调查：screenfx镜头墨场、boomerang旋转环、specials壳已匹配新程序线索，先按实际正常触发与长帧关联选一个准备，不能降低特效/AI/物理/人数。正常测试BOSS_REQUIRE_MINIMAP_CACHE=0及BOSS_MINIMAP_BENCHMARK=0。保持2倍/SMAA/8人/PC；每批基础检查后中文commit/push再构建真机、每局60秒上传核对关闭。目标active，接续id=boss；USB常亮2，不并发CDP，无授权阻塞。
 
-2026-10-26第33批接续：当前安装v1.0.33，干净功能源码391966c，游戏关闭。仅手机Boss小地图缓存，1,548,466字节，实际启用及退出恢复通过；但正式28.232/26.151FPS（42→45/45→46°C），未稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test32.zh-CN.md的v33结果；新CPU缓存925.5ms对原路径624.4ms为反向线索，场景温度不同，不能认定收益。接着用BOSS_MINIMAP_BENCHMARK=1、BOSS_METHOD_PROBE=1、BOSS_REQUIRE_MINIMAP_CACHE=1、BOSS_VERIFY_BOSS_EXIT=1跑60秒调查，在结算后复制地图四种负载交替测原入口，确认后修正或撤回候选。保持2倍/SMAA/8人/玩法/PC，仅Boss；每批中文提交推送后测试，每局上传核对关闭。目标active，接续id=boss；USB常亮2，不并发CDP。以下较早版本记录仅供历史参考。
+
 
 更新日期：2026-10-26（北京时间）。本文件是接续开发入口，与根目录AGENTS.md共同维护。每批改动后更新相关记录并立即提交、推送。
 
