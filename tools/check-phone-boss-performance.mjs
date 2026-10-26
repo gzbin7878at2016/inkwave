@@ -12,6 +12,7 @@ const pannerAblation=process.env.BOSS_PANNER_ABLATION==='1';
 const audioSuspend=process.env.BOSS_AUDIO_SUSPEND==='1';
 const audioGraphBypass=process.env.BOSS_AUDIO_GRAPH_BYPASS==='1';
 const audioReverbBypass=process.env.BOSS_AUDIO_REVERB_BYPASS==='1';
+const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
 if(uiAblation&&(ablation||cpuAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('UI分组须独占一分钟带探针调查轮');
@@ -20,6 +21,7 @@ if(pannerAblation&&(ablation||cpuAblation||uiAblation||musicAblation||process.en
 if(audioSuspend&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音频挂起须独占一分钟带探针调查轮');
 if(audioGraphBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音频图旁路须独占一分钟带探针调查轮');
 if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('混响旁路须独占一分钟带探针调查轮');
+if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
 const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
@@ -263,6 +265,13 @@ try{
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
+ if(verifyBossExit){
+  if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
+  report.bossExit=await c.evaluate(`(async()=>{await __inkwave.quitToMenu();const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
+   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize};})()`);
+  const e=report.bossExit;e.ok=e.mode==='menu'&&!e.boss&&e.info?.active===false&&e.info.restored===2&&e.sfxSeconds===1.5&&e.musicSeconds===2.2&&e.sfxNormalize&&e.musicNormalize;
+  if(!e.ok)throw Error('回菜单未完全恢复原混响');
+ }
  // measured只代表采样完成；30分钟、原画质、移动/开火和尾部帧耗同时过门槛才标记稳定。
  report.stable30Validated=!report.methodProbe&&seconds>=1800&&report.summary.averageFps>=29.5&&report.summary.p95<=36&&report.summary.p99<=50&&report.summary.over100===0;
  report.device.batteryAfter=c.command('shell','dumpsys','battery');report.device.thermalAfter=c.command('shell','dumpsys','thermalservice');
