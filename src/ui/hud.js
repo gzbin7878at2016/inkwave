@@ -49,6 +49,7 @@ import { WEAPONS, SPECIALS, TEAM_NAMES, SUB, PLAYER, MATCH, ZONES } from '../con
 import { on, G } from '../core/ctx.js';
 import { SFX } from '../audio/audio.js';
 import { BossHud } from './hud-boss.js';
+import { restartMobileBossAnimation } from './mobileBossAnimation.js';
 import { installBossAudio } from '../audio/bossAudio.js';
 import { bossEmblem, BOSS_NAME, BOSS_EPITHET } from './boss-art.js';
 import { t } from '../i18n/strings.js';
@@ -2159,6 +2160,7 @@ export class HUD {
   // 【重启动画 trick】先强制 reflow（读 offsetWidth）再换类，让 CSS 动画从头播；
   //   这是文件里少数故意同步读布局的地方，只发生在事件瞬间而非每帧
   _restart(el, cls) {
+    if (restartMobileBossAnimation(el, cls)) return;
     el.classList.remove(cls);
     void el.offsetWidth; // eslint-disable-line no-void
     el.classList.add(cls);

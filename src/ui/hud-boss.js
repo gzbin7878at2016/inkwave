@@ -28,7 +28,8 @@
 // fallback / for projection only. Everything per-frame is transform/opacity; the rest is class toggles.
 //
 // Lab / console preview (no gameplay needed):  __G.hud.boss.demo()  → runs every state on a fake boss in front of you.
-import { h, clamp, splatSVG, restartAnim, easeOutCubic, fmtInt } from './ui-util.js';
+import { h, clamp, splatSVG, restartAnim as restartOriginal, easeOutCubic, fmtInt } from './ui-util.js';
+import { restartMobileBossAnimation } from './mobileBossAnimation.js';
 import { GLYPHS } from './ui-icons.js';
 import { on, emit, G } from '../core/ctx.js';
 import { BOSS_NAME, BOSS_EPITHET, MOVE_ICONS, MOVE_LABELS, bossEmblem } from './boss-art.js';
@@ -47,6 +48,7 @@ const PHASE_TXT = {
 };
 // 【轻量三维向量】避免 import three：只要 {x,y,z} 结构，投影由 hud._project 完成。
 const V3 = () => ({ x: 0, y: 0, z: 0 });
+const restartAnim = (el, cls) => { if (!restartMobileBossAnimation(el, cls)) restartOriginal(el, cls); };
 
 // 【BossHud 类】一个 HUD 实例持有一个；构造即搭 DOM、订阅总线；setMode 控制开/关。
 export class BossHud {

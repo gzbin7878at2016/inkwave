@@ -79,3 +79,24 @@
 @media (orientation: portrait) {
   #mobile-controls::after { content: '请横屏游玩'; position: absolute; inset: 40% 15%; text-align: center; color: white; background: #211f36ee; font: 24px system-ui; }
 }
+
+/* Boss反馈在两份相同keyframes名称间切换，无需offsetWidth同步布局。
+   仅JS明确标记的手机Boss元素采用；时长、曲线、样式仍继承hud.css原规则。 */
+.iw-mobile .iw-bb.is-hit:not(.is-weak)[data-iw-repeat-hit="b"] .iw-bb__flash,
+.iw-mobile .iw-bb.is-weak[data-iw-repeat-weak="b"] .iw-bb__flash { animation-name: iw-bb-flash-repeat; }
+.iw-mobile .iw-bb.is-hit[data-iw-repeat-hit="b"] .iw-bb__pct { animation-name: iw-bb-pct-repeat; }
+.iw-mobile .iw-bb.is-weak[data-iw-repeat-weak="b"] .iw-bb__clip { animation-name: iw-bb-weakring-repeat; }
+.iw-mobile .iw-bb__emb.is-weak[data-iw-repeat-weak="b"] .iw-bb__embart { animation-name: iw-bb-embweak-repeat; }
+.iw-mobile .iw-bnum.is-bump[data-iw-repeat-bump="b"] b { animation-name: iw-bnum-bump-repeat; }
+.iw-mobile .iw-hit.is-on[data-iw-repeat-on="b"] i { animation-name: iw-hit-repeat; }
+.iw-mobile .iw-hit.is-heavy.is-on[data-iw-repeat-on="b"]::after,
+.iw-mobile .iw-hit.is-weak.is-on[data-iw-repeat-on="b"]::after { animation-name: iw-hit-ring-repeat; }
+.iw-mobile .iw-ret.is-hitflash[data-iw-repeat-hitflash="b"] { animation-name: iw-ret-hit-repeat; }
+@keyframes iw-bb-flash-repeat { 0% { opacity: .55; } 100% { opacity: 0; } }
+@keyframes iw-bb-pct-repeat { 0% { scale: 1.12; } }
+@keyframes iw-bb-weakring-repeat { 0% { box-shadow: inset 0 0 0 3px var(--gold), 0 0 calc(var(--u) * 1.2) var(--weak); } }
+@keyframes iw-bb-embweak-repeat { 0% { box-shadow: 0 0 0 3px var(--gold), 0 0 0 6px var(--k), 0 0 calc(var(--u) * 2) 6px var(--weak); scale: 1.12; } }
+@keyframes iw-bnum-bump-repeat { 0% { scale: 1.35; } }
+@keyframes iw-hit-repeat { 0% { opacity: 1; transform: translateY(calc(-10px - var(--hn, 0) * 1px)) scale(1.3); } 100% { opacity: 0; transform: translateY(calc(-18px - var(--hn, 0) * 2px)) scale(1); } }
+@keyframes iw-hit-ring-repeat { 0% { opacity: .95; scale: .55; } 100% { opacity: 0; scale: 1.45; border-width: 1px; } }
+@keyframes iw-ret-hit-repeat { 0% { color: #fff; filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 1px #000); scale: 1.12; } }
