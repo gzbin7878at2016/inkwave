@@ -24,6 +24,28 @@ import org.json.JSONObject;
 // 只导出用户主动请求的本地诊断：Android10+通过MediaStore写“下载”，无需存储权限。
 @CapacitorPlugin(name = "GameDiagnostics")
 public class GameDiagnosticsPlugin extends Plugin {
+    private android.app.AlertDialog graphicsFailureDialog;
+
+    // 图形合成异常时不能依赖网页提示；使用原生窗口，退出后由新进程重新初始化GPU。
+    @PluginMethod
+    public void showGraphicsFailure(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            if (getActivity().isFinishing()) { call.reject("游戏正在退出"); return; }
+            if (graphicsFailureDialog == null || !graphicsFailureDialog.isShowing()) {
+                graphicsFailureDialog = new android.app.AlertDialog.Builder(getActivity())
+                    .setTitle("图形初始化失败")
+                    .setMessage("游戏已停止加载，诊断日志已保留。请退出后重新打开游戏。")
+                    .setCancelable(false)
+                    .setPositiveButton("退出游戏", (dialog, which) -> {
+                        getActivity().finishAndRemoveTask();
+                        android.os.Process.killProcess(android.os.Process.myPid());
+                    }).create();
+                graphicsFailureDialog.show();
+            }
+            call.resolve();
+        });
+    }
+
     // adb reverse tcp:18765 tcp:8765 把手机回环端口映射到开发机，无需同一局域网。
     private boolean usbReceiverAvailable() {
         HttpURLConnection probe = null;

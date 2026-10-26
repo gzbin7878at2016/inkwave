@@ -277,6 +277,12 @@ class Game {
       try { this._frame(1 / 60, window.inkwaveMobile ? 'startup-frame' : null); } finally { finish?.(); }
       await nextFrame();
     }
+    // 手机图形失败必须止于启动门槛，不能继续记录Ready或创建可交互主菜单。
+    if (window.inkwaveMobile && (this.mobileSuspended || this.R.mobileSafety?.state.fatal || this.R.renderer.getContext().isContextLost())) {
+      this.frozen = true;
+      diagnostics?.graphicsFailure?.();
+      throw new Error('手机图形初始化失败，已停止加载。请退出后重新打开，诊断日志已保留。');
+    }
     await progress(1, 'Ready!');
     await new Promise((r) => setTimeout(r, 250));   // 停 250ms,让你看清"就绪!"(纯节奏设计)
 

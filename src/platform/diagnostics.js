@@ -210,6 +210,12 @@ export function installDiagnostics(nativePlugin) {
     previous,
   });
   const manager = { record, attachRenderer, report, persist, beginStage, startupCheckpoint, shaderFailureCount: () => current.shaderFailures.length,
+    graphicsFailure() {
+      current.startup.failedAtMs = Math.round(performance.now() - started);
+      record('startup-graphics-failed', '图形失败，禁止进入Ready和主菜单', 'error'); persist();
+      // WebView自身合成异常时HTML错误文字可能不可见，额外使用Android原生窗口告知。
+      if (globalThis.inkwaveMobile?.native) nativePlugin.showGraphicsFailure().catch(e => record('native-graphics-alert-failed', e, 'error'));
+    },
     finishStartup() { startupCheckpoint('interactive'); current.startup.completedAtMs = Math.round(performance.now() - started); persist(); }, tick() {
     const now = performance.now(); if (now - lastTick < 5000) return; lastTick = now;
     // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串。
