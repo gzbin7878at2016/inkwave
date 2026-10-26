@@ -121,6 +121,7 @@ export function installDiagnostics(nativePlugin) {
         fxaaTexel: game.R.mobileAA?.uniforms?.resolution.value.toArray(),
         // 仅复制已有JS状态；不在诊断采样中新增WebGL查询或读回。
         smaaEdges: game.R.mobileAA?.bossEdgesInfo?.() || null,
+        minimapWorker: game.minimap?.bossWorkerInfo?.() || null,
         smaaTexel: game.R.mobileAA?._materialBlend?.uniforms.resolution.value.toArray(),
         memory: { ...game.R.renderer.info.memory } },
     };

@@ -30,6 +30,7 @@ import { mapTheme,
 import { warmMobileScene, warmMobilePostprocess } from './platform/mobileStartup.js';
 import { createMobilePreparationUI } from './platform/mobilePreparation.js';
 import { prepareMobileBoss } from './platform/mobileBossPreparation.js';
+import { prepareMobileBossMinimapWorker, clearMobileBossMinimapWorkerForMatch } from './platform/mobileBossMinimapWorker.js';
 import { prepareMobileCombat } from './platform/mobileCombatPreparation.js';
 import { waitForMobileFrame } from './platform/mobileFrameReady.js';
 import { Level } from './world/level.js';
@@ -814,6 +815,7 @@ class Game {
   _beginMobilePreparation({ boss = false, retry } = {}) {
     if (!window.inkwaveMobile) return null;
     if (this._mobilePreparation || this._mobilePreparationError || this.mobileSuspended) return false;
+    clearMobileBossMinimapWorkerForMatch(this.match, 'prepare-next');
     G.audio?.setBossParamDedupe?.(false); // 换局的异步准备期间不保留上一局音频参数缓存。
     this.mobile?.bossRasterHints?.clear(); // 准备期间释放上一局标签栅格缓存提示。
     this.R.mobileAA?.clearBossEdges?.(); // 新局准备开始前释放旧局专用的边缘格式。
@@ -953,6 +955,7 @@ class Game {
       if (!this._isMobilePreparationCurrent(preparation) || (preparation && this.match !== m)) return false;
       if (!await this._checkMobilePreparedFrame(m, preparation)) return false;
       this.minimap.setViewerTeam(0);
+      if (preparation && m.boss && !await this._prepareBossMinimapWorker(m, preparation)) return false;
       G.mode = 'match';
       this.hud?.setVisible(false);
       this.hudPrompt = null; this._hintT = 0; this._hints = {};
@@ -970,6 +973,15 @@ class Game {
       if (!preparation) throw error;
       this._failMobilePreparation(preparation, error); return false;
     } finally { this._finishMobilePreparation(preparation); }
+  }
+
+  // 最终视角/数组已确定后才复制像素工作集；失败只回同步，不阻止原比赛启动。
+  async _prepareBossMinimapWorker(match, preparation) {
+    if (!preparation || !match.boss) return true;
+    const current = () => this._isMobilePreparationCurrent(preparation) && this.match === match;
+    this._updateMobilePreparation(preparation, 0.96, '准备Boss小地图计算');
+    await prepareMobileBossMinimapWorker(this, match, { isCurrent: current });
+    return current();
   }
 
   _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
@@ -1067,6 +1079,7 @@ class Game {
       nm.bind(m);
       this.lastMatchOpts = null;
       this.minimap.setViewerTeam(m.local ? m.local.team : 0);
+      if (preparation && m.boss && !await this._prepareBossMinimapWorker(m, preparation)) return false;
       G.mode = 'match';
       this.hud?.setVisible(false);
       this.hudPrompt = null; this._hintT = 0; this._hints = {};
@@ -1203,6 +1216,7 @@ class Game {
     G.music?.resume?.();
   }
   async quitToMenu(screen = 'main') {
+    if (window.inkwaveMobile) clearMobileBossMinimapWorkerForMatch(this.match, 'quit');
     if (window.inkwaveMobile) G.audio?.setBossParamDedupe?.(false); // 先释放Boss独占缓存，再等待淡出/准备取消。
     if (window.inkwaveMobile) this.mobile?.bossRasterHints?.clear();
     if (window.inkwaveMobile) this.R.mobileAA?.clearBossEdges?.();

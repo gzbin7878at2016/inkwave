@@ -357,6 +357,11 @@ try{
  if(process.env.BOSS_REQUIRE_SMAA_EDGES==='1'&&(!report.postprocess.edges?.active||report.postprocess.edges.format!=='RG16F'||report.postprocess.edges.frames<report.summary.frames*.9||report.postprocess.edges.typeCode!==1016||report.postprocess.edges.weightsType!==1016))throw Error('Boss RG16F边缘缓冲未在整局实际使用');
  if(process.env.BOSS_REQUIRE_SMAA_CLEAR==='1'&&!report.postprocess.smaaClear?.active)throw Error('本批Boss SMAA清零修复未实际启用');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
+ report.minimapWorker=await c.evaluate('__inkwave.minimap.bossWorkerInfo?.()||null');
+ if(process.env.BOSS_REQUIRE_MINIMAP_WORKER==='1'){
+  const worker=report.minimapWorker;
+  if(!worker||worker.submitted<200||worker.applied<worker.submitted*.95||worker.fallbacks||worker.maxPending>3||worker.maxAgeFrames>3||worker.maxAgeMs>250||worker.gridAllocations>3||worker.rowAllocations>6||worker.recycled!==worker.applied)throw Error('小地图Worker未覆盖整局、缓冲未复用或发生回退，不能算候选实战成绩');
+ }
  report.lensInk=await c.evaluate('({preparation:__inkwave._bossLensPreparation||null,programId:__G.renderer.properties.get(__inkwave.screenfx.lens.mat).currentProgram?.id,draws:__phonePerf.lensDraws||0,firstDraw:__phonePerf.firstLensDraw||null})');
  if(process.env.BOSS_REQUIRE_LENS_PREPARATION==='1'&&(!report.lensInk.preparation?.prepared||report.lensInk.programId!==report.lensInk.preparation.programId))throw Error('Boss镜头墨水准备缺失或实际程序与准备不一致');
  if(process.env.BOSS_REQUIRE_LENS_DRAW==='1'&&(!report.lensInk.draws||report.lensInk.firstDraw?.programId!==report.lensInk.preparation?.programId))throw Error('本调查未验证首次真实镜头墨水绘制复用准备程序');
@@ -387,12 +392,13 @@ try{
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
   report.bossExit=await c.evaluate(`(async()=>{const oldMap=__inkwave.minimap;await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
-   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,edges:__inkwave.R.mobileAA?.bossEdgesInfo?.()||null,fusion:__inkwave.R.mobileAA?.bossOutput,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear,minimapInk:__inkwave.minimap.bossInkInfo?.()||null,oldMinimapInk:oldMap.bossInkInfo?.()||null};})()`);
+   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,edges:__inkwave.R.mobileAA?.bossEdgesInfo?.()||null,fusion:__inkwave.R.mobileAA?.bossOutput,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear,minimapInk:__inkwave.minimap.bossInkInfo?.()||null,oldMinimapInk:oldMap.bossInkInfo?.()||null,minimapWorker:__inkwave.minimap.bossWorkerInfo?.()||null,oldMinimapWorker:oldMap.bossWorkerInfo?.()||null};})()`);
   const e=report.bossExit;e.ok=e.mode==='menu'&&!e.boss&&e.info?.active===false&&e.info.restored===2&&e.sfxSeconds===1.5&&e.musicSeconds===2.2&&e.sfxNormalize&&e.musicNormalize;
   if(report.postprocess.fusion?.enabled)e.ok=e.ok&&e.outputEnabled===true&&e.fusion?.enabled===false;
   if(report.postprocess.smaaClear?.active)e.ok=e.ok&&e.smaaClear?.active===false;
   if(report.postprocess.edges?.active)e.ok=e.ok&&!e.edges?.active&&e.edges?.formatCode===1023&&e.edges?.typeCode===1016;
   if(report.minimapInk?.active)e.ok=e.ok&&e.minimapInk===null&&e.oldMinimapInk===null;
+  if(report.minimapWorker)e.ok=e.ok&&!e.minimapWorker?.ready&&!e.oldMinimapWorker?.ready;
   if(report.displayBeforeBoss){e.display=await c.evaluate('inkwaveMobile.BossDisplay.getState()');e.ok=e.ok&&!e.display.owned&&e.display.preferredDisplayModeId===report.displayBeforeBoss.preferredDisplayModeId&&Math.abs(e.display.preferredRefreshRate-report.displayBeforeBoss.preferredRefreshRate)<.01;}
   if(!e.ok)throw Error('回菜单未完全恢复原混响');
  }

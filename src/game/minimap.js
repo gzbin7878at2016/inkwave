@@ -17,6 +17,7 @@
 import { G, on } from '../core/ctx.js';
 import { SPECIALS, SUB } from '../config.js';
 import { drawMobileBossMinimapInk, mobileBossMinimapInkInfo } from '../platform/mobileBossMinimapInk.js';
+import { consumeMobileBossMinimapWorker, queueMobileBossMinimapWorker, mobileBossMinimapWorkerInfo } from '../platform/mobileBossMinimapWorker.js';
 
 const TAU = Math.PI * 2;
 let CURRENT = null;          // the live Minimap (a new one is built per stage layout)
@@ -321,6 +322,7 @@ export class Minimap {
   // pays for the whole bilinear field + emboss (≈ 1/3 of the work per frame).
   // 按行更新 CPU 墨水颜色；分段刷新让大地图的像素写入成本摊开。
   _drawInk(y0 = 0, y1 = this.h) {
+    if (globalThis.inkwaveMobile && queueMobileBossMinimapWorker(this, y0, y1)) return;
     if (drawMobileBossMinimapInk(this, y0, y1)) return;
     const W = this.w, H = this.h, N = W * H;
     const grid = this.paint.grid, cell = this.pixCell, fxA = this.pixFx, fyA = this.pixFy, sxA = this.pixSx, syA = this.pixSy;
@@ -378,6 +380,7 @@ export class Minimap {
 
   // 仅诊断时读取；不把大缓存或match对象交给日志序列化。
   bossInkInfo() { return mobileBossMinimapInkInfo(this); }
+  bossWorkerInfo() { return mobileBossMinimapWorkerInfo(this); }
 
   // ------------------------------------------------------------------------------------------ per frame
   // 分别推进墨迹更新与动态合成；force 用于需要立即刷新的场景，不应常开抵消节流。
@@ -391,6 +394,7 @@ export class Minimap {
     const theme = G.game?.theme || G.game?.mapDef?.theme || 'day';
     if (theme !== this._theme) { const had = this._theme; this._theme = theme; if (had) this._drawBase(); }
     const BANDS = 3;
+    if (globalThis.inkwaveMobile && consumeMobileBossMinimapWorker(this, force)) force = true;
     // 已开始的三段刷新优先逐帧完成；一轮未完成时不会重新开启另一轮。
     if (this._band > 0) {
       const b = this._band;

@@ -27,7 +27,7 @@ export async function benchmarkMinimapWorkerPipeline(map, kernel, create, apply,
       while (ready.length) {
         const row = ready.shift();
         if (row.order !== applied) throw Error('Worker输出顺序改变');
-        const start = performance.now(); apply(b, row.result); mainMs += performance.now() - start + row.result.enqueueMs + row.result.callbackMs;
+        const start = performance.now(); apply(b, row.result); worker.recycle(row.result); mainMs += performance.now() - start + row.result.enqueueMs + row.result.callbackMs;
         const ageMs = performance.now() - row.start;
         ages.push(frame - row.frame); elapsed.push(ageMs); sequence.push(row.result.id); applied++;
         if (ageMs > 100 && delayed.length < 12) delayed.push({ frame, submitFrame: row.frame, ageMs, roundtripMs: row.result.roundtripMs });

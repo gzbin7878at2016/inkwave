@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import * as THREE from 'three';
 import * as config from '../src/config.js';
 import { prepareMobileMaterialPrograms } from '../src/platform/mobileWarmup.js';
+import { mobileFrameDue } from '../src/platform/mobileFramePacing.js';
 
 const noop = () => {};
 const deferred = () => {
@@ -37,7 +38,10 @@ const sandbox = {
   inkwaveMobile: true, fetch: async () => ({ ok: true }), addEventListener: noop,
   params: new URLSearchParams(), DEV_STAGE: false,
   BOSS_MODE: { duration: 180 }, nextMobileFrame: async () => {},
-  prepareMobileMaterialPrograms,
+  prepareMobileMaterialPrograms, mobileFrameDue,
+  // 本文件隔离浏览器Worker；真实Worker/像素/取消另由check-mobile-boss-minimap-worker覆盖。
+  clearMobileBossMinimapWorkerForMatch: noop,
+  prepareMobileBossMinimapWorker: async () => ({ skipped: true }),
   prepareMobileCombat: async (_game, _match, { isCurrent, onProgress }) => {
     if (!isCurrent()) return { cancelled: true };
     onProgress?.({ completed: 1, total: 1, label: '准备战斗效果' }); return {};

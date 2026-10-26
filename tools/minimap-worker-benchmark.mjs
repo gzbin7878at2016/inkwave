@@ -33,7 +33,7 @@ export async function benchmarkMinimapWorker(map, kernel, create, apply, scenari
           // 颜色只在首段刷新，与原入口一致；第二/三段沿用首段快照。
           if (y0 === 0) b._rgb = b._teamRGB();
           result = await worker.draw(b.paint.grid, y0, y1, b._rgb || b._teamRGB());
-          const t = performance.now(); apply(b, result); applyMs = performance.now() - t;
+          const t = performance.now(); apply(b, result); worker.recycle(result); applyMs = performance.now() - t;
         };
         if (step % 2) { await parallel(); original(); } else { original(); await parallel(); }
         if (!a.inkImg.data.every((v, i) => v === b.inkImg.data[i]) || !a.flashImg.data.every((v, i) => v === b.flashImg.data[i]) || !a.owner.every((v, i) => v === b.owner[i])) throw Error('基准像素不一致');

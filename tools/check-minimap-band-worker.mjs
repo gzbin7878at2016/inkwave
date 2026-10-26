@@ -53,6 +53,7 @@ try {
         same(a._alpha, result.alpha, 'halo透明度'); same(a._tm, result.tm, '队伍'); same(a._tt, result.tt, '浮雕颜色');
         check(a.flashT === b.flashT, '闪光时钟');
         for (const key of ['ictx', 'fctx']) same(a[key].getImageData(0, 0, a.w, a.h).data, b[key].getImageData(0, 0, b.w, b.h).data, '实际Canvas');
+        worker.recycle(result);
         comparisons++;
       }
       // 一个在途请求、无效范围、取消、超时与内核异常均不得挂起。

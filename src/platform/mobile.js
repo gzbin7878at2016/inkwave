@@ -4,6 +4,7 @@ import { MobileProfiler } from './mobileProfiler.js';
 import { createMobileBossDisplay } from './mobileBossDisplay.js';
 import { syncMobileBossParamDedupe } from '../audio/mobileBossParamDedupe.js';
 import { createMobileBossRasterHints } from './mobileBossRasterHints.js';
+import { clearMobileBossMinimapWorkerForMatch } from './mobileBossMinimapWorker.js';
 
 // 手机平台边界：输入、生命周期与诊断；不改变网络协议和权威模拟。
 export function installMobile(game) {
@@ -46,6 +47,7 @@ export function installMobile(game) {
   };
   const save = () => localStorage.setItem('inkwave.settings', JSON.stringify(game.settings));
   const suspend = () => {
+    clearMobileBossMinimapWorkerForMatch(game.match, 'suspend');
     bossRasterHints.clear();
     G.audio?.setBossParamDedupe?.(false);
     bossDisplay.suspend();
@@ -153,6 +155,7 @@ export function installMobile(game) {
     touch, state, suspend, foreground, resume, bossRasterHints,
     recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
     update(dt) {
+      if (game.match?.paused) clearMobileBossMinimapWorkerForMatch(game.match, 'paused');
       bossRasterHints.update(game.hud?.el,game.match,G.mode,state.needsResume||state.lostContext||game.mobileSuspended);
       syncMobileBossParamDedupe(G.audio,game.match,G.mode,state.needsResume||state.lostContext||game.mobileSuspended);
       bossDisplay.update(game, G.mode, state.needsResume || state.lostContext || game.mobileSuspended);
