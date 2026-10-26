@@ -6,14 +6,14 @@
 
 后续纹理优化参考[PC/手机纹理分级与UE4思路](android/DEVICE-TEXTURE-SCALABILITY.zh-CN.md)：第一批v18已应用并巡检手机海港远景反射256（PC512），详见[纹理test18](android/TEXTURE-test18.zh-CN.md)。其余候选尚未降档，继续逐项真机对照。
 
-最新补充：当前已安装v1.0.18（干净功能源码b69f3a9）。手机海港远景反射512→256，颜色+mip估算16→4MiB，PC512保留；3次启动、海港实拍、USB上传关闭通过，Boss一分钟28.917FPS，稳定30仍未通过。v17云烘焙初始化修复沿用，详见[初始化隔离与结果](android/GRAPHICS-INIT-test16.zh-CN.md)与[本批记录](android/TEXTURE-test18.zh-CN.md)。
+最新补充：当前已安装v1.0.23（干净功能源码e9f8e18）。用户要求离开期间仅Boss继续优化，先稳定30，达标后进入60；现仍未稳定30。v19～23完成渲染器/HUD缓存、GL例行查询延期和手机限速排期对照，真实结果与下一步见[Boss test23](android/BOSS-PERFORMANCE-test23.zh-CN.md)。USB供电常亮已启用，每30分钟空闲接续检查已建，不能并行争抢USB。v17云修复与v18反射分级沿用。
 
 ## 1. 先读结论
 
 - 用户仓库：<https://github.com/gzbin7878at2016/inkwave>。
 - **最新工作分支：`codex/android-capacitor`。不要只拉main就开始开发。** main目前仍停在早期Android方案文档阶段，未合并本轮实现。
 - 历史v1.0.11手机加载与稳定帧耗功能源码`fd9ec0f79d3dde6fa41db5c8a4c03ebee7dc5efa`已推送并从干净提交构建；上一版功能源码0918cea，真机分析记录6920525。交付文档有后续独立提交，APK源码以`releases/android-build-info.json`为准。
-- 当前为v1.0.18；可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
+- 当前为v1.0.23；可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
 - 按用户最新优先级，手机默认目标改为30FPS（仍可手动30/60），固定2倍高清、SMAA、自动降低清晰度关闭，原对局人数不变；PC保留默认。v11一次性迁移帧率设置，不清档。
 - v10真机已确认Boss准备19.879秒，首衣服仍1630ms长任务；6个无新增程序角色仍等待9.009秒。v11按真实程序对象复用、约5ms预算让帧，移除缓存命中固定10ms等待；进度条覆盖角色、战斗效果、Boss登场/音效/小怪首绘和GPU完成等待。**真机稳定30帧及不再掉个位数尚待安装复测，不能把桌面软件渲染FPS当作达标证据。**
 - PC保留原渲染路径。不要为手机性能直接改共享QUALITY或PC地面着色器。
@@ -55,6 +55,7 @@ test5中用户选60/高清后，动态scale降到0.5，实际只有770×376。te
 | v1.0.15～16 | 231e4bf / 924212d | 启动错误门槛/原生提示、最小图形诊断 | [初始化隔离](android/GRAPHICS-INIT-test16.zh-CN.md) |
 | v1.0.17 | 4b11cec | 手机云烘焙负载单变量修复，最终3次完整启动通过 | [对照结果](android/GRAPHICS-INIT-test16.zh-CN.md) |
 | v1.0.18 | b69f3a9 | 手机海港远景反射256、PC512，真实资源与回归记录 | [纹理第一批](android/TEXTURE-test18.zh-CN.md) |
+| v1.0.19～23 | 53aef10 / d5916ea / 26fc014 / fcdc69d / e9f8e18 | Boss缓存、诊断查询与排期对照；稳定30未通过 | [Boss进度与接续](android/BOSS-PERFORMANCE-test23.zh-CN.md) |
 
 历史v11交付版本为`v1.0.11` / versionCode11，归档名`releases/INKWAVE-android-test11-fd9ec0f.apk`，21,108,406字节；SHA-256为`955b608af8b87c9cbd910c89072408b9f8641e6ce206e352ffa91e140e86a477`。签名沿用本机test7～10，362个网页资源与APK逐字节一致，固定页和HTTP下载哈希核对通过；真机待验收。详细记录见`releases/android-build-info.json`及v11交付记录。新包需要从干净的已推送提交构建，APK不入Git。
 
