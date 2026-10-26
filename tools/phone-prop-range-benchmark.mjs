@@ -15,7 +15,7 @@ export async function benchmarkBossPropRanges(game,G,T,create){
  const checkTime=()=>{if(performance.now()-begin>15000)throw Error('手机副本超过15秒预算，恢复原绘制');};
  try{
   game.frozen=true;const start=performance.now();candidate=create(T,sources,{renderer:r});const buildMs=performance.now()-start;
-  const draw=(active,cull=true,read=true)=>{checkTime();candidate.setCullingEnabled(cull);active?candidate.enable():candidate.disable();const before=candidate.stats.submittedTriangles;game.R.render();let data=null;if(read){data=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,data);}return {data,submittedTriangles:candidate.stats.submittedTriangles-before};};
+  const draw=(active,cull=true,read=true)=>{checkTime();candidate.setCullingEnabled(cull);active?candidate.enable():candidate.disable();const before=candidate.stats.submittedTriangles,triangles=r.info.render.triangles;game.R.render();let data=null;if(read){data=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,data);}const comp=game.R.composer,meta={time:G.time,triangles:r.info.render.triangles-triangles,input:game.R.mobileAA?._uniformsBlend?.tColor?.value?.id,read:comp.readBuffer.texture.id,write:comp.writeBuffer.texture.id,view:[...camera.matrixWorldInverse.elements],projection:[...camera.projectionMatrix.elements]};return {data,meta,submittedTriangles:candidate.stats.submittedTriangles-before};};
   const diff=(a,b)=>{let max=0,changed=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);if(d)changed++;max=Math.max(max,d);}return {max,changed};};
   const pixels=[];
   for(const [name,eye,target] of [['actual',null,null],['spawn',[0,5,-35],[0,3,0]],['left',[-12,4,-15],[0,2,0]]]){
@@ -25,7 +25,7 @@ export async function benchmarkBossPropRanges(game,G,T,create){
    // 参考侧最多5张，要求连续两对一致；所有预热差保留。绝不重试候选首张以掩盖候选错误。
    const referenceWarmup=[];let a=draw(false),stable=0;
    for(let i=0;i<5&&stable<2;i++){
-    const next=draw(false),d=diff(a.data,next.data);referenceWarmup.push(d);stable=d.max?0:stable+1;
+    const next=draw(false),d=diff(a.data,next.data);referenceWarmup.push({...d,before:a.meta,after:next.meta});stable=d.max?0:stable+1;
     // 仅独立桌面预检提供此回调；手机不导出PNG，不给手机计时增加截图工作。
     if(d.max&&!savedProof&&typeof globalThis.__writePropProbeImage==='function'){
      const png=data=>{const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d'),image=ctx.createImageData(w,h);for(let y=0;y<h;y++)image.data.set(data.subarray((h-1-y)*w*4,(h-y)*w*4),y*w*4);ctx.putImageData(image,0,0);return canvas.toDataURL('image/png');};
