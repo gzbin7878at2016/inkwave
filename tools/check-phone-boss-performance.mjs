@@ -2,9 +2,11 @@
 import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
+const ablation=process.env.BOSS_GPU_ABLATION==='1';
+if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -22,6 +24,13 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  // 仅诊断：按十秒阶段隐藏渲染组，碰撞/AI/血量仍正常；所有状态在finally恢复。
+  const ablationEnabled=${ablation};
+  const groups={sea:[__G.env?.sea],background:['city','terrain','staticScenery','ferris','trees','sailInst','gullInst'].map(k=>__G.env?.[k]),props:[g.props?.group]};
+  const visibility=new Map(Object.values(groups).flat().filter(Boolean).map(o=>[o,o.visible]));
+  const hudVisibility=g.hud.el.style.visibility;
+  const restoreVisibility=()=>{for(const [o,v] of visibility)o.visible=v;g.hud.el.style.visibility=hudVisibility;};
+  if(ablationEnabled)restores.push(restoreVisibility);
   // 可选方法级调查会增加计时开销，单独标记，不能混充无探针基线。
   if(${process.env.BOSS_METHOD_PROBE==='1'}){
    p.methods={};
@@ -37,6 +46,10 @@ try{
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
+   if(ablationEnabled&&live){
+    const phase=['baseline','sea','background','props','hud','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
+    if(p.ablationPhase!==phase){restoreVisibility();for(const o of groups[phase]||[])if(o)o.visible=false;if(phase==='hud')g.hud.el.style.visibility='hidden';p.ablationPhase=phase;}
+   }
    if(live&&a?.alive){
     const t=p.activeMs/1000,cycle=t%18,b=m.boss;
     g.input.keys.clear();g.input.mouse.left=false;
@@ -70,7 +83,7 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
     timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
