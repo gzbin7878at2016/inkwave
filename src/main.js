@@ -815,6 +815,7 @@ class Game {
     if (!window.inkwaveMobile) return null;
     if (this._mobilePreparation || this._mobilePreparationError || this.mobileSuspended) return false;
     G.audio?.setBossParamDedupe?.(false); // 换局的异步准备期间不保留上一局音频参数缓存。
+    this.mobile?.bossRasterHints?.clear(); // 准备期间释放上一局标签栅格缓存提示。
     const token = { cancelled: false, retry };
     token.done = new Promise(resolve => { token.finish = resolve; });
     this._mobilePreparation = token;
@@ -1202,6 +1203,7 @@ class Game {
   }
   async quitToMenu(screen = 'main') {
     if (window.inkwaveMobile) G.audio?.setBossParamDedupe?.(false); // 先释放Boss独占缓存，再等待淡出/准备取消。
+    if (window.inkwaveMobile) this.mobile?.bossRasterHints?.clear();
     const preparation = this._mobilePreparation;
     if (preparation) { preparation.cancelled = true; preparation.keepUntilMenu = true; }
     clearTimeout(this._netEndT);

@@ -310,6 +310,8 @@ try{
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
  report.domProbe=await c.evaluate('__phonePerf.domProbe||null');
  report.layerProbe=await c.evaluate('__phonePerf.layerProbe||null');
+ report.bossRasterHints=await c.evaluate('__inkwave.mobile.bossRasterHints?.info()||null');
+ if(process.env.BOSS_REQUIRE_RASTER_HINTS==='1'&&(!report.bossRasterHints?.activations||report.bossRasterHints.active||!report.bossRasterHints.releases))throw Error('Boss标签缓存未实际启用或结束未释放');
  if(layerHints&&(!report.layerProbe?.transitions.some(t=>t.phase==='hinted')||!report.layerProbe.transitions.some(t=>t.phase==='restored')||report.layerProbe.active))throw Error('标签图层提示未生效或未恢复');
  if(domAblation&&(!report.domProbe?.transitions.some(t=>t.phase==='dom-hidden')||!report.domProbe.transitions.some(t=>t.phase==='restored')||report.domProbe.hidden))throw Error('DOM隔离未生效或未恢复');
  report.audioParams=await c.evaluate('__G.audio.bossParamDedupeInfo?.()||null');

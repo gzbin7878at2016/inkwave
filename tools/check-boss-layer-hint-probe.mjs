@@ -13,6 +13,11 @@ try{const page=await browser.newPage();await page.goto('http://localhost:8490/re
   probe.update(m,'match',45000);check(getComputedStyle(tags[0]).willChange==='auto','45秒未恢复');
   for(const [match,mode]of [[{boss:null,state:'playing'},'match'],[{...m,attract:true},'match'],[{...m,paused:true},'match'],[{...m,state:'finish'},'match'],[m,'menu']]){probe.update(m,'match',20000);probe.update(match,mode,20000);check(getComputedStyle(tags[0]).willChange==='auto','取消未释放');}
   probe.update(m,'match',20000);probe.dispose();check(!document.querySelector('[data-boss-layer-hint-probe]')&&!probe.info().active&&JSON.stringify(sample())===baseline,'清理失败');
-  return {scope:true,visiblePropertiesUnchanged:true,cancelAndCleanup:true};
+  const {createMobileBossRasterHints}=await import('/src/platform/mobileBossRasterHints.js'),hints=createMobileBossRasterHints(),root=tags[0].parentElement;
+  hints.update(root,m,'match',false);check(!root.classList.contains('iw-mobile-boss-raster'),'PC错误启用');
+  window.inkwaveMobile={};hints.update(root,m,'match',false);check(hints.info().active&&root.classList.contains('iw-mobile-boss-raster'),'手机Boss未启用');
+  for(const [match,mode,suspended]of [[{boss:null,state:'playing'},'match',false],[{...m,attract:true},'match',false],[{...m,paused:true},'match',false],[{...m,state:'intro'},'match',false],[{...m,state:'finish'},'match',false],[m,'menu',false],[m,'match',true]]){hints.update(root,m,'match',false);hints.update(root,match,mode,suspended);check(!hints.info().active&&!root.classList.contains('iw-mobile-boss-raster'),'产品范围/退出错误');}
+  hints.update(root,m,'match',false);const replacement=document.createElement('div');hints.update(replacement,m,'match',false);check(!root.classList.contains('iw-mobile-boss-raster')&&replacement.classList.contains('iw-mobile-boss-raster'),'替换HUD残留');hints.clear();check(!replacement.classList.contains('iw-mobile-boss-raster'),'后台清理失败');delete window.inkwaveMobile;
+  return {scope:true,visiblePropertiesUnchanged:true,cancelAndCleanup:true,productScopeAndLifecycle:true};
  });console.log(JSON.stringify(result));
 }finally{await browser.close();}
