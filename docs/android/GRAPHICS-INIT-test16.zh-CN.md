@@ -70,3 +70,9 @@ v17追加3次均正常Ready且shader失败0、原生日志无GPU重置；但更�
 版本1.0.17/code17，功能源码4b11cecadcc3e74888e10b85365d6950a621e95c，trackedChanges=false。APK为releases/INKWAVE-android-test17-4b11cec.apk，21,116,068字节，SHA-256为4a68459d5aa5b2afee0ffb1c3fa9a5c2341481c14aaf38e6370e5569cc5c3da0。
 
 签名SHA-256为201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69，与本机前版一致。apksigner验证、364个网页资源与APK逐字节核对、最小图形本地资源存在及APK哈希均通过；已安装当前手机，真机初始化通过，Boss长期性能未通过。APK/原始JSON/截图仍不入Git，换电脑需要单独迁移或重建。
+
+### 一分钟Boss切场景复核
+
+v17在3次完整冷启动之后，追加真实Boss duration=60秒，保持8人、固定2倍/SMAA、正常自动移动/瞄准/开火/跳跃/潜墨及副武器/大招尝试，等待本局自然finish。实际采集62.3755秒/1633帧，平均26.180FPS、p95=50.1ms、p99=58.4ms、100ms以上7帧；启动与Boss切图无shader失败/致命GPU状态。此轮性能仍未达稳定30，不把初始化修复当作性能通过。
+
+真实上传回执文件INKWAVE-logs-20261026-074441-734347-a6939dfa.json已在releases/logs核对源码及版本，电脑完整采样为releases/investigation/phone-boss-init-fix-v17-boss.json；roundCompleted=true、upload.ok=true、appClosed=true，完成后游戏进程消失。均为本地原始资料，不随Git同步。
