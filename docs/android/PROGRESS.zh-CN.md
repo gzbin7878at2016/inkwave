@@ -536,3 +536,5 @@
 原窗口preferredRefreshRate60在真机仍120Hz；新方案只请求同物理尺寸60Hz支持模式并提前到加载预检/开场，暂停/退出逐字段所有权恢复，不写全局设置。实际Java插件替身执行、15类JS边界/加载到实战去重、成品网页Boss回归及233个JS语法通过，待中文提交推送后干净构建36，先真机生命周期调查再两局正式。详见[BOSS-PERFORMANCE-test36](BOSS-PERFORMANCE-test36.zh-CN.md)。
 
 v36首轮生命周期调查中止：新modeId1请求仍实际120Hz；Home后原生字段已恢复，但700ms网页未暂停/无继续按钮，不能算60秒成绩。已USB核对关闭。固定Capacitor依赖在onStop才发appStateChange，调查工具改为等待实际暂停并记录App.getState，先验证真实后台链路，不直接假定产品缺陷。详见test36，当前APK源码3d13ca3。
+
+v36等待真实onStop后生命周期通过；初始仍120Hz，回前台后60Hz，不能称全程60或归因modeId。正式26.209/25.756FPS，热机未稳定30，60未开始，三局USB核对关闭。当前安装36源码3d13ca3。下一项先验证SMAA二值边缘辅助缓冲紧凑格式，仅手机Boss、全尺寸/原权重与HDR/PC不变；先像素/FBO/恢复和真机存储验证，不能预宣无损提帧。详见test36末节。

@@ -39,3 +39,21 @@ v36已从干净源码3d13ca3f7193bfe4412f12943f29e6d49d406aaa构建安装，APK2
 20秒Home调查，原生foreground/owned变false，窗口两字段恢复0；但700ms时网页hidden=false、paused=false，未出现继续按钮，调查中止，不是完整60秒成绩。真实USB日志INKWAVE-logs-20261026-144721-452430-edbcc52c.json核对源码后已关闭。
 
 查本机固定依赖代码：Capacitor BridgeActivity在onStop发App.isActive=false，在onPause调用插件pause；AppPlugin另有pause/resume事件，当前网页监听appStateChange。不能仅凭700ms推定整个Home/Stop过程已完成，也不能断言一定是网页缺陷。工具改为等待实际暂停（最多24次×250ms加查询），同时读取原生App.getState、BossDisplay状态、网页needsResume/suspended/paused；用App.isActive而不是document.hidden认定后台，避免WebView可见性实现差异。始终在finally回到游戏前台；确实没有暂停则保留状态并失败，不能调用suspend伪造通过。只改调查工具，安装APK仍为3d13ca3；再次调查前中文提交推送。
+
+## 等待实际后台后的真机结果
+
+使用已推送a00e843的调查工具，安装APK仍为干净功能源码3d13ca3。等待实际onStop/App状态后后台调查通过：App.isActive=false、hidden/suspended/paused/needsResume=true，native.foreground/owned=false，窗口模式/刷新偏好均恢复0。返回前台后真实继续按钮出现，自动点击后正常游玩，native重新申请modeId1。之前700ms调查未完成不足以认定产品暂停缺陷，本批没有修改原暂停逻辑。
+
+**实际模式不能概括为全程60Hz**：实战5秒、Home前仍120Hz；后台及返回前台后变为60Hz，40秒与退出时也为60Hz，物理始终1200×2652。回菜单请求/owned=false、两个窗口字段恢复0。由于之前v29单纯刷新偏好也曾在回前台后观察到60Hz，不能把这次后半段60Hz直接当作modeId方案相对旧版的因果收益。系统仍可忽略窗口偏好，不改全局刷新设置来制造成绩。
+
+| 轮次 | 帧/墙钟秒 | 平均FPS | p95/p99 ms | ≥100ms | 温度 |
+| --- | --- | ---: | --- | ---: | --- |
+| 生命周期/方法调查，不计成绩 | 1787/64.7767 | 27.587 | 50.1/83.3 | 11 | 42→46°C |
+| 正式1，无方法/V8/切后台/音画旁路 | 1712/65.3221 | 26.209 | 58.4/75.0 | 7 | 43→45°C |
+| 正式2，无方法/V8/切后台/音画旁路 | 1685/65.4211 | 25.756 | 58.4/75.0 | 10 | 46→47°C |
+
+正式局不人为切后台促进模式切换，也未额外查询实战显示模式；因此不声称正式局全程面板60Hz。全部固定2倍/scale1/SMAA/8人、原音画/物理/AI/伤害，shader错误0，镜头预备保留，小地图候选关闭。每局设定游戏时钟60秒，原dt钳制、生命周期调查影响按实际记录保留，不压缩墙钟。三局USB核对源码后关闭，上传依次：INKWAVE-logs-20261026-145240-432903-3c1c39dc.json、INKWAVE-logs-20261026-145707-917336-d81dfb32.json、INKWAVE-logs-20261026-145856-101165-c2671eef.json。
+
+当前安装v1.0.36源码3d13ca3，游戏关闭；功能边界/尺寸/恢复通过，未证明整局提帧，稳定30仍未通过，60未开始。不能只报生命周期通过而隐藏普通启动的低帧结果。
+
+下一项依据来自当前固定Three.js源码：SMAA边缘检测通过step得到0/1再相乘，输出vec4(edges,0,0)，现中间目标是RGBA HalfFloat。先调查仅手机Boss将边缘辅助目标改为更紧凑的格式，保持全尺寸、三阶段SMAA、原权重/场景HDR缓冲和算法；PC/普通局保持。需要真实WebGL及手机逐像素比较、完整FBO/resize/取消/退出恢复、按实际纹理格式估算存储和正式热机验证，未验证前不改成品，也不预先宣称无损或提帧。不要同时降低SMAA权重精度或主渲染分辨率，保持单变量。
