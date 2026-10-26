@@ -32,3 +32,7 @@ node tools/check-phone-graphics.mjs
 ### 冷启动时序修正
 
 已取得一次真实最小页通过（shader链接成功、GL错误0、像素64/191/128/255、Canvas2D正确）。另外两次在am start返回后立即查询PID时为空，属于采集未开始，不能算GPU失败。连接器增加最多5秒有限PID等待，先提交，再重跑三次；所有失败和原始记录仍保留本地。
+
+### 正常入口对照采集
+
+执行node tools/check-phone-startup.mjs，从普通游戏入口做3次冷启动，先等待PID和调试通道，启动只限当前游戏PID的原生日志采集；就绪或失败后保存网页报告/USB截图，尝试真实上传按钮，再关闭。数据为phone-full-startup.json及分轮log/png。先提交工具，再实际采集；与最小页比较，不能把“采集未开始”混为shader失败。
