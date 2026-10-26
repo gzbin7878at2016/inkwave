@@ -1,11 +1,13 @@
 // 附着已有的一分钟调查轮，采集12秒浏览器时间线；不启动另一局、不改游戏状态。
 // 只能配合BOSS_METHOD_PROBE=1，Trace本身有开销，禁止当正式FPS成绩。
 import {mkdir,writeFile} from 'node:fs/promises';
+import {createTraceEventCollector} from './trace-event-collector.mjs';
 let ws,seq=0,tracing=false,complete;
-const pending=new Map(),events=[];
+const rendering=process.env.BOSS_TRACE_RENDERING==='1';
+const pending=new Map(),collector=createTraceEventCollector({limit:rendering?200000:80000,minUs:rendering?50:100}),events=collector.events;
 const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
 if(!Number.isFinite(seconds)||seconds<1||seconds>45)throw Error('BOSS_TRACE_SECONDS须为1～45');
-const report={status:'waiting',requestedSeconds:seconds,eventsTruncated:false,performanceTest:false};
+const report={status:'waiting',requestedSeconds:seconds,renderingProbe:rendering,eventsTruncated:false,performanceTest:false};
 const base=`releases/investigation/boss-trace-${new Date().toISOString().replace(/[:.]/g,'-')}`;
 const call=(method,params={})=>new Promise((resolve,reject)=>{
  const id=++seq,timer=setTimeout(()=>{pending.delete(id);reject(Error(`${method}超时`))},20000);
@@ -25,9 +27,9 @@ try {
   const v=JSON.parse(e.data);
   if(v.id){const p=pending.get(v.id);if(!p)return;clearTimeout(p.timer);pending.delete(v.id);v.error?p.reject(Error(JSON.stringify(v.error))):p.resolve(v.result);}
   else if(v.method==='Tracing.dataCollected'){
-   // 仅保留元数据与至少0.1ms的完整事件，避免细碎事件先占满上限而丢掉后半段。
-   for(const item of v.params.value){if(item.ph!=='M'&&(item.ph!=='X'||!(item.dur>=100)))continue;if(events.length<80000)events.push(item);else report.eventsTruncated=true;}
-  }else if(v.method==='Tracing.tracingComplete')complete?.();
+   collector.add(v.params.value);
+  }else if(v.method==='Tracing.bufferUsage')report.maxBufferUsage=Math.max(report.maxBufferUsage||0,v.params.percentFull||0);
+  else if(v.method==='Tracing.tracingComplete'){report.dataLossOccurred=v.params?.dataLossOccurred??null;complete?.();}
  };
  ws.onclose=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('调试目标关闭'))}pending.clear()};
  let ready=false;
@@ -37,10 +39,19 @@ try {
   await new Promise(r=>setTimeout(r,500));
  }
  if(!ready)throw Error('没有运行带探针的Boss实战');
- await call('Tracing.start',{categories:'devtools.timeline,disabled-by-default-devtools.timeline,blink.user_timing,v8,gpu',transferMode:'ReportEvents'});tracing=true;
+ const available=(await call('Tracing.getCategories')).categories;
+ report.availableRenderingCategories=available.filter(c=>/gpu|skia|viz|^cc/.test(c));
+ const categories=['devtools.timeline','disabled-by-default-devtools.timeline','blink.user_timing','v8','gpu'];
+ if(rendering)for(const name of ['cc','viz','skia','disabled-by-default-skia','disabled-by-default-skia.gpu','disabled-by-default-gpu.service','disabled-by-default-viz.debug'])if(available.includes(name))categories.push(name);
+ report.categories=categories;
+ await call('Tracing.start',{categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:'ReportEvents'});tracing=true;
+ await evaluate('performance.mark("inkwave-render-start");true');
  await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),15000);complete=()=>{clearTimeout(timer);resolve()}});
+ await evaluate('performance.mark("inkwave-render-end");true');
  await call('Tracing.end');await done;tracing=false;
+ Object.assign(report,collector.info());
+ report.markers=events.filter(e=>e.name?.startsWith('inkwave-render-')).map(e=>({name:e.name,pid:e.pid,tid:e.tid,ts:e.ts}));
  report.status='collected';
  const byName=new Map();
  for(const e of events){if(e.ph!=='X'||!Number.isFinite(e.dur))continue;const key=`${e.pid}/${e.tid}/${e.name}`,v=byName.get(key)||{pid:e.pid,tid:e.tid,name:e.name,count:0,totalMs:0,maxMs:0};v.count++;v.totalMs+=e.dur/1000;v.maxMs=Math.max(v.maxMs,e.dur/1000);byName.set(key,v)}
@@ -50,6 +61,7 @@ try {
 finally{
  if(tracing&&ws?.readyState===WebSocket.OPEN)await call('Tracing.end').catch(()=>{});
  ws?.close();
+ Object.assign(report,collector.info());
  await writeFile(`${base}.json`,JSON.stringify({report,traceEvents:events}));
  console.log(JSON.stringify({path:`${base}.json`,...report}));
 }

@@ -104,3 +104,10 @@ v41-bar-native只隐藏.iw-bb，仍更新原状态与声音。原生20秒覆盖8
 逐一复核时间线：all/markers/UI动画/map/bar/special在11～25秒采样点均存活；只有top轮含死亡/复活。整体DOM轮正常11.5/13.6秒调用109/107、约810k/794k三角形；隐藏19.7/21.7/23.8秒调用113/106/112、约805k/798k/805k，世界绘制量接近，音频负载还更高。整体DOM证据比顶部单组件更可靠。
 
 下一步优先用实际Tracing.getCategories确认GPU/Skia/Viz细类，再做独立12秒渲染Trace定位具体栅格/合成工作；不得把现有top混杂结果当作图标缓存依据。临时图层提示若试验，也必须完整HUD显示、对照窗口同存活/接近绘制量、finally恢复、仅方法轮；尚未实现。当前产品仍完整v41，无隐藏部件、无动画限帧、无小地图降采样或系统策略修改。
+
+
+### 渲染细类Trace工具
+
+BOSS_TRACE_RENDERING=1时先向当前WebView实际查询Tracing.getCategories，只启用存在的cc/viz/skia及有限的disabled-by-default Skia/GPU service/Viz debug类别。仍独立方法轮12秒，完整HUD、正常模拟/输入/声音、不与其他Trace并行。记录起止performance.mark定位本页PID/TID和实际范围、buffer峰值/dataLoss字段、事件截断状态。
+
+补齐trace-event-collector：除X还正确合成跨批B/E嵌套作用域，跨线程独立栈，保留tts/tdur；只比较完整区间，不能把GPU主机线程的墙钟当GPU硬件时间。渲染调查阈值50微秒、最多200000条，其余默认100微秒/80000条；任何截断/丢失必须标注，不用缺失数据宣称收益。分批嵌套/跨线程/CPU时间/阈值/标记/元数据/容量单元验证通过，脚本语法通过。先中文提交再真机附着，工具不创建/拆除主轮ADB转发，采集完成主轮仍自然结束、USB上传核对后关闭。
