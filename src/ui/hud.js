@@ -52,6 +52,7 @@ import { BossHud } from './hud-boss.js';
 import { installBossAudio } from '../audio/bossAudio.js';
 import { bossEmblem, BOSS_NAME, BOSS_EPITHET } from './boss-art.js';
 import { t } from '../i18n/strings.js';
+import { mobileViewport } from '../platform/mobileViewport.js';
 
 let HUD_ID = 0;
 // 【共享动画参数】通用"回弹"曲线（BUMP）：UI 小件的 pop/抖动用，全局复用避免重复分配对象
@@ -1873,7 +1874,8 @@ export class HUD {
     const a = k * (target - this._mapT) - c * this._mapV;
     this._mapV += a * Math.min(dt, 0.05); this._mapT += this._mapV * Math.min(dt, 0.05);
     if (Math.abs(target - this._mapT) < 0.001 && Math.abs(this._mapV) < 0.001) { this._mapT = target; this._mapV = 0; }
-    const W = innerWidth, H = innerHeight;
+    const viewport = globalThis.inkwaveMobile ? mobileViewport() : null;
+    const W = viewport ? viewport.width : innerWidth, H = viewport ? viewport.height : innerHeight;
     const u = Math.min(W / 100, (H * 1.7778) / 100);
     const asp = (m.canvas.width || 1) / (m.canvas.height || 1);
     const fit = (sz) => (asp >= 1 ? [sz, sz / asp] : [sz * asp, sz]);

@@ -22,7 +22,7 @@ try {
   assert.ok(baseline.current.scene.profile.samples > 0);
   assert.ok(baseline.current.scene.profile.topCalls.some(row => row.calls > 0));
   assert.ok(baseline.current.gpu.limits.MAX_FRAGMENT_UNIFORM_VECTORS > 0);
-  assert.equal(baseline.current.build.versionCode, 13);
+  assert.equal(baseline.current.build.versionCode, 14);
   assert.equal(baseline.current.scene.render.antialias, 'SMAA');
   assert.equal(baseline.current.scene.render.canvas.width, baseline.current.scene.render.target.width);
   assert.ok(baseline.current.scene.level.vertices > 0);

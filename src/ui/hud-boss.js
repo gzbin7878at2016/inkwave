@@ -33,6 +33,7 @@ import { GLYPHS } from './ui-icons.js';
 import { on, emit, G } from '../core/ctx.js';
 import { BOSS_NAME, BOSS_EPITHET, MOVE_ICONS, MOVE_LABELS, bossEmblem } from './boss-art.js';
 import { t } from '../i18n/strings.js';
+import { mobileViewport } from '../platform/mobileViewport.js';
 
 // 【常量】
 // 【血量刻痕】HP 条上的两个 66%/33% 分界；越过时打 is-past/is-break 类做"断痕"演出。
@@ -155,7 +156,10 @@ export class BossHud {
   _mine(a) { const hd = this.hud; return !!a && (a === hd._local() || !!a.isLocal); }
   _t() { return this.T; }   // own clock (the HUD's fx clock only runs while it has effects)
   // 【UI 缩放基准】min(vw/100, vh*1.7778/100)：以 16:9 归一，1 单位≈屏宽的 1/100；所有像素偏移乘它。
-  _u() { return Math.min(innerWidth / 100, (innerHeight * 1.7778) / 100); }
+  _u() {
+    const viewport = globalThis.inkwaveMobile ? mobileViewport() : null;
+    return Math.min((viewport ? viewport.width : innerWidth) / 100, ((viewport ? viewport.height : innerHeight) * 1.7778) / 100);
+  }
   /** World-space anchor: a model socket if the model exposes one, else the boss root + a height. */
   // 【世界锚点】优先取模型 socket（借 boss.pos 的构造器造 Vector3，免 import three）；
   //   失败则退回 boss 根 + 经验高度（shellTop≈5.2、其余 3.2）+ up 偏移。写入 out 复用对象。
@@ -179,7 +183,8 @@ export class BossHud {
     if (!cam || !w) return null;
     const p = this.hud._project(cam, w.x, w.y, w.z);
     if (!p) return null;
-    out.x = (p.x * 0.5 + 0.5) * innerWidth; out.y = (-p.y * 0.5 + 0.5) * innerHeight; out.behind = p.z > 1;
+    const viewport = globalThis.inkwaveMobile ? mobileViewport() : null;
+    out.x = (p.x * 0.5 + 0.5) * (viewport ? viewport.width : innerWidth); out.y = (-p.y * 0.5 + 0.5) * (viewport ? viewport.height : innerHeight); out.behind = p.z > 1;
     return out;
   }
 
@@ -414,7 +419,8 @@ export class BossHud {
   // 【播报定位】把药丸钉在 Boss 头顶（_anchor('shellTop')+1.9）投影出的屏幕点；出屏则贴边+箭头，
   //   屏内则推离准星椭圆；用 k=min(1,dt*12) 做平滑跟随。CHARGE! 时另算方向箭头。
   _placeCall(dt) {
-    const S = this.S, u = this._u(), W = innerWidth, H = innerHeight;
+    const viewport = globalThis.inkwaveMobile ? mobileViewport() : null;
+    const S = this.S, u = this._u(), W = viewport ? viewport.width : innerWidth, H = viewport ? viewport.height : innerHeight;
     const w = this._anchor('shellTop', 1.9, this._tmp);
     const sp = w && this._screen(w, { x: 0, y: 0 });
     if (!sp) return;
