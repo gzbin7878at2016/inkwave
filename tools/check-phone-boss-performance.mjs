@@ -388,6 +388,11 @@ finally{
   const filename=status.match(/INKWAVE-logs-[\w-]+\.json/)?.[0];if(!filename)throw Error('回执文件名无效');
   const uploaded=JSON.parse(await readFile(`releases/logs/${filename}`,'utf8'));
   if(uploaded.current.build.sourceCommit!==report.diagnostics?.current.build.sourceCommit)throw Error('落盘日志源码不匹配');
+  if(process.env.BOSS_REQUIRE_LOG_EDGES==='1'){
+   const edges=uploaded.current.scene?.render?.smaaEdges;
+   if(!edges?.active||edges.format!=='RG16F'||edges.typeCode!==1016||edges.weightsType!==1016||edges.logicalSavedBytes!==edges.width*edges.height*4)throw Error('上传日志未记录实际RG16F状态');
+   report.uploadEdges=edges;
+  }
   report.upload={ok:true,filename};console.log('USB日志已确认保存',filename);
  }catch(error){report.upload={ok:false,error:String(error)};process.exitCode=1;console.error('上传未完成，电脑采样文件已保留',error)}
  c.close();

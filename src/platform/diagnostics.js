@@ -119,6 +119,8 @@ export function installDiagnostics(nativePlugin) {
         target: game.R.composer ? { width: Math.floor(game.R.composer.renderTarget1.width), height: Math.floor(game.R.composer.renderTarget1.height) } : null,
         antialias: game.R.mobileAA ? (game.R.mobileAA.uniforms ? 'FXAA' : 'SMAA') : game.R.samples ? `MSAA ${game.R.samples}x` : game.R.composer?.passes.some(pass => pass.constructor.name === 'SMAAPass') ? 'SMAA' : 'none',
         fxaaTexel: game.R.mobileAA?.uniforms?.resolution.value.toArray(),
+        // 仅复制已有JS状态；不在诊断采样中新增WebGL查询或读回。
+        smaaEdges: game.R.mobileAA?.bossEdgesInfo?.() || null,
         smaaTexel: game.R.mobileAA?._materialBlend?.uniforms.resolution.value.toArray(),
         memory: { ...game.R.renderer.info.memory } },
     };
