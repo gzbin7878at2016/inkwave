@@ -30,7 +30,18 @@ try{
   const visibility=new Map(Object.values(groups).flat().filter(Boolean).map(o=>[o,o.visible]));
   const hudVisibility=g.hud.el.style.visibility;
   const restoreVisibility=()=>{for(const [o,v] of visibility)o.visible=v;g.hud.el.style.visibility=hudVisibility;};
-  if(ablationEnabled)restores.push(restoreVisibility);
+  if(ablationEnabled){
+   restores.push(restoreVisibility);
+   const render=g.R.render;
+   // 环境update会重设海面visible，必须在实际提交绘制前遮蔽，并在绘制后恢复。
+   g.R.render=function(...args){
+    const selected=(groups[p.ablationPhase]||[]).filter(Boolean),saved=selected.map(o=>o.visible);
+    for(const o of selected)o.visible=false;
+    p.ablationApplied=selected.map(o=>({name:o.name||o.type,visible:o.visible}));
+    try{return render.apply(this,args)}finally{selected.forEach((o,i)=>o.visible=saved[i]);}
+   };
+   restores.push(()=>g.R.render=render);
+  }
   // 可选方法级调查会增加计时开销，单独标记，不能混充无探针基线。
   if(${process.env.BOSS_METHOD_PROBE==='1'}){
    p.methods={};
@@ -48,7 +59,7 @@ try{
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
    if(ablationEnabled&&live){
     const phase=['baseline','sea','background','props','hud','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
-    if(p.ablationPhase!==phase){restoreVisibility();for(const o of groups[phase]||[])if(o)o.visible=false;if(phase==='hud')g.hud.el.style.visibility='hidden';p.ablationPhase=phase;}
+    if(p.ablationPhase!==phase){g.hud.el.style.visibility=phase==='hud'?'hidden':hudVisibility;p.ablationPhase=phase;}
    }
    if(live&&a?.alive){
     const t=p.activeMs/1000,cycle=t%18,b=m.boss;
@@ -83,7 +94,7 @@ try{
   const sample=await c.evaluate(`(()=>{
    const g=__inkwave,m=g.match,a=m?.local,p=__phonePerf;
    const sample={at:Date.now(),state:m?.state,mode:__G.mode,boss:!!m?.boss,fps:g.fps,ratio:g.R.renderer.getPixelRatio(),scale:g.R.dynScale,
-    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
+    activeMs:p.activeMs,rounds:p.rounds,ablationPhase:p.ablationPhase,ablationApplied:p.ablationApplied,started:__phoneStarted,actions:{...p.actions},position:a?{x:a.pos.x,y:a.pos.y,z:a.pos.z}:null,
     timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};

@@ -23,7 +23,8 @@ try {
   const v=JSON.parse(e.data);
   if(v.id){const p=pending.get(v.id);if(!p)return;clearTimeout(p.timer);pending.delete(v.id);v.error?p.reject(Error(JSON.stringify(v.error))):p.resolve(v.result);}
   else if(v.method==='Tracing.dataCollected'){
-   for(const item of v.params.value){if(events.length<80000)events.push(item);else report.eventsTruncated=true;}
+   // 仅保留元数据与至少0.1ms的完整事件，避免细碎事件先占满上限而丢掉后半段。
+   for(const item of v.params.value){if(item.ph!=='M'&&(item.ph!=='X'||!(item.dur>=100)))continue;if(events.length<80000)events.push(item);else report.eventsTruncated=true;}
   }else if(v.method==='Tracing.tracingComplete')complete?.();
  };
  ws.onclose=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('调试目标关闭'))}pending.clear()};
