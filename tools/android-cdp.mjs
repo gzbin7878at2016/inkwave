@@ -3,7 +3,9 @@ export async function androidCDP(){
  const adb=process.env.ADB_PATH||`${process.env.USERPROFILE}/.cache/demoink-android/sdk/platform-tools/adb.exe`;
  const target=process.env.ANDROID_SERIAL?['-s',process.env.ANDROID_SERIAL]:['-d'];
  const command=(...args)=>execFileSync(adb,[...target,...args],{encoding:'utf8',timeout:15000});
- const pid=command('shell','pidof','com.demoink.inkwave').trim();if(!/^\d+$/.test(pid))throw Error('游戏进程未运行');
+ // am start返回时冷启动进程可能尚未注册；有限等待，不能把PID时序误报为GPU故障。
+ let pid;for(let i=0;i<20;i++){try{pid=command('shell','pidof','com.demoink.inkwave').trim()}catch{}if(/^\d+$/.test(pid||''))break;await new Promise(r=>setTimeout(r,250))}
+ if(!/^\d+$/.test(pid||''))throw Error('游戏进程未运行或冷启动期间退出');
  command('forward','tcp:9223',`localabstract:webview_devtools_remote_${pid}`);
  let page;for(let i=0;i<20;i++){try{page=(await(await fetch('http://127.0.0.1:9223/json',{signal:AbortSignal.timeout(3000)})).json()).find(t=>t.url==='https://localhost/'||(t.url==='about:blank'&&t.title==='最小图形诊断'));if(page)break;}catch{}await new Promise(r=>setTimeout(r,500));}if(!page)throw Error('WebView调试目标未出现');
  const ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j});let id=0;const pending=new Map();

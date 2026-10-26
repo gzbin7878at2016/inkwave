@@ -28,3 +28,7 @@ node tools/check-phone-graphics.mjs
 ### 诊断连接修正
 
 最小页首次3次采集均未连上调试目标，不能算GPU失败：原工具只选择https://localhost/，而loadDataWithBaseURL生成的调试目标实际为about:blank、标题“最小图形诊断”。已按当前应用PID下的确切URL/标题增加匹配；修正先提交，再重跑。未放宽到其他应用或任意标签页。
+
+### 冷启动时序修正
+
+已取得一次真实最小页通过（shader链接成功、GL错误0、像素64/191/128/255、Canvas2D正确）。另外两次在am start返回后立即查询PID时为空，属于采集未开始，不能算GPU失败。连接器增加最多5秒有限PID等待，先提交，再重跑三次；所有失败和原始记录仍保留本地。
