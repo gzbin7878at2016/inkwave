@@ -2,14 +2,16 @@
 
 ## 当前接续（2026-10-27，优先于历史版本说明）
 
-- 仅Android Boss；先稳定30再60，保持2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB在线常亮2，不并发操作CDP。
-- 已安装v1.0.44/code44，干净源码21980d5，当前游戏关闭。v44仅补日志，真实USB201534-767389-92c6f686含实际RG16F字段，26.44778FPS未稳30，详见docs/android/BOSS-PERFORMANCE-test44.zh-CN.md。读docs/android/BOSS-PERFORMANCE-test43.zh-CN.md：RG16F仅省边缘未用通道，保留浮点精度、权重/HDR/全尺寸；失败/取消/离场恢复RGBA16F，72组接口/54组像素、手机实际目标对原参考均字节差0。
-- 正式无探针26.416/17.428FPS，45→48/47→48°C；**30未稳，60未开始，未证明正式提帧收益**。所有自然60游戏秒、真实UI USB核对源码后关闭；不能用方法/遮蔽/格式比较或4.39MiB逻辑省量当成绩。
-- APK releases/INKWAVE-android-test43-e7e8329.apk，21,148,049字节，SHA256 8a59014670726e12bebfa15a7e26d063f5a5090c21084c867e97a944da3cfc67；v2签名与390资产一致。RG8手机max差102已拒绝；RG16F安装目标与RGBA16F参考差0，161397非空边缘全二值、权重/目标恢复，USB200752-803967-3329cc3d。
-- 已完成HUD all/bar/special/markers/map/top/controls/panel/crosshair隔离；变量本地化、原生装饰15Hz无明确收益，未产品化。详见BOSS-MAIN-INVESTIGATION.zh-CN.md/BOSS-DOM-INVESTIGATION.zh-CN.md，勿重复负结果。实战CPU4/7策略1324.8/1651.2MHz且曾打满；不能把空闲921.6或热状态3单独当因果。
-- 上传诊断边缘字段已补且真机落盘确认。下一批做小地图像素计算Worker离线实验：原算法/像素/owner闪光一致、消息/复制成本和取消回退先验；只在主循环消费，不额外触发UI重绘。有收益才产品化，不删子步或降低分辨率/人数。
-- 正式METHOD_PROBE=0；GPU/CPU/UI/DOM/音频旁路、BOSS_LAYER_HINTS、BOSS_MARKER_VAR_PROBE、BOSS_NATIVE_PAINT_PROBE、COMPARE_SMAA_CLEAR/EDGES、生命周期/小地图benchmark均0。REQUIRE_SMAA_EDGES=1、RASTER_HINTS=1、AUDIO_PARAM_DEDUPE=1、SMAA_CLEAR=1、LENS_PREPARATION=1，ANIMATION_CLOCK/MINIMAP_CACHE=0。先中文commit/push用户fork，再干净构建安装测试，结论独立中文提交。
-- Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB。只用已验证3秒短Trace或独立20秒native，本页标记绑定PID、严格CPU字段正则、buffer完整/切换一致0。原始含系统线程只留本地releases，不入Git；保留用户Logs/、play.bat、start-game.bat。
+- 仅Android Boss；先稳定30再60，保持2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB在线常亮2，不并发操作CDP。所有测试进程已结束，游戏已关闭。
+- 已安装v1.0.44/code44，干净源码21980d5，v44仅补诊断字段，上传日志scene.render.smaaEdges已核对真实RG16F/1556×740/附件16,16,0,0/frames1993/逻辑省4605760字节。真实UI USB201534-767389-92c6f686，见docs/android/BOSS-PERFORMANCE-test44.zh-CN.md。
+- v44无调查轮26.44778FPS；v43正式26.416/17.428FPS，低值保留，30未稳、60未开始。v43 RG16F保浮点精度/权重/HDR/全尺寸，72组接口/54组像素及安装目标对原RGBA16F参考手机差0；RG8手机max102拒绝。逻辑4.39MiB不当实测FPS/功耗。
+- v44 APK releases/INKWAVE-android-test44-21980d5.apk，21,148,245字节，SHA256 b107aad6930a98d5848096f070aa6c6abb12edf507272e57b9450d7cb4713d7b；签名验证与390资产一致。未发布Worker产品APK。
+- 新工具小地图Worker：420组真实原入口/Canvas/halo/owner/闪光一致，取消/异常/超时/预算/三请求/重建已验。手机副本Main显式有节省，但计算总CPU不降；playing20.024秒120帧72段全部同序、像素一致，Main190.7→58.2ms，年龄P95两帧/显示109.7ms、max176ms/>100ms八次；结算另有max2408ms，不能只看帧数。详见docs/android/BOSS-MINIMAP-WORKER.zh-CN.md，勿重复副本试验当产品成绩。
+- playing副本工具8da2cfe先提交后测试，方法整局25.22049FPS/44→47°C，USB203455-167635-5143a1e7核对219源码/退出恢复并关闭。原同步路径仍在产品；有额外同步原算法参考CPU，不是Worker实战收益。
+- 下一批仅手机真实Boss评估Worker候选：加载期准备，最多3请求，主循环消费；3帧+250ms暂定失效上限（不放宽游戏帧率验收），追踪延迟/回退；owner用途/换色/强刷/数组重建/取消/背景/旧局归属先测试。小地图墨迹可增加有限显示延迟，实时人物点/实际涂地和跳跃仍原状态；先基础检查中文提交推送，再干净构建真机正式对照，无收益撤回。不要直接把tools导入产品或降低分辨率/刷新率/AI物理子步。
+- HUD all/bar/special/markers/map/top/controls/panel/crosshair、距离变量、原生装饰15Hz无明确Main收益，未产品化；见BOSS-MAIN-INVESTIGATION/BOSS-DOM-INVESTIGATION。实战CPU4/7策略1324.8/1651.2MHz曾打满，不把空闲921.6或热状态3当完整因果。SDK View.setRequestedFrameRate自API35，当前手机34不可用；无隐藏反射/虚假Surface/全局显示或性能改动。
+- 正式METHOD_PROBE=0，全部ablation/DOM/layer/marker/nativePaint/格式比较/生命周期/小地图benchmark及worker副本flags均0；REQUIRE_SMAA_EDGES/RASTER_HINTS/AUDIO_PARAM_DEDUPE/SMAA_CLEAR/LENS_PREPARATION=1，ANIMATION_CLOCK/MINIMAP_CACHE/LENS_DRAW=0。REQUIRE_LOG_EDGES仅上传时Boss仍active的v44诊断轮，退出菜单恢复后不要求active。
+- Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB。仅已验3秒短Trace/20秒native，本页PID绑定/严格CPU字段/完整buffer与切换一致。原始系统线程只留releases；保留用户Logs/、play.bat、start-game.bat。先中文commit/push fork，再干净构建/安装/60游戏秒正常操作，真实UI USB核对后关闭；结果独立中文提交。
 
 本规则适用于整个仓库。用户要求每批修改及时提交GitHub并逐批汇报。
 
