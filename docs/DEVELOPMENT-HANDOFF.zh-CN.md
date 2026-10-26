@@ -4,6 +4,8 @@
 
 面向新手的背景解释见[云层烘焙负载说明](android/CLOUD-BAKING-BEGINNER.zh-CN.md)，涵盖本次手机降载、2倍高清与初始化/帧率验收的区别。
 
+后续纹理优化参考[PC/手机纹理分级与UE4思路](android/DEVICE-TEXTURE-SCALABILITY.zh-CN.md)：已完成静态资源调查与实施顺序，尚未应用候选降档；先登记运行资源，再逐项真机对照。
+
 最新补充：当前已安装v1.0.17（干净功能源码4b11cec）。ALP-AN00启动曾发生GPU重置/Adreno资源死锁，手机云烘焙缩为512×160后，最终3次完整冷启动、实际截图、USB上传及关闭均通过。固定2倍/SMAA与PC云纹理2048×640保留。详见[初始化隔离与结果](android/GRAPHICS-INIT-test16.zh-CN.md)。Boss稳定30帧仍未通过，不能把启动修复当作性能达标。
 
 ## 1. 先读结论
