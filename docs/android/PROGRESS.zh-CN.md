@@ -461,3 +461,8 @@
 - v29独立方法/声像轮已完整游玩，USB文件INKWAVE-logs-20261026-122304-772394-6511aac1.json核对后关闭；24.801FPS只是带探针/原生跟踪调查，不算成绩。活跃单发声道13秒6个HRTF，17秒11个equalpower；19～29秒空间单发均equalpower，循环仍单列，历史536节点不当活跃数。
 - 原生sched/freq/idle请求20秒、16MiB每CPU，实际20.0022秒、1188094/1188094记录；CDP activeMs与前后uptime锚定误差约±100ms，选12～14.2秒和18～28.5秒完整覆盖。目标renderer496/AudioOutput681，分别88.99%/86.85%单核，未出现明确的大幅减负。窗口长度/声音数量不同且跟踪有开销，不证明两算法等价或唯一瓶颈，但不足以削减正式HRTF。
 - 原件systemtrace-v29-panner.*仅本地保留；下步原音乐/停止音乐的独立探针轮同步原生采集，保留所有战斗音效与画质，确认players归0后再比较音频运行。不重复仅凭阶段FPS做结论；APK仍v29。
+
+### 原生采集流程整理为可复用工具
+
+- 新增capture-phone-boss-native.mjs，只附着名字/隔离类型匹配且新鲜的带探针轮，等战斗8～13秒；窗口已过/主轮中止/无目标即退出，不重开游戏、不改变ADB转发。只采sched/freq/idle20秒，16MiB每CPU，保存实时CDP时钟的前后uptime锚点；连接/指令/进程/解压上限均有限制，不覆盖旧原件。
+- PowerShell在主轮启动后另开进程设置BOSS_TRACE_NAME为同一新名称、BOSS_TRACE_PROBE为music/panner/audio-suspend，执行node tools/capture-phone-boss-native.mjs。原件仅本地忽略目录，含其他进程信息不提交；带跟踪不计成绩。先语法检查中文提交，再用于音乐原生对照。
