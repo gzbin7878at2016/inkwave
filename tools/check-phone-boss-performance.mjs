@@ -18,6 +18,8 @@ const audioReverbBypass=process.env.BOSS_AUDIO_REVERB_BYPASS==='1';
 const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
 const verifyDisplayLifecycle=process.env.BOSS_VERIFY_DISPLAY_LIFECYCLE==='1';
 const domAblation=process.env.BOSS_DOM_ABLATION==='1';
+const domPart=process.env.BOSS_DOM_PART||'all';
+if(!['all','bar','special','markers'].includes(domPart))throw Error('BOSS_DOM_PART须为all/bar/special/markers');
 if(domAblation&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyBossExit||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_COMPARE_SMAA_CLEAR==='1'||process.env.BOSS_MINIMAP_BENCHMARK==='1'))throw Error('DOM隔离仅允许独占一分钟方法调查，不能作正式成绩或混用其他旁路');
 if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
@@ -35,7 +37,7 @@ if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerA
 if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',domAblation,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',domAblation,domPart,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -54,7 +56,7 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
-  const domProbe=${domAblation}?(${createBossDomProbe.toString()})():null;if(domProbe)restores.push(()=>domProbe.dispose());
+  const domProbe=${domAblation}?(${createBossDomProbe.toString()})(${JSON.stringify(domPart)}):null;if(domProbe)restores.push(()=>domProbe.dispose());
   const audioSuspendEnabled=${audioSuspend},audioGraphBypassEnabled=${audioGraphBypass},audioReverbBypassEnabled=${audioReverbBypass};
   if(audioSuspendEnabled||audioGraphBypassEnabled){
    const audio=__G.audio;if(!audio)throw Error('音频引擎不存在');

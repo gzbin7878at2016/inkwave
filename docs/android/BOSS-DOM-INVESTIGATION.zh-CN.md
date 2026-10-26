@@ -34,3 +34,5 @@ CPU residency显示主线程主要CPU7、音频主要4/5/6，没有把“单核�
 原生结束后另行只读：renderer cgroup cpu/cpuset为/vip、blkio为/top-app；CPUonline0-7；手机Awake、供电true、stayOn=true。cmd game list-modes报告unsupported，不足以推出改游戏类别必然有效。没有修改任何系统策略。
 
 下一步按组件隔离Boss条/大招球/队友标记，先找主要成本再改产品，避免重演无收益的动画接管。源码Boss条条纹本来就是transform动画，不应误当background-position后重复“优化”。稳定30未通过，60未开始。
+
+工具接续：BOSS_DOM_PART新增固定枚举all/bar/special/markers，分别仅整体/Boss条/大招球/队友标记。真实浏览器验证每种组件只隐藏对应节点、其他HUD仍显示，恢复不改原style；非法组件拒绝。baseline只在真正playing记录，非实战改记inactive，避免把开局前快照当作实战baseline。正式轮DOM开关必须0。
