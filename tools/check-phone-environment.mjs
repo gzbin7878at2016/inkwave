@@ -5,7 +5,7 @@ import {createWriteStream} from 'node:fs';
 import {readFile,readdir,writeFile} from 'node:fs/promises';
 const adb=process.env.ADB_PATH||`${process.env.USERPROFILE}/.cache/demoink-android/sdk/platform-tools/adb.exe`;
 const target=process.env.ANDROID_SERIAL?['-s',process.env.ANDROID_SERIAL]:['-d'];
-const run=(...args)=>execFileSync(adb,[...target,...args],{timeout:20000});
+const run=(...args)=>execFileSync(adb,[...target,...args],{timeout:20000,maxBuffer:16*1024*1024});
 const mode=process.env.ENV_PROBE_MODE||'skip-cloud';
 if(!['skip-cloud','full'].includes(mode))throw Error('ENV_PROBE_MODE只支持skip-cloud/full');
 let core;

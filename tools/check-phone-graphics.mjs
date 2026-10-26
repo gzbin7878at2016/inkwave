@@ -4,7 +4,7 @@ import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {androidCDP} from './android-cdp.mjs';
 const adb=process.env.ADB_PATH||`${process.env.USERPROFILE}/.cache/demoink-android/sdk/platform-tools/adb.exe`;
 const target=process.env.ANDROID_SERIAL?['-s',process.env.ANDROID_SERIAL]:['-d'];
-const run=(...args)=>execFileSync(adb,[...target,...args],{timeout:20000});
+const run=(...args)=>execFileSync(adb,[...target,...args],{timeout:20000,maxBuffer:16*1024*1024});
 const rounds=Number(process.env.GRAPHICS_PROBE_RUNS||3);
 if(!Number.isInteger(rounds)||rounds<1||rounds>10)throw Error('诊断次数须为1～10');
 await mkdir('releases/investigation',{recursive:true});
