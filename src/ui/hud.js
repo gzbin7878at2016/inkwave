@@ -163,6 +163,16 @@ export class HUD {
     this._tank = { level: 1, slosh: 0, sloshV: 0, wobble: 0, bubbles: [], prevInk: 1, prevYaw: null, prevVx: 0, prevVz: 0, empty: 0, t: 0 };
     this._map = { cx: 0.5, cy: 0.5, hover: -1, open: false, pressed: -1, pressT: 0 };
     this._build();
+    // 手机墨量条只接收布局完成后的尺寸通知，避免每次绘制读取clientWidth/Height。
+    // 此canvas无边框/内边距，contentRect取整与原client尺寸一致；旧环境保留原读取。
+    if (globalThis.inkwaveMobile && typeof ResizeObserver !== 'undefined') {
+      this._tankSize = { width: 18, height: 74 };
+      this._tankObserver = new ResizeObserver(entries => {
+        const rect = entries[0]?.contentRect;
+        if (rect) this._tankSize = { width: Math.round(rect.width) || 18, height: Math.round(rect.height) || 74 };
+      });
+      this._tankObserver.observe(this.tankCanvas);
+    }
     this._fxLoop = this._fxLoop.bind(this);
     this._lastFx = 0;
     this._rafId = 0;
@@ -683,6 +693,7 @@ export class HUD {
 
   // 【销毁】退订 resize / rAF / 总线，交还 boss 子模块，移除两个根节点
   dispose() {
+    this._tankObserver?.disconnect();
     removeEventListener('resize', this._onResize);
     cancelAnimationFrame(this._rafId);
     this._unsubs?.forEach((u) => u());
@@ -1651,7 +1662,8 @@ export class HUD {
   _drawTank(dt, sub, low, nosub) {
     const T = this._tank, c = this.tankCtx, cv = this.tankCanvas;
     const dpr = Math.min(2, devicePixelRatio || 1);
-    const cw = cv.clientWidth || 18, chh = cv.clientHeight || 74;
+    const cw = this._tankSize ? this._tankSize.width : cv.clientWidth || 18;
+    const chh = this._tankSize ? this._tankSize.height : cv.clientHeight || 74;
     const W = Math.round(cw * dpr), H = Math.round(chh * dpr);
     if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
     const L = this._L;
