@@ -68,10 +68,10 @@ try {
  if(rendering){try{await call('LayerTree.enable');layerTreeEnabled=true;}catch(error){report.layerMappingError=String(error);}}
  report.before=await snapshot();
  await call('Tracing.start',params);tracing=true;
- await evaluate('performance.mark("inkwave-render-start");true');
+ report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase}})()');
  await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),60000);complete=()=>{clearTimeout(timer);resolve()}});
- await evaluate('performance.mark("inkwave-render-end");true');
+ report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase}})()');
  ending=true;await Promise.all([call('Tracing.end'),done]);tracing=false;
  report.after=await snapshot();
  if(rendering){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
