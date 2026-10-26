@@ -22,8 +22,8 @@ export function createBossPropBatchCandidate(T,sources,{cellSize=8,maxBytes=32*1
    const groups=[...cells.values()],vertices=groups.reduce((n,c)=>n+c.vertices.size,0),indices=idx.count;
    const predicted=vertices*attrs.reduce((n,[,a])=>n+a.itemSize*a.array.BYTES_PER_ELEMENT,0)+indices*4;
    if(stats.geometryBytes+stats.textureBytes+predicted>maxBytes)throw Error('候选额外几何超过逻辑预算');
-   const batch=new T.BatchedMesh(groups.length,vertices,indices,mat),geometryIds=[];
-   entries.push({source,batch,geometryIds,parent:source.parent,visible:source.visible});
+   const batch=new T.BatchedMesh(groups.length,vertices,indices,mat),geometryIds=[],instanceIds=[];
+   entries.push({source,batch,geometryIds,instanceIds,parent:source.parent,visible:source.visible});
    batch.name='boss-batch:'+source.name;batch.userData.bossPropBatch=true;batch.sortObjects=false;batch.perObjectFrustumCulled=true;batch.frustumCulled=false;
    batch.matrixAutoUpdate=false;batch.matrix.copy(source.matrix);batch.castShadow=source.castShadow;batch.receiveShadow=source.receiveShadow;batch.renderOrder=source.renderOrder;batch.layers.mask=source.layers.mask;
    for(const group of groups){
@@ -36,7 +36,7 @@ export function createBossPropBatchCandidate(T,sources,{cellSize=8,maxBytes=32*1
      }
      part.setIndex(new T.BufferAttribute(Uint32Array.from(group.indices,id=>group.vertices.get(id)),1));
      part.computeBoundingBox();part.computeBoundingSphere();
-     const id=batch.addGeometry(part),range=batch.getGeometryRangeAt(id);geometryIds.push(id);batch.addInstance(id);
+     const id=batch.addGeometry(part),range=batch.getGeometryRangeAt(id);geometryIds.push(id);instanceIds.push(batch.addInstance(id));
      // 检查真正装入batch后的数据，而非只检查中间副本；包括原始整数/归一化属性和索引方向。
      for(const [oldId,newId] of group.vertices)for(const [name,attr] of attrs){
       const out=batch.geometry.getAttribute(name);if(out.normalized!==attr.normalized||out.array.constructor!==attr.array.constructor)throw Error('属性格式改变');
