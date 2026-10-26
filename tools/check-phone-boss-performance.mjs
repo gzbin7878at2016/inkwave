@@ -38,12 +38,12 @@ try{
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
   const audioSuspendEnabled=${audioSuspend};
   if(audioSuspendEnabled){
-   const audio=__G.audio,ctx=audio.ctx;if(!ctx)throw Error('音频上下文不存在');
+   const audio=__G.audio;if(!audio)throw Error('音频引擎不存在');
    const noop={set(){},stop(){},playing:false};
    for(const [obj,key,fallback] of [[audio,'play',null],[audio,'loop',noop],[__G.music,'play',undefined]]){
     if(!obj)continue;const original=obj[key];obj[key]=function(...args){if(p.audioSuspendedForProbe)return fallback;return original.apply(this,args)};restores.push(()=>obj[key]=original);
    }
-   restores.push(()=>{if(ctx.state==='suspended')ctx.resume().catch(()=>{});});
+   restores.push(()=>{const ctx=audio.ctx;if(ctx?.state==='suspended')ctx.resume().catch(()=>{});});
   }
   const pannerAblationEnabled=${pannerAblation},pannerRefs=[],pannerModels=new WeakMap();
   if(pannerAblationEnabled){
@@ -145,7 +145,8 @@ try{
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
-   if(audioSuspendEnabled&&live&&!p.audioSuspendedForProbe&&p.activeMs>=15000){p.audioSuspendedForProbe=true;__G.audio.ctx.suspend().catch(e=>{p.audioSuspendError=String(e)});}
+   if(audioSuspendEnabled&&live&&!p.audioSuspendedForProbe&&p.activeMs>=15000){p.audioSuspendedForProbe=true;const ctx=__G.audio.ctx;
+    if(!ctx)p.audioSuspendError='战斗音频上下文未创建';else ctx.suspend().catch(e=>{p.audioSuspendError=String(e)});}
    if(pannerAblationEnabled&&live){
     const phase=Math.floor(p.activeMs/15000)%2?'equalpower':'original';
     if(p.pannerAblationPhase!==phase){p.pannerAblationPhase=phase;const models={};
@@ -211,6 +212,7 @@ try{
   })()`);
   const intervals=sample.intervals;delete sample.intervals;report.intervals.push(...intervals);report.timeline.push(sample);
   await save();console.log(JSON.stringify({state:sample.state,fps:sample.fps,ratio:sample.ratio,activeSeconds:Math.round(sample.activeMs/1000),position:sample.position,fire:sample.fire,actions:sample.actions}));
+  if(sample.audioSuspendError)throw Error(sample.audioSuspendError);
   if(sample.started!==null&&sample.started!==true)throw Error(`Boss启动失败：${sample.started}`);
   if(sample.started===true&&(!sample.boss||sample.actors!==8))throw Error('未进入真实8人Boss对局');
   if(sample.ratio!==2||sample.scale!==1)throw Error('实际渲染不满足固定2倍高清');
