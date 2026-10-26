@@ -302,6 +302,12 @@ try{
    report.displayDuringPlay=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
    if(report.displayDuringPlay.observedWidth!==report.displayBeforeBoss.observedWidth||report.displayDuringPlay.observedHeight!==report.displayBeforeBoss.observedHeight)throw Error('Boss窗口实验改变了实际物理分辨率');
   }
+  // 方法轮仅取一次实际样式，确认APK真的经过涂地弹分路径；正式轮不增加样式读取。
+  if(process.env.BOSS_REQUIRE_TURF_ANIMATION==='1'&&report.methodProbe&&sample.state==='playing'&&sample.activeMs>=5000&&!report.turfAnimation){
+   report.turfAnimation=await c.evaluate(`(()=>{const el=__inkwave.hud.turfEl,s=getComputedStyle(el.querySelector('i'));return {phase:el.getAttribute('data-iw-repeat-tick'),name:s.animationName,duration:s.animationDuration,easing:s.animationTimingFunction,tick:el.classList.contains('is-tick'),score:__inkwave.hud.turfNum.textContent};})()`);
+   const a=report.turfAnimation;
+   if(!a.tick||!['a','b'].includes(a.phase)||a.name!==(a.phase==='b'?'iw-turf-tick-repeat':'iw-turf-tick')||a.duration!=='0.35s')throw Error('手机Boss涂地弹分等价重播未实际生效');
+  }
   if(process.env.BOSS_REQUIRE_HUD_DECOR==='1'&&report.methodProbe&&sample.state==='playing'&&sample.activeMs>=5000&&!report.hudDecorStyles){
    report.hudDecorStyles=await c.evaluate(`(()=>{const root=__inkwave.hud.el,selectors=['.iw-sp__wave','.iw-sp__wave2','.iw-sp__bub','.iw-timer__drip','.iw-bb__embsplat','.iw-bb__stripes'];return {active:root.matches('.iw-hud.is-boss.iw-mobile-boss-decor'),decorations:[...root.querySelectorAll('.iw-sq:not(.is-self) .iw-sq__you')].map(el=>({name:getComputedStyle(el).animationName})),visible:selectors.flatMap(selector=>[...root.querySelectorAll(selector)].map(el=>({selector,name:getComputedStyle(el).animationName}))),self:getComputedStyle(root.querySelector('.iw-sq.is-self .iw-sq__you')).animationName};})()`);
    if(!report.hudDecorStyles.active||report.hudDecorStyles.decorations.length!==7||report.hudDecorStyles.decorations.some(x=>x.name!=='none')||report.hudDecorStyles.visible.length!==8||report.hudDecorStyles.visible.some(x=>x.name==='none')||report.hudDecorStyles.self!=='iw-you')throw Error('不可见箭头清理或可见装饰恢复未生效');

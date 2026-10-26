@@ -92,6 +92,7 @@
 .iw-mobile .iw-hit.is-heavy.is-on[data-iw-repeat-on="b"]::after,
 .iw-mobile .iw-hit.is-weak.is-on[data-iw-repeat-on="b"]::after { animation-name: iw-hit-ring-repeat; }
 .iw-mobile .iw-ret.is-hitflash[data-iw-repeat-hitflash="b"] { animation-name: iw-ret-hit-repeat; }
+.iw-mobile .iw-turf.is-tick[data-iw-repeat-tick="b"] i { animation-name: iw-turf-tick-repeat; }
 @keyframes iw-bb-flash-repeat { 0% { opacity: .55; } 100% { opacity: 0; } }
 @keyframes iw-bb-pct-repeat { 0% { scale: 1.12; } }
 @keyframes iw-bb-weakring-repeat { 0% { box-shadow: inset 0 0 0 3px var(--gold), 0 0 calc(var(--u) * 1.2) var(--weak); } }
@@ -100,3 +101,5 @@
 @keyframes iw-hit-repeat { 0% { opacity: 1; transform: translateY(calc(-10px - var(--hn, 0) * 1px)) scale(1.3); } 100% { opacity: 0; transform: translateY(calc(-18px - var(--hn, 0) * 2px)) scale(1); } }
 @keyframes iw-hit-ring-repeat { 0% { opacity: .95; scale: .55; } 100% { opacity: 0; scale: 1.45; border-width: 1px; } }
 @keyframes iw-ret-hit-repeat { 0% { color: #fff; filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 1px #000); scale: 1.12; } }
+/* 与原iw-turf-tick逐项相同；仅Boss helper切换属性，PC和普通模式沿用原重播。 */
+@keyframes iw-turf-tick-repeat { 0% { scale: 1.5; rotate: -12deg; } }

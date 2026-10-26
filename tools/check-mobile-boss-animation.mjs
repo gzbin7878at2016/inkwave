@@ -20,7 +20,7 @@ try {
     const keyframes = new Map();
     for (const sheet of document.styleSheets) for (const rule of sheet.cssRules) if (rule.type === CSSRule.KEYFRAMES_RULE) keyframes.set(rule.name, [...rule.cssRules].map(r => r.cssText).join(''));
     const aliases = [...keyframes.keys()].filter(n => n.endsWith('-repeat'));
-    check(aliases.length === 8, '关键帧副本数不符');
+    check(aliases.length === 9, '关键帧副本数不符');
     for (const name of aliases) check(keyframes.get(name) === keyframes.get(name.slice(0, -7)), `关键帧不等价：${name}`);
     globalThis.inkwaveMobile = true; G.match = { boss: {} }; G.mode = 'match'; document.documentElement.classList.add('iw-mobile');
     const configs = [
@@ -31,6 +31,7 @@ try {
       ['iw-hit is-heavy', 'is-on', '<i></i>', 'i'],
       ['iw-hit is-weak', 'is-on', '<i></i>', 'i'],
       ['iw-ret', 'is-hitflash', '', null],
+      ['iw-turf', 'is-tick', '<i></i>', 'i'],
     ];
     let reads = 0; const cases = [];
     for (const [base, cls, html, selector] of configs) {
@@ -64,7 +65,25 @@ try {
       check(reads - before === (mobile && boss ? 0 : 1), '实际Boss血量方法隔离失败');
     }
     check(!restartMobileBossAnimation(bar, 'is-intro'), '低频/未经映射动画不应替换');
-    return { aliases, cases, mobileOffsetReads: 0, originalFallbackReads: reads, checks: '8份关键帧逐项等价、7组重播及同帧合并、时长曲线/重击环保持、实际Boss hp与PC/普通路径隔离通过' };
+    // 从真实涂地弹分入口验证：分数气泡/上限/动画结束清理仍由原代码执行。
+    const turf = document.createElement('div'), pops = document.createElement('div');
+    turf.className = 'iw-turf'; turf.innerHTML = '<i></i>'; document.body.append(turf, pops);
+    Object.defineProperty(turf, 'offsetWidth', { get() { reads++; return 100; } });
+    const hud = { turfEl: turf, tpops: pops, _restart: HUD.prototype._restart };
+    const turfReads = [];
+    for (const [mobile, boss] of [[false, true], [true, false], [true, true]]) {
+      globalThis.inkwaveMobile = mobile; G.match = { boss: boss ? {} : null };
+      const before = reads;
+      for (let n = 25; n < 30; n++) HUD.prototype._turfPop.call(hud, n);
+      await Promise.resolve();
+      check(pops.children.length === 4 && pops.lastChild.textContent === '+29p' && pops.lastChild.classList.contains('is-big'), '涂地弹分内容/上限改变');
+      check(reads - before === (mobile && boss ? 0 : 5), '涂地真实入口PC/普通/Boss隔离失败');
+      turfReads.push(reads - before);
+    }
+    const last = pops.lastChild; last.dispatchEvent(new Event('animationend'));
+    check(!last.parentNode && pops.children.length === 3, '涂地弹分动画结束未清理');
+    turf.remove(); pops.remove();
+    return { aliases, cases, turfReads, mobileOffsetReads: 0, originalFallbackReads: reads, checks: '9份关键帧等价、8组重播合并、原时长曲线/重击环、真实涂地弹分/上限/清理及PC普通路径隔离通过' };
   });
   await writeFile('releases/investigation/mobile-boss-animation-browser.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
