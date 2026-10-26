@@ -2,16 +2,16 @@
 
 ## 当前接续（2026-10-27，优先于历史版本说明）
 
-- 仅Android Boss；先稳定30再60，保持2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB在线常亮2，不并发操作CDP。所有测试进程已结束，游戏已关闭。
-- 已安装v1.0.45/code45，干净源码f153b62；见docs/android/BOSS-PERFORMANCE-test45.zh-CN.md。v44仅补诊断字段，上传日志scene.render.smaaEdges已核对真实RG16F/1556×740/附件16,16,0,0/frames1993/逻辑省4605760字节。真实UI USB201534-767389-92c6f686，见docs/android/BOSS-PERFORMANCE-test44.zh-CN.md。
-- v44无调查轮26.44778FPS；v43正式26.416/17.428FPS，低值保留，30未稳、60未开始。v43 RG16F保浮点精度/权重/HDR/全尺寸，72组接口/54组像素及安装目标对原RGBA16F参考手机差0；RG8手机max102拒绝。逻辑4.39MiB不当实测FPS/功耗。
-- 当前v45 APK releases/INKWAVE-android-test45-f153b62.apk，21,157,057字节，SHA256 17419a4afb84103a5cc405644fd6ab77ff88d48b592da2b55c19af370704557b；v2签名与396资产一致。实际方法轮27.77394FPS/40→45°C，Worker1001提交/1000应用回收、grid2/行3套、无回退、max2帧/121.3ms，退出恢复与USB205620-988949-b5b24018核对f153后关闭；方法不是正式成绩。
-- 新工具小地图Worker：420组真实原入口/Canvas/halo/owner/闪光一致，取消/异常/超时/预算/三请求/重建已验。手机副本Main显式有节省，但计算总CPU不降；playing20.024秒120帧72段全部同序、像素一致，Main190.7→58.2ms，年龄P95两帧/显示109.7ms、max176ms/>100ms八次；结算另有max2408ms，不能只看帧数。详见docs/android/BOSS-MINIMAP-WORKER.zh-CN.md，勿重复副本试验当产品成绩。
-- playing副本工具8da2cfe先提交后测试，方法整局25.22049FPS/44→47°C，USB203455-167635-5143a1e7核对219源码/退出恢复并关闭。原同步路径仍在产品；有额外同步原算法参考CPU，不是Worker实战收益。
-- v45方法已证明实际启用与退出释放；下一步无探针正式两局自然60游戏秒，全部Worker副本/比较/隔离flags为0，BOSS_REQUIRE_MINIMAP_WORKER=1、REQUIRE_LOG_EDGES=0（独立日志字段在正式落盘后核对）。每轮真实上传关闭，保留温度与低值；无正式收益撤回候选，30未稳/60未开始。
-- HUD all/bar/special/markers/map/top/controls/panel/crosshair、距离变量、原生装饰15Hz无明确Main收益，未产品化；见BOSS-MAIN-INVESTIGATION/BOSS-DOM-INVESTIGATION。实战CPU4/7策略1324.8/1651.2MHz曾打满，不把空闲921.6或热状态3当完整因果。SDK View.setRequestedFrameRate自API35，当前手机34不可用；无隐藏反射/虚假Surface/全局显示或性能改动。
-- 正式METHOD_PROBE=0，全部ablation/DOM/layer/marker/nativePaint/格式比较/生命周期/小地图benchmark及worker副本flags均0；REQUIRE_SMAA_EDGES/RASTER_HINTS/AUDIO_PARAM_DEDUPE/SMAA_CLEAR/LENS_PREPARATION=1，ANIMATION_CLOCK/MINIMAP_CACHE/LENS_DRAW=0。REQUIRE_LOG_EDGES仅上传时Boss仍active的v44诊断轮，退出菜单恢复后不要求active。
-- Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB。仅已验3秒短Trace/20秒native，本页PID绑定/严格CPU字段/完整buffer与切换一致。原始系统线程只留releases；保留用户Logs/、play.bat、start-game.bat。先中文commit/push fork，再干净构建/安装/60游戏秒正常操作，真实UI USB核对后关闭；结果独立中文提交。
+- 仅Android Boss；先稳定30再60，保持2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB在线常亮2，不并发操作CDP。所有构建/手机测试句柄已终止，游戏已关闭，无授权阻塞。
+- 当前安装v1.0.45/code45，干净功能源码f153b6224e021f05ed7f09ef77b28f5a1449ebee。读docs/android/BOSS-PERFORMANCE-test45.zh-CN.md：手机Boss加载期准备Worker、最多3请求、原0.15秒/3段/全分辨率/算法，主循环按序应用，3帧或250ms超限回原整图，暂停/背景/换色/force/重建/取消/旧局保护；grid/输出行回收。
+- 正式两局27.27766/27.34379FPS，1739/63.7518与1743/63.7439秒，P95 58.3/50.1、P99 66.7/75ms、>=100ms四/十一次，44→46/46→48°C，固定2倍/SMAA/8人、无方法/副本/隔离/Trace，shaderFailures0；30未稳/60未开始，不把与旧版阵容/温度不同的比较当严格因果证明。旧v43低值17.428保留。
+- 正式Worker提交/应用1017/1017与1015/1014（末段结算取消），grid2套/行3套，peak2，maxAge2帧/148.7和137.7ms，fallbacks0；结算inactive的fallbackFullDraws1是收尾整图。真实USB205901-671960-dacf71a1及210057-839155-48919c79内Worker字段/源码f153已核对并关闭。方法轮27.77394/40→45°C、退出恢复通过，USB205620-988949-b5b24018；方法非正式。
+- APK releases/INKWAVE-android-test45-f153b62.apk，21,157,057字节，SHA256 17419a4afb84103a5cc405644fd6ab77ff88d48b592da2b55c19af370704557b，v2证书201c792d…、396资产一致。84段真实update原像素/闪光/owner/时序、回退原公式、420组内核/Canvas、取消/异常/过期/新旧局/PC普通演示/资源与打包后Blob内核及移动+PC回归通过。
+- v43 RG16F保浮点精度/权重/HDR/全尺寸，72接口/54像素及安装目标对原RGBA16F参考手机差0；RG8手机max102拒绝。v44补上传smaaEdges字段。逻辑省4.39MiB不能当GPU实测内存/功耗或FPS。
+- 下一批验证仅手机Boss纯装饰HUD降载：保留触摸/准星/低墨/充能就绪/弱点/危险预警与有限受击反馈，优先非本人opacity0箭头和液体/气泡/水滴/条纹/装饰旋转；PC普通演示原动画。先状态/告警/隔离检查与中文提交推送，再干净构建正式对照，无效撤回。v45尚未改CSS，不重复原生steps或逐帧CSSAnimation枚举/暂停/seek（已证明负结果）。
+- 已做HUD all/bar/special/markers/map/top/controls/panel/crosshair、距离变量、原生装饰15Hz等调查无明确Main收益；见BOSS-MAIN-INVESTIGATION/BOSS-DOM-INVESTIGATION，不能把新装饰停止方案预先当有效。CPU4/7策略1324.8/1651.2MHz曾打满，SDK View.setRequestedFrameRate自API35而当前手机34不可用；不加隐藏反射/虚假Surface/全局显示或性能改动。
+- 正式METHOD_PROBE=0，所有ablation/DOM/layer/marker/nativePaint/格式比较/生命周期/minimapBenchmark及Worker副本flags均0；REQUIRE_MINIMAP_WORKER/SMAA_EDGES/RASTER_HINTS/AUDIO_PARAM_DEDUPE/SMAA_CLEAR/LENS_PREPARATION=1；ANIMATION_CLOCK/MINIMAP_CACHE/LENS_DRAW/REQUIRE_LOG_EDGES=0。正式结算上传手工核对Worker字段；方法verifyBossExit1则上传时新菜单地图无旧Worker信息。
+- Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB。仅已验3秒短Trace/20秒native，本页PID绑定/严格CPU字段/完整buffer与切换一致。系统线程原始只留releases，保留用户Logs/、play.bat、start-game.bat。基础检查后中文commit/push fork，再干净构建安装/60游戏秒正常输入/真实UI USB核对后关闭，结果独立中文提交。
 
 本规则适用于整个仓库。用户要求每批修改及时提交GitHub并逐批汇报。
 
