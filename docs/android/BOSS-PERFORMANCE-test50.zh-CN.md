@@ -27,3 +27,9 @@ v1.0.50/code50，源码6686333b01dedcfed193f9ddd8c31d5fb385b3a4，trackedChanges
 aapt2核对编译后application appCategory=0，game_mode_config两项allow均false，元数据引用存在；ADB覆盖安装成功。实际cmd game list-modes从v49 unsupported/[]变为v50 standard/[standard,custom]；原生getState实际applicationCategory=0、gameMode=1。dumpsys game仅显示无该包intervention，未提供可验证GAME Power HAL实际策略的字段，不能把分类当系统提升频率的证据。
 
 同ef0e0a1比较src目录Git内容无差异，游戏JS与PC源码保持。当前正在方法轮正常一分钟Boss与只读CPU策略采样，尚无正式帧率结论。
+
+## 一分钟方法轮与只读策略结果
+
+1687帧/66.5404秒=25.35302FPS，P95 58.4/P99 83.4ms、>=100ms8次，44→46°C；方法探针及30秒策略采样，不作正式成绩。实际158.60米、12475.91 Boss伤害/85弱点/一次大招，阶段[1,2]，三期未验。2倍/scale1/SMAA/8人保护通过；退出菜单及混响/后处理/Worker/窗口恢复通过。UI USB日志INKWAVE-logs-20261026-235902-004393-a1cb9ebe.json核对6686333，已关闭。
+
+只读CPU策略7样本，均绑定本轮app22740；CPU0/4/7上限仍1228800/1324800/1651200kHz，硬件上限1804800/2496000/2995200，温度44～45°C。分类识别成功，但没有观察到策略上限提高，不能将包分类修复包装成性能提升。接下来无探针正式轮，所有副本/遮蔽/旁路/策略采样为0。
