@@ -1,6 +1,7 @@
 // 真机Boss自动游玩：只操作输入，不改血量、人数、伤害、碰撞或模拟速度。
 import {androidCDP} from './android-cdp.mjs';
 import {createBossPlaybackDirector} from './boss-playback-director.mjs';
+import {runPhoneBossPropRanges} from './phone-prop-range-benchmark.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
 import {computeMinimapInkBand} from './minimap-band-kernel.mjs';
@@ -16,6 +17,8 @@ import {compareBossSmaaEdges} from './compare-boss-smaa-edges.mjs';
 import {RGFormat,UnsignedByteType,HalfFloatType} from 'three';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
+const propRangeBenchmark=process.env.BOSS_PROP_RANGE_BENCHMARK==='1';
+if(propRangeBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('区段副本仅允许一分钟方法轮自然结算后执行');
 const playbackMode=process.env.BOSS_PLAYBACK||'director';
 if(!['director','legacy'].includes(playbackMode))throw Error('BOSS_PLAYBACK只允许director/legacy');
 if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
@@ -414,6 +417,7 @@ try{
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
  if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
+ if(propRangeBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行区段副本');report.propRangeBenchmark=await runPhoneBossPropRanges(c);await save();}
  if(minimapWorkerBenchmark){
   if(!report.roundCompleted)throw Error('必须自然结算后才运行副本Worker实验');
   report.minimapWorkerBenchmark=[];

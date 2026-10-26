@@ -5,7 +5,7 @@ export function createBossPropRangeCandidate(T,sources,{renderer,cellSize=8,maxB
  if(!renderer||!Number.isFinite(cellSize)||cellSize<4||!Number.isFinite(maxBytes)||maxBytes<=0)throw Error('缺少渲染器或网格/预算无效');
  const gl=renderer.getContext(),ext=renderer.extensions.get('WEBGL_multi_draw');
  if(typeof ext?.multiDrawElementsWEBGL!=='function')throw Error('设备没有WEBGL_multi_draw，保留原绘制');
- const plans=new Map(),stats={active:false,disposed:false,triangles:0,chunks:0,runs:0,controlTypedBytes:0,geometryBytes:0,textureBytes:0,draws:0,nativeCalls:0,lastRanges:0};
+ const plans=new Map(),stats={active:false,disposed:false,triangles:0,chunks:0,runs:0,controlTypedBytes:0,geometryBytes:0,textureBytes:0,draws:0,nativeCalls:0,lastRanges:0,submittedTriangles:0,fallbacks:0};
  const original=renderer.renderBufferDirect,frustum=new T.Frustum(),vp=new T.Matrix4(),a=new T.Vector3(),b=new T.Vector3(),c=new T.Vector3(),zeroGroup={start:0,count:0};
  for(const source of sources){
   const g=source.geometry,p=g?.attributes.position,idx=g?.index;
@@ -31,7 +31,8 @@ export function createBossPropRangeCandidate(T,sources,{renderer,cellSize=8,maxB
  let culling=true;
  const hook=function(camera,scene,geometry,material,object,group){
   const p=plans.get(object);
-  if(!stats.active||stats.disposed||!p||group!=null||geometry!==p.g||material!==p.material||material.transparent||material.wireframe||scene?.overrideMaterial||geometry.drawRange.start!==0||geometry.drawRange.count!==Infinity||geometry.attributes.position!==p.p||geometry.index!==p.idx||p.p.version!==p.positionVersion||p.idx.version!==p.indexVersion||p.world.some((n,i)=>n!==object.matrixWorld.elements[i]))return original.call(this,camera,scene,geometry,material,object,group);
+  if(!stats.active||stats.disposed||!p)return original.call(this,camera,scene,geometry,material,object,group);
+  if(group!=null||geometry!==p.g||material!==p.material||material.transparent||material.wireframe||scene?.overrideMaterial||geometry.drawRange.start!==0||geometry.drawRange.count!==Infinity||geometry.attributes.position!==p.p||geometry.index!==p.idx||p.p.version!==p.positionVersion||p.idx.version!==p.indexVersion||p.world.some((n,i)=>n!==object.matrixWorld.elements[i])){stats.fallbacks++;return original.call(this,camera,scene,geometry,material,object,group);}
   let count=0,total=0;
   if(!culling){p.counts[0]=p.idx.count;p.offsets[0]=0;count=1;total=p.idx.count;}
   else{
@@ -48,7 +49,7 @@ export function createBossPropRangeCandidate(T,sources,{renderer,cellSize=8,maxB
   original.call(this,camera,scene,geometry,material,object,zeroGroup);
   ext.multiDrawElementsWEBGL(gl.TRIANGLES,p.counts,0,p.bpe===4?gl.UNSIGNED_INT:gl.UNSIGNED_SHORT,p.offsets,0,count);
   // 原零数量调用已计一次API调用；补上实际multiDraw，三角数按真正提交的索引累计。
-  renderer.info.render.calls++;renderer.info.render.triangles+=total/3;stats.nativeCalls++;
+  renderer.info.render.calls++;renderer.info.render.triangles+=total/3;stats.submittedTriangles+=total/3;stats.nativeCalls++;
  };
  renderer.renderBufferDirect=hook;
  return {stats,entries:[...plans.keys()].map(source=>({source})),setCullingEnabled(value){culling=!!value;},enable(){if(stats.disposed)throw Error('副本已释放');stats.active=true;},disable(){stats.active=false;},dispose(){if(stats.disposed)return;stats.active=false;stats.disposed=true;if(renderer.renderBufferDirect===hook)renderer.renderBufferDirect=original;plans.clear();}};

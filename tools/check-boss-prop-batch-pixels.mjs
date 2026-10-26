@@ -2,6 +2,8 @@
 import puppeteer from 'puppeteer-core';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolveBundledThree} from './resolve-bundled-three.mjs';
+import {benchmarkBossPropRanges} from './phone-prop-range-benchmark.mjs';
+import {createBossPropRangeCandidate} from './boss-prop-range-candidate.mjs';
 await mkdir('releases/investigation',{recursive:true});
 const browser=await puppeteer.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true,args:['--no-sandbox','--enable-unsafe-swiftshader'],protocolTimeout:240000});
 const report={status:'loading',performanceTest:false,productModified:false,errors:[]};
@@ -60,6 +62,10 @@ try{
  report.result.restored=true;
  const unstable=report.result.pixels.some(p=>p.referenceRepeat.max||p.referenceRepeatAfter.max||p.referenceAcross.max||p.candidateRepeat.max);
  report.status=unstable?'inconclusive':report.errors.length||report.result.pixels.some(p=>p.candidate.max)?'mismatch':'matched';
+ if(process.env.BOSS_PROP_PHONE_CORE==='1'){
+  report.phoneProbe=await page.evaluate(`(async()=>{const {three_module_exports:T}=await import(new URL(${JSON.stringify(report.threeModulePath)},location.href).href);return (${benchmarkBossPropRanges.toString()})(__inkwave,__G,T,(${createBossPropRangeCandidate.toString()}));})()`);
+  if(!report.phoneProbe.restored||report.phoneProbe.status!=='matched')throw Error('手机核心的桌面预检未通过');
+ }
  if(report.status!=='matched')process.exitCode=1;
 }catch(error){report.status='failed';report.error=String(error);process.exitCode=1;}
 finally{await browser.close();await writeFile('releases/investigation/boss-prop-batch-pixels.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));}
