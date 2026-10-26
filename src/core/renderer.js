@@ -27,6 +27,7 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { mobileViewport } from '../platform/mobileViewport.js';
+import { MobileSMAAPass } from '../platform/mobileSMAAPass.js';
 import { installMobileGpuSafety } from '../platform/mobileGpu.js';
 import { QUALITY } from '../config.js';
 import { G } from './ctx.js';
@@ -41,16 +42,6 @@ const MOBILE_VISUAL = Object.fromEntries(Object.entries({ battery: 1, clear: 1.5
 class MobileFXAAPass extends ShaderPass {
   constructor() { super(FXAAShader); }
   setSize(width, height) { this.uniforms.resolution.value.set(1 / Math.max(1, Math.floor(width)), 1 / Math.max(1, Math.floor(height))); }
-}
-
-// SMAA避免FXAA对整幅细节的软化；中间边缘/权重图同样按真实像素取整。
-class MobileSMAAPass extends SMAAPass {
-  constructor() {
-    super();
-    // 显式命名以便诊断回调识别失败阶段，不能依赖库内部未设置的material.name。
-    for (const stage of ['Edges', 'Weights', 'Blend']) this[`_material${stage}`].name = `SMAA${stage}Shader`;
-  }
-  setSize(width, height) { super.setSize(Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))); }
 }
 
 // 【自定义调色 shader】60 行 GLSL ≈ UE4 里 PostProcess Volume 一整个面板的手写等价物。
@@ -225,7 +216,7 @@ export class Renderer {
     // 本项目内置的SMAA在HDR线性颜色上工作，必须放在OutputPass之前。
     const mobileSMAA = this.mobileSafety && !this.samples && this.settings.mobileVisual !== 'battery' && this.mobileSafety.state.caps.floatColor && !this.mobileSafety.state.aaFailed;
     if (mobileSMAA) { this.mobileAA = new MobileSMAAPass(); comp.addPass(this.mobileAA); }
-    comp.addPass(new OutputPass());
+    this.outputPass = new OutputPass(); comp.addPass(this.outputPass);
     // SMAA stands in for MSAA where MSAA was skipped; it runs on the tone-mapped sRGB image
     // 手机无MSAA时使用一遍FXAA；有MSAA则沿用它，避免叠加多套抗锯齿成本。
     if (this.mobileSafety && !this.samples && !mobileSMAA) {
@@ -309,6 +300,23 @@ export class Renderer {
       const bl = gr.bloom || BLOOM;
       this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2];
     }
+    // 必须在Composer决定最后一个enabled pass之前切换；菜单/普通对局自动回原三阶段+Output。
+    if (this.mobileSafety) this.mobileAA?.syncBossOutput?.(G.match, G.mode);
     this.composer.render();
+  }
+
+  async prepareMobileBossOutput(match, { isCurrent = () => true, yieldTurn } = {}) {
+    const aa = this.mobileAA, output = this.outputPass;
+    if (!this.mobileSafety || !aa?.prepareBossOutput || !globalThis.inkwaveMobile || !match?.boss) return { skipped: true };
+    try {
+      return await aa.prepareBossOutput(this.renderer, match, output, {
+        isCurrent: () => isCurrent() && this.mobileAA === aa && this.outputPass === output, yieldTurn,
+      });
+    } catch (error) {
+      // 合并是可选加速；原SMAA和Output仍完整保留，失败不把无输出的半成品带入战斗。
+      aa.clearBossOutput(match);
+      globalThis.inkwaveDiagnostics?.record('mobile-boss-output-fallback', String(error), 'warn');
+      return { fallback: true, reason: String(error) };
+    }
   }
 }

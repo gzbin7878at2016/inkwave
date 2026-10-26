@@ -60,6 +60,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     () => G.audio?.prepareBossSample?.(name, { isCurrent: current,
       enabled: () => !!globalThis.inkwaveMobile && !!game.match?.boss && G.mode === 'match' }) || { skipped: true }, { sound: name }));
   add('准备手机Boss空间混响', () => prepareMobileBossReverb(game, match, { isCurrent: current }));
+  add('准备手机Boss抗锯齿输出', () => game.R.prepareMobileBossOutput?.(match, { isCurrent: current, yieldTurn: session.yieldNow }) || { skipped: true });
   add('准备Boss标题与字体', () => game.hud?.boss?.prepareIntro?.({ isCurrent: current }) || { skipped: true });
   const total = tasks.length;
   const trace = diagnostics && {
@@ -78,6 +79,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     if (!current()) cancelled = true;
     else { failed = true; throw error; }
   } finally {
+    if (cancelled || failed) game.R.mobileAA?.clearBossOutput?.(match);
     if (cancelled || failed) restoreMobileBossReverb(match);
     if (cancelled || failed) pool?.dispose();
     summary = session.finish({ total, cancelled, failed });

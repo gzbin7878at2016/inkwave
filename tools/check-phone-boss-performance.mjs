@@ -260,6 +260,7 @@ try{
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
+ report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
  report.simulationProbe=await c.evaluate('({stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
  report.pannerTransitions=await c.evaluate('window.__phonePerf.pannerTransitions||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
@@ -267,9 +268,10 @@ try{
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
-  report.bossExit=await c.evaluate(`(async()=>{await __inkwave.quitToMenu();const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
-   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize};})()`);
+  report.bossExit=await c.evaluate(`(async()=>{await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
+   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,fusion:__inkwave.R.mobileAA?.bossOutput};})()`);
   const e=report.bossExit;e.ok=e.mode==='menu'&&!e.boss&&e.info?.active===false&&e.info.restored===2&&e.sfxSeconds===1.5&&e.musicSeconds===2.2&&e.sfxNormalize&&e.musicNormalize;
+  if(report.postprocess.fusion?.enabled)e.ok=e.ok&&e.outputEnabled===true&&e.fusion?.enabled===false;
   if(!e.ok)throw Error('回菜单未完全恢复原混响');
  }
  // measured只代表采样完成；30分钟、原画质、移动/开火和尾部帧耗同时过门槛才标记稳定。
