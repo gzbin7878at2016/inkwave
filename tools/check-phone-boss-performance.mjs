@@ -3,6 +3,7 @@ import {androidCDP} from './android-cdp.mjs';
 import {createBossPlaybackDirector} from './boss-playback-director.mjs';
 import {runPhoneBossPropRanges} from './phone-prop-range-benchmark.mjs';
 import {runPhoneBossHiddenLod} from './phone-hidden-lod-benchmark.mjs';
+import {runPhoneBossRayQuery} from './phone-ray-query-benchmark.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
 import {computeMinimapInkBand} from './minimap-band-kernel.mjs';
@@ -20,6 +21,8 @@ const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_T
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 const propRangeBenchmark=process.env.BOSS_PROP_RANGE_BENCHMARK==='1';
 const hiddenLodBenchmark=process.env.BOSS_HIDDEN_LOD_BENCHMARK==='1';
+const rayQueryBenchmark=process.env.BOSS_RAY_QUERY_BENCHMARK==='1';
+if(rayQueryBenchmark&&(propRangeBenchmark||hiddenLodBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('射线副本须独占一分钟方法轮');
 if(hiddenLodBenchmark&&(propRangeBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('隐藏LOD副本须独占一分钟方法轮自然结算');
 if(propRangeBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('区段副本仅允许一分钟方法轮自然结算后执行');
 const playbackMode=process.env.BOSS_PLAYBACK||'director';
@@ -55,6 +58,7 @@ const compareSmaaClear=process.env.BOSS_COMPARE_SMAA_CLEAR==='1';
 const compareSmaaEdges=process.env.BOSS_COMPARE_SMAA_EDGES==='1';
 if(propRangeBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('区段副本须独占自然结算后的方法调查，不能混用其他旁路/比较');
 if(hiddenLodBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('隐藏LOD副本不能混用其他旁路或比较');
+if(rayQueryBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('射线副本不能混用其他旁路或比较');
 const edgeFormat=process.env.BOSS_EDGE_FORMAT||'rg8';if(!['rg8','rg16f'].includes(edgeFormat))throw Error('BOSS_EDGE_FORMAT只支持rg8/rg16f');
 if(compareSmaaEdges&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('SMAA边缘格式比较仅供结算后独立方法调查');
 if(minimapWorkerBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaEdges||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('Worker比较仅允许结算后独立一分钟方法轮');
@@ -187,6 +191,14 @@ try{
     aggregate(m,'update','match');
     for(const a of m.actors){aggregate(a,'update','actor',a.name);aggregate(a.bot,'update','bot',a.name);aggregate(a.character,'update','character',a.name);aggregate(a.weaponRunner,'update','weapon',a.name);}
     aggregate(m.bossMode,'update','bossMode');aggregate(__G.projectiles,'update','projectiles');aggregate(__G.specials,'update','specials');
+    if(${rayQueryBenchmark}){
+     const physics=__G.physics,original=physics.raycast;let calls=0;p.rayQueries=[];
+     // 每32次采一个、最多6000条，仅复制射线输入；不替换战斗中的求交或命中结果。
+     physics.raycast=function(o,d,max,out,skip){
+      if(p.match===g.match&&m.state==='playing'&&++calls%32===0&&p.rayQueries.length<6000)p.rayQueries.push([o.x,o.y,o.z,d.x,d.y,d.z,max,!!skip]);
+      return original.call(this,o,d,max,out,skip);
+     };restores.push(()=>physics.raycast=original);
+    }
    };
    const renderer=g.R.renderer,direct=renderer.renderBufferDirect;
    renderer.renderBufferDirect=function(...args){const before=this.info.programs.length;const result=direct.apply(this,args);
@@ -424,6 +436,7 @@ try{
  if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
  if(propRangeBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行区段副本');report.propRangeBenchmark=await runPhoneBossPropRanges(c);await save();}
  if(hiddenLodBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行隐藏LOD副本');report.hiddenLodBenchmark=await runPhoneBossHiddenLod(c);await save();}
+ if(rayQueryBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行射线副本');report.rayQueryBenchmark=await runPhoneBossRayQuery(c);await save();}
  if(minimapWorkerBenchmark){
   if(!report.roundCompleted)throw Error('必须自然结算后才运行副本Worker实验');
   report.minimapWorkerBenchmark=[];
