@@ -17,9 +17,60 @@ export class MobileSMAAPass extends SMAAPass {
     this._originalBlend = this._materialBlend;
     this.bossOutput = { ready: false, enabled: false };
     this.bossSmaaClear = { active: false };
+    this.bossEdges = { ready: false, active: false, frames: 0 };
     this._bossClearColor = new THREE.Color();
   }
   setSize(width, height) { super.setSize(Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))); }
+
+  // 只压缩手机Boss边缘缓冲的通道数；保留HalfFloat采样精度、权重/HDR与完整三阶段SMAA。
+  async prepareBossEdges(renderer, match, { isCurrent = () => true, yieldTurn = async () => {} } = {}) {
+    if (!globalThis.inkwaveMobile || !match?.boss || match.attract || !isCurrent()) return { skipped: true };
+    this.clearBossEdges();
+    const token = {}; this._edgeToken = token; this._edgeMatch = match;
+    const current = () => this._edgeToken === token && isCurrent();
+    try { await yieldTurn(); } catch (error) { if (this._edgeToken === token) this.clearBossEdges(match); throw error; }
+    if (!current()) { if (this._edgeToken === token) this.clearBossEdges(match); return { cancelled: true }; }
+    const rt = this._edgesRT, texture = rt.texture, gl = renderer.getContext();
+    if (gl.RG16F === undefined || texture.format !== THREE.RGBAFormat || texture.type !== THREE.HalfFloatType) {
+      this.clearBossEdges(match); return { skipped: true, reason: 'original-format-or-webgl2-unavailable' };
+    }
+    const saved = { target: renderer.getRenderTarget(), face: renderer.getActiveCubeFace(), mip: renderer.getActiveMipmapLevel(),
+      viewport: renderer.getViewport(new THREE.Vector4()), scissor: renderer.getScissor(new THREE.Vector4()), test: renderer.getScissorTest() };
+    let prepared = false;
+    try {
+      this._edgeFormatOriginal = { format: texture.format, type: texture.type, internalFormat: texture.internalFormat };
+      // 保留RenderTarget/Texture及uniform身份，在加载遮罩内重新分配并验证真实附件。
+      rt.dispose(); texture.format = THREE.RGFormat; texture.internalFormat = 'RG16F';
+      renderer.setRenderTarget(rt);
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) throw Error(`Boss SMAA RG16F framebuffer incomplete: ${status}`);
+      const bits = ['RED', 'GREEN', 'BLUE', 'ALPHA'].map(channel => gl.getFramebufferAttachmentParameter(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl[`FRAMEBUFFER_ATTACHMENT_${channel}_SIZE`]));
+      if (bits.join(',') !== '16,16,0,0') throw Error(`Boss SMAA RG16F attachment mismatch: ${bits}`);
+      if (!current()) return { cancelled: true };
+      this.bossEdges = { ready: true, active: true, frames: 0, format: 'RG16F', componentBits: bits, framebufferComplete: true };
+      prepared = true; return { prepared: true, ...this.bossEdgesInfo() };
+    } finally {
+      if (!prepared && this._edgeToken === token) this.clearBossEdges(match);
+      renderer.setRenderTarget(saved.target, saved.face, saved.mip); renderer.setViewport(saved.viewport); renderer.setScissor(saved.scissor); renderer.setScissorTest(saved.test);
+    }
+  }
+  syncBossEdges(match, mode) {
+    // 加载预检可能在menu/init；普通菜单、演示、旧局与PC立即恢复原格式。
+    if (this.bossEdges.ready && globalThis.inkwaveMobile && match === this._edgeMatch && match?.boss && !match.attract && (mode === 'match' || match.state === 'init')) return true;
+    this.clearBossEdges(); return false;
+  }
+  clearBossEdges(match) {
+    if (match && match !== this._edgeMatch) return;
+    this._edgeToken = null; this._edgeMatch = null;
+    if (this._edgeFormatOriginal) { this._edgesRT.dispose(); Object.assign(this._edgesRT.texture, this._edgeFormatOriginal); this._edgeFormatOriginal = null; }
+    this.bossEdges = { ready: false, active: false, frames: 0 };
+  }
+  bossEdgesInfo() {
+    const { width, height } = this._edgesRT;
+    return { ...this.bossEdges, width, height, formatCode: this._edgesRT.texture.format, typeCode: this._edgesRT.texture.type,
+      logicalColorBytes: width * height * (this.bossEdges.active ? 4 : 8), logicalSavedBytes: this.bossEdges.active ? width * height * 4 : 0,
+      weightsType: this._weightsRT.texture.type, weightsFormat: this._weightsRT.texture.format };
+  }
 
   _makeOutputMaterial() {
     const assignment = 'gl_FragColor = texture2D( tDiffuse, vUv );';
@@ -92,6 +143,7 @@ export class MobileSMAAPass extends SMAAPass {
     this.disableBossOutput(); this._bossMatch = null; this.bossOutput.ready = false;
   }
   render(renderer, ...args) {
+    if (this.bossEdges.active) this.bossEdges.frames++;
     if (this.bossOutput.enabled) this._syncOutput(renderer);
     if (!this.bossSmaaClear.active) { super.render(renderer, ...args); return; }
     // 边缘shader会discard无边缘像素，必须清零；天空色不能留在边缘纹理中冒充边缘。
@@ -111,6 +163,7 @@ export class MobileSMAAPass extends SMAAPass {
     return this.bossSmaaClear.active;
   }
   dispose() {
+    this.clearBossEdges();
     this.bossSmaaClear.active = false;
     this.disableBossOutput(); this._bossMatch = null;
     this._fused?.dispose(); this._fused = null; super.dispose();

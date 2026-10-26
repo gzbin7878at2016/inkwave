@@ -338,7 +338,8 @@ try{
  report.animationClock=await c.evaluate('__inkwave.mobile.bossAnimationClock?.info()||null');
  if(process.env.BOSS_REQUIRE_ANIMATION_CLOCK==='1'&&(!report.animationClock?.captured||!report.animationClock.frames||report.animationClock.tracked||report.animationClock.active))throw Error('HUD动画未实际采样或自然结束后未恢复');
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
- report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear||null,edgeType:__inkwave.R.mobileAA?._edgesRT.texture.type,weightsType:__inkwave.R.mobileAA?._weightsRT.texture.type,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
+ report.postprocess=await c.evaluate('({edges:__inkwave.R.mobileAA?.bossEdgesInfo?.()||null,fusion:__inkwave.R.mobileAA?.bossOutput||null,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear||null,edgeType:__inkwave.R.mobileAA?._edgesRT.texture.type,weightsType:__inkwave.R.mobileAA?._weightsRT.texture.type,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
+ if(process.env.BOSS_REQUIRE_SMAA_EDGES==='1'&&(!report.postprocess.edges?.active||report.postprocess.edges.format!=='RG16F'||report.postprocess.edges.frames<report.summary.frames*.9||report.postprocess.edges.typeCode!==1016||report.postprocess.edges.weightsType!==1016))throw Error('Boss RG16F边缘缓冲未在整局实际使用');
  if(process.env.BOSS_REQUIRE_SMAA_CLEAR==='1'&&!report.postprocess.smaaClear?.active)throw Error('本批Boss SMAA清零修复未实际启用');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
  report.lensInk=await c.evaluate('({preparation:__inkwave._bossLensPreparation||null,programId:__G.renderer.properties.get(__inkwave.screenfx.lens.mat).currentProgram?.id,draws:__phonePerf.lensDraws||0,firstDraw:__phonePerf.firstLensDraw||null})');
@@ -356,10 +357,11 @@ try{
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
   report.bossExit=await c.evaluate(`(async()=>{const oldMap=__inkwave.minimap;await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);
-   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,fusion:__inkwave.R.mobileAA?.bossOutput,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear,minimapInk:__inkwave.minimap.bossInkInfo?.()||null,oldMinimapInk:oldMap.bossInkInfo?.()||null};})()`);
+   return {mode:__G.mode,boss:!!__inkwave.match?.boss,info:a._bossReverbInfo,sfxSeconds:a.conv.buffer.duration,musicSeconds:c.buffer.duration,sfxNormalize:a.conv.normalize,musicNormalize:c.normalize,outputEnabled:__inkwave.R.outputPass?.enabled,edges:__inkwave.R.mobileAA?.bossEdgesInfo?.()||null,fusion:__inkwave.R.mobileAA?.bossOutput,smaaClear:__inkwave.R.mobileAA?.bossSmaaClear,minimapInk:__inkwave.minimap.bossInkInfo?.()||null,oldMinimapInk:oldMap.bossInkInfo?.()||null};})()`);
   const e=report.bossExit;e.ok=e.mode==='menu'&&!e.boss&&e.info?.active===false&&e.info.restored===2&&e.sfxSeconds===1.5&&e.musicSeconds===2.2&&e.sfxNormalize&&e.musicNormalize;
   if(report.postprocess.fusion?.enabled)e.ok=e.ok&&e.outputEnabled===true&&e.fusion?.enabled===false;
   if(report.postprocess.smaaClear?.active)e.ok=e.ok&&e.smaaClear?.active===false;
+  if(report.postprocess.edges?.active)e.ok=e.ok&&!e.edges?.active&&e.edges?.formatCode===1023&&e.edges?.typeCode===1016;
   if(report.minimapInk?.active)e.ok=e.ok&&e.minimapInk===null&&e.oldMinimapInk===null;
   if(report.displayBeforeBoss){e.display=await c.evaluate('inkwaveMobile.BossDisplay.getState()');e.ok=e.ok&&!e.display.owned&&e.display.preferredDisplayModeId===report.displayBeforeBoss.preferredDisplayModeId&&Math.abs(e.display.preferredRefreshRate-report.displayBeforeBoss.preferredRefreshRate)<.01;}
   if(!e.ok)throw Error('回菜单未完全恢复原混响');

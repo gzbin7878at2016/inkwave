@@ -65,6 +65,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
   // 真机同图对照未证明小地图像素缓存有收益，保留原计算路径；实验工具独立验证候选。
   add('准备Boss镜头墨水', () => prepareMobileBossLens(game, match, { isCurrent: current, yieldTurn: session.yieldNow }));
   add('准备手机Boss抗锯齿输出', () => game.R.prepareMobileBossOutput?.(match, { isCurrent: current, yieldTurn: session.yieldNow }) || { skipped: true });
+  add('准备Boss抗锯齿浮点边缘缓冲', () => game.R.prepareMobileBossEdges?.(match, { isCurrent: current, yieldTurn: session.yieldNow }) || { skipped: true });
   add('准备Boss标题与字体', () => game.hud?.boss?.prepareIntro?.({ isCurrent: current }) || { skipped: true });
   const total = tasks.length;
   const trace = diagnostics && {
@@ -84,6 +85,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     else { failed = true; throw error; }
   } finally {
     if (cancelled || failed) clearMobileBossMinimapInkForMatch(match);
+    if (cancelled || failed) game.R.mobileAA?.clearBossEdges?.(match);
     if (cancelled || failed) game.R.mobileAA?.clearBossOutput?.(match);
     if (cancelled || failed) restoreMobileBossReverb(match);
     if (cancelled || failed) pool?.dispose();

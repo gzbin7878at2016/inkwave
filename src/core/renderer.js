@@ -301,10 +301,20 @@ export class Renderer {
       this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2];
     }
     // 必须在Composer决定最后一个enabled pass之前切换；菜单/普通对局自动回原三阶段+Output。
-    if (this.mobileSafety) { this.mobileAA?.syncBossSmaaClear?.(G.match, G.mode); this.mobileAA?.syncBossOutput?.(G.match, G.mode); }
+    if (this.mobileSafety) { this.mobileAA?.syncBossEdges?.(G.match, G.mode); this.mobileAA?.syncBossSmaaClear?.(G.match, G.mode); this.mobileAA?.syncBossOutput?.(G.match, G.mode); }
     this.composer.render();
   }
 
+  async prepareMobileBossEdges(match, { isCurrent = () => true, yieldTurn } = {}) {
+    const aa = this.mobileAA;
+    if (!this.mobileSafety || !aa?.prepareBossEdges || !globalThis.inkwaveMobile || !match?.boss) return { skipped: true };
+    try { return await aa.prepareBossEdges(this.renderer, match, { isCurrent: () => isCurrent() && this.mobileAA === aa, yieldTurn }); }
+    catch (error) {
+      aa.clearBossEdges(match);
+      globalThis.inkwaveDiagnostics?.record('mobile-boss-edges-fallback', String(error), 'warn');
+      return { fallback: true, reason: String(error) };
+    }
+  }
   async prepareMobileBossOutput(match, { isCurrent = () => true, yieldTurn } = {}) {
     const aa = this.mobileAA, output = this.outputPass;
     if (!this.mobileSafety || !aa?.prepareBossOutput || !globalThis.inkwaveMobile || !match?.boss) return { skipped: true };
