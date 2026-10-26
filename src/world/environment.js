@@ -1807,7 +1807,10 @@ export class Environment {
   // 【云烘焙管线搭建】离屏 RT(2048×640,半浮点,u 方向循环)→ 全屏三角 + 云烘焙着色器 +
   // 正交相机;烘出的方向纹理同时被天空片元与海面的天空反射采样。
   _initCloudBake() {
-    this._cloudRT = new THREE.WebGLRenderTarget(CLOUD_W, CLOUD_H, {
+    // 手机只降低离屏云纹理工作量，不降低游戏画面2倍密度；PC保留原2048×640。
+    // 启动对照诊断发现完整环境烘焙可造成长GPU等待，先以单变量缩小此负载验证重置触发条件。
+    const width = globalThis.inkwaveMobile ? 512 : CLOUD_W, height = globalThis.inkwaveMobile ? 160 : CLOUD_H;
+    this._cloudRT = new THREE.WebGLRenderTarget(width, height, {
       type: THREE.HalfFloatType, format: THREE.RGBAFormat, colorSpace: THREE.NoColorSpace,
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false,
       wrapS: THREE.RepeatWrapping, wrapT: THREE.ClampToEdgeWrapping, depthBuffer: false, stencilBuffer: false,
@@ -1815,7 +1818,7 @@ export class Environment {
     this.U.uCloudTex.value = this._cloudRT.texture;
     this._cloudMat = new THREE.ShaderMaterial({
       name: 'CloudBake', vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }', fragmentShader: CLOUD_BAKE_FRAG,
-      uniforms: { ...this.U, uRes: { value: new THREE.Vector2(CLOUD_W, CLOUD_H) }, uSunCol: { value: new THREE.Color() }, uSeed: { value: 3.0 }, uCov: { value: 0.46 } },
+      uniforms: { ...this.U, uRes: { value: new THREE.Vector2(width, height) }, uSunCol: { value: new THREE.Color() }, uSeed: { value: 3.0 }, uCov: { value: 0.46 } },
       depthTest: false, depthWrite: false, toneMapped: false,
     });
     const g = new THREE.BufferGeometry();
@@ -1838,10 +1841,10 @@ export class Environment {
     const rt = this._cloudRT;
     r.setRenderTarget(rt);
     r.setClearColor(0x000000, 0); r.clear(true, false, false);
-    const strips = 10, h = Math.ceil(CLOUD_H / strips);
+    const width = rt.width, height = rt.height, strips = 10, h = Math.ceil(height / strips);
     rt.scissorTest = true;
     for (let i = 0; i < strips; i++) {
-      rt.scissor.set(0, i * h, CLOUD_W, Math.min(h, CLOUD_H - i * h));
+      rt.scissor.set(0, i * h, width, Math.min(h, height - i * h));
       r.setRenderTarget(rt);
       r.render(this._cloudScene, this._cloudCam);
     }

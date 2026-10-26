@@ -42,3 +42,9 @@ node tools/check-phone-graphics.mjs
 - 最小图形页最终连续3次通过，3张USB截图正常；前面的目标URL/PID采集失败不参与此判定。
 - 普通启动对照首轮先出现SharedContextState context lost / GL_UNKNOWN_CONTEXT_RESET_KHR，后出现Adreno IOCTL_KGSL_GPU_COMMAND errno35 Resource deadlock、EGL_BAD_PARAMETER和SharedImage错误；后续也出现异常。故“shader链接失败/进度闪烁”并非最早错误。
 - 下一实验用node tools/check-phone-environment.mjs，分别ENV_PROBE_MODE=skip-cloud和full。在最小页同一个WebGL上下文中只创建Environment，逐步记录云烘焙、PMREM反射、远景反射开始/结束；诊断专用gl.finish把GPU工作归属到步骤，不用于正常游戏或性能评分。每次采集当前应用PID原生日志，保存后关闭。先提交工具，再执行，不能提前认定某一步为根因。
+
+## v17单变量对照（未验证）
+
+独立Environment在skip-cloud和full两种实验均未直接触发GPU重置，故没有证据证明云shader本身一定错误。但full实验原生日志出现约1649ms的GPU/窗口等待，普通启动同类等待约2022ms后发生上下文重置，值得验证组合负载峰值。
+
+本批只把手机离屏云烘焙2048×640改为512×160（像素工作量1/16），半浮点格式、shader、环境反射尺寸、2倍画面/SMAA/人数保持；分条坐标改为读取真实目标尺寸，PC仍2048×640且原计算一致。此为单变量负载对照，提交后构建并跑普通入口3次冷启动，未取得结果前不称根因已确认或已修复。若仍重置，继续其他候选，不能用提示窗替代修复。
