@@ -42,8 +42,9 @@ try {
  if(!ready)throw Error('没有运行带探针的Boss实战');
  const available=(await call('Tracing.getCategories')).categories;
  report.availableRenderingCategories=available.filter(c=>/gpu|skia|viz|^cc/.test(c));
- const categories=['devtools.timeline','disabled-by-default-devtools.timeline','blink.user_timing','v8','gpu'];
- if(rendering)for(const name of ['cc','viz','skia','disabled-by-default-skia','disabled-by-default-skia.gpu'])if(available.includes(name))categories.push(name);
+ // 详细Skia逐命令事件12秒超过256MiB；先定位合成/栅格阶段，不能一次开启所有细类。
+ const categories=rendering?['blink.user_timing','gpu']:['devtools.timeline','disabled-by-default-devtools.timeline','blink.user_timing','v8','gpu'];
+ if(rendering)for(const name of ['cc','viz','skia'])if(available.includes(name))categories.push(name);
  report.categories=categories;
  const params={categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:rendering?'ReturnAsStream':'ReportEvents'};
  if(rendering){
