@@ -19,7 +19,7 @@ const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
 const verifyDisplayLifecycle=process.env.BOSS_VERIFY_DISPLAY_LIFECYCLE==='1';
 const domAblation=process.env.BOSS_DOM_ABLATION==='1';
 const domPart=process.env.BOSS_DOM_PART||'all';
-if(!['all','bar','special','markers','map'].includes(domPart))throw Error('BOSS_DOM_PART须为all/bar/special/markers/map');
+if(!['all','bar','special','markers','map','top'].includes(domPart))throw Error('BOSS_DOM_PART须为all/bar/special/markers/map/top');
 if(domAblation&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyBossExit||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_COMPARE_SMAA_CLEAR==='1'||process.env.BOSS_MINIMAP_BENCHMARK==='1'))throw Error('DOM隔离仅允许独占一分钟方法调查，不能作正式成绩或混用其他旁路');
 if(verifyDisplayLifecycle&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||!verifyBossExit||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('显示生命周期仅允许一分钟独立方法调查，并验证正常退出');
 const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
