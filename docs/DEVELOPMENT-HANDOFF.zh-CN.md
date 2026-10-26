@@ -1,36 +1,30 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
-2026-10-27 03:23最新：产品仍安装v42/干净功能源码f7bd686，游戏关闭；30未稳、60未开始，正式18.341/18.013仍为失败结果。读docs/android/BOSS-MAIN-INVESTIGATION.zh-CN.md。已完成空闲/实战只读CPU策略：实战0/4/7上限1228.8/1324.8/1651.2MHz，4/7多次打满上限，硬件1804.8/2496/2995.2，不能用空闲921.6代表实战或全归因热。新V8 30秒25539样本/program11.54s、_drawInk842.6ms；3秒Timeline样式342.58ms CPU、Layerize142.16。距离变量4945次拦截样式343→388ms无收益，不产品化；原生循环装饰15Hz只设置全局steps、保留关键帧与时钟、无逐帧枚举，手机8次接管0错、6个存活动画恢复，但样式304→290ms/Main2660→2712ms且负载不同，收益不足，不产品化。两个工具仅tools/独立方法，APK不含，正式不能开启BOSS_MARKER_VAR_PROBE/BOSS_NATIVE_PAINT_PROBE。三局方法25.322/23.457/26.183不作成绩，实际UI USB191357-788467-e86bf78b/191733-083655-8a8a00f5/192301-348242-301f843b均核对f7源码并关闭。下一步补controls/panel/crosshair+墨量条独立DOM/native覆盖：全DOM原包含这几块，但前面bar/special/markers/map/top未覆盖，不能推断全HUD原因已定位。先新增枚举/范围测试中文提交推送，再60秒调查/同存活近似负载native对照，不隐藏交付。静态props paint/gloss约436k三角形且multi_draw支持是后备，v35隐藏props无提帧，先不盲改批次。保持2倍/SMAA/8人/音频/物理AI子步/PC；正式所有调查标志0/REQUIRE_RASTER_HINTS=1、AUDIO_PARAM_DEDUPE=1、SMAA_CLEAR=1、ANIMATION_CLOCK=0。先中文commit/push再干净构建，每局60游戏秒上传关闭；目标active/id=boss，USB在线常亮2，不并发CDP，无授权阻塞。
+## 当前接续（2026-10-27，优先于历史版本说明）
 
+- 仅Android Boss；先稳定30再60，保持2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB在线常亮2，不并发操作CDP。
+- 已安装v1.0.43/code43，干净功能源码e7e8329，当前游戏关闭。读docs/android/BOSS-PERFORMANCE-test43.zh-CN.md：RG16F仅省边缘未用通道，保留浮点精度、权重/HDR/全尺寸；失败/取消/离场恢复RGBA16F，72组接口/54组像素、手机实际目标对原参考均字节差0。
+- 正式无探针26.416/17.428FPS，45→48/47→48°C；**30未稳，60未开始，未证明正式提帧收益**。所有自然60游戏秒、真实UI USB核对源码后关闭；不能用方法/遮蔽/格式比较或4.39MiB逻辑省量当成绩。
+- APK releases/INKWAVE-android-test43-e7e8329.apk，21,148,049字节，SHA256 8a59014670726e12bebfa15a7e26d063f5a5090c21084c867e97a944da3cfc67；v2签名与390资产一致。RG8手机max差102已拒绝；RG16F安装目标与RGBA16F参考差0，161397非空边缘全二值、权重/目标恢复，USB200752-803967-3329cc3d。
+- 已完成HUD all/bar/special/markers/map/top/controls/panel/crosshair隔离；变量本地化、原生装饰15Hz无明确收益，未产品化。详见BOSS-MAIN-INVESTIGATION.zh-CN.md/BOSS-DOM-INVESTIGATION.zh-CN.md，勿重复负结果。实战CPU4/7策略1324.8/1651.2MHz且曾打满；不能把空闲921.6或热状态3单独当因果。
+- 下一批先补上传诊断的边缘格式/逻辑字节（只读对象，不加帧内GL查询），再做小地图像素计算Worker离线实验：原算法/像素/owner闪光一致、消息/复制成本和取消回退先验；只在主循环消费，不额外触发UI重绘。有收益才产品化，不删子步或降低分辨率/人数。
+- 正式METHOD_PROBE=0；GPU/CPU/UI/DOM/音频旁路、BOSS_LAYER_HINTS、BOSS_MARKER_VAR_PROBE、BOSS_NATIVE_PAINT_PROBE、COMPARE_SMAA_CLEAR/EDGES、生命周期/小地图benchmark均0。REQUIRE_SMAA_EDGES=1、RASTER_HINTS=1、AUDIO_PARAM_DEDUPE=1、SMAA_CLEAR=1、LENS_PREPARATION=1，ANIMATION_CLOCK/MINIMAP_CACHE=0。先中文commit/push用户fork，再干净构建安装测试，结论独立中文提交。
+- Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB。只用已验证3秒短Trace或独立20秒native，本页标记绑定PID、严格CPU字段正则、buffer完整/切换一致0。原始含系统线程只留本地releases，不入Git；保留用户Logs/、play.bat、start-game.bat。
 
-2026-10-27 03:05最新优先：仅手机Boss，当前安装v42/干净功能源码f7bd686，游戏已关闭。读docs/android/BOSS-PERFORMANCE-test42.zh-CN.md末节。标签will-change候选已产品化，仅手机真实Boss playing，PC/普通/演示/暂停/后台/准备/离场清理；helper脏检查，无逐帧布局读取。手机像素远/中完全一致、远→近7/185900像素微差；临时同局Trace标签RasterTask433→8、EndRaster CPU984→578ms；无详细Trace native GPU服务67.224→46.886%，Main89.456→91.261%未改善。v42方法27.177含死亡不作成绩；正式无探针18.341/18.013FPS，47/48→49°C，低于v41旧正式25.535/26.556，未证明提帧且30未稳/60未开始。全部真实UI USB190026-837434-163b9b16/190254-677890-207f695c/190530-554466-3f014937核对f7源码并关闭。功能提交f7bd686已推送后干净构建安装，APK21,146,553字节/SHA256 a6d5a9eeaf5eb595a0d55652a7fba0232a4c7847e7b91467bde9c1d3114aec8d/v2签名/390资产一致。当前49°C自然降温，下一步同温v41/v42或同源开关对照和新30秒V8/原生Main采样，不能凭热状态3断言因果（skin45.595、cooling CPU0）。保持2倍/SMAA/8人/玩法/PC，不跳物理或AI子步；角色视觉5.14秒整局是线索但武器socket/脚步/事件依赖未审。Trace仅3秒blink.user_timing/gpu/cc/viz/skia，禁json/protocol/详细Skia12秒；BOSS_TRACE_START_SECONDS边界前DOM映射耗时数秒，不直接当标记起点。native layers种类支持，分析脚本旧hidden-dom标签实际为提示且从未隐藏HUD。正式METHOD_PROBE=0/所有旁路/临时BOSS_LAYER_HINTS=0/REQUIRE_RASTER_HINTS=1、AUDIO_PARAM_DEDUPE=1、SMAA_CLEAR=1、ANIMATION_CLOCK=0；每批中文commit/push再构建测试，每局60游戏秒上传核对关闭。目标active/id=boss、USB在线常亮2、不并发CDP，无授权阻塞。
-
-
-2026-10-27更新优先：仅Android Boss，当前安装v41/干净功能源码252fcda，游戏已关闭。功能不变，正式25.535/26.556FPS，30未稳、60未开始。渲染采集修复ff9e7c9/81bb851已推送：禁止访问WebView /json/protocol（同时间原生SIGTRAP），菜单ReturnAsStream验证通过；详细Skia12秒超过256MiB，不再重复。改blink.user_timing/gpu/cc/viz/skia仅3秒后正常13.16MB/71444事件、无丢失/截断，GPU服务EndRaster1615次CPU1056.53ms，标签层重复RasterTask，线程CPU非GPU硬件耗时。读BOSS-DOM-INVESTIGATION末节；同局后期LayerTree映射有时间差，不强行归属销毁层。完整HUD方法25.183FPS，45～49秒死亡混杂，不作成绩；自然结束/退出恢复/USB184757-292836-b05acf7b核对/关闭完成。下一步独立Boss完整HUD临时will-change提示，先同步图层/同阶段Trace及清晰度内存对照，有益才产品化，不恢复逐帧CSSAnimation失败方案。保持2倍/SMAA/8人/音频玩法/PC；每批基础检查中文commit/push再干净构建/测试，60游戏秒上传关闭。USB常亮2，目标active，id=boss，不并发CDP，无授权阻塞。
-
-
-2026-10-27当前接续（优先于下方历史）：当前安装v1.0.41/干净功能源码252fcda，游戏关闭，源代码本轮未改。30未稳定、60未开始，正式仍25.535/26.556FPS；音频去重约31～33%事件但CPU未显著下降。读docs/android/BOSS-DOM-INVESTIGATION.zh-CN.md末节。已独立60秒DOM+同局20秒native：整体隐藏时Main82.63→70.68%、GPU主机58.42→14.63%、Compositor40.55→9.02%；单独marker Main86.73→85.34/GPU60.20→47.06，top Main90.91→87.83/GPU66.63→51.60但窗口死亡且绘制调用99→49，不能独立归因；map/bar/special都未明显释放Main。动画与transition暂停12～18vs恢复22～25：Main81.64→88.27、Compositor23.09→41.17，GPU51.95→56.02，不能全归因无限循环。每轮保留正常模拟/音频/2倍/SMAA/8人，临时样式恢复/实际UI USB核对源码/关闭已完成，全部是调查不作成绩，别把不同局各比例相加。源码已确认Boss条是transform、队伍栏脏检查完整、诊断文本1秒刷新，不能盲猜重建/width。下一步优先读Tracing.getCategories做独立12秒GPU/Skia/Viz细类Trace，定位真实栅格/合成工作，不依据混杂top数据直接做图标缓存；可另试完整HUD临时will-change图层提示，需新工具/基础验证/中文提交、有效窗口同存活/近似绘制量，不直接上产品。不要恢复v38/39逐帧CSSAnimation采样失败入口。当前BOSS_DOM_PART支持all/bar/special/markers/map/top；BOSS_TRACE_PROBE支持passive/dom/ui，dom/ui4～8秒触发、锚点≤10、20秒内核。native本页performance.mark绑定PID、严格CPU字段正则、8核/无buffer丢失/切换一致0，各报告本地systemtrace-v41-*-native.cpu.json；原始含其他系统线程不入Git。renderer cgroup/vip+top-app，Awake/供电/stayOn=true，GameMode unsupported只读未改策略。动画steps/linear API探测在本地native-animation-step-api.json，未接入产品；小地图392×658/CSS57×95/DPR3.25虽过采样，隐藏未获益，暂不降。正式REQUIRE_AUDIO_PARAM_DEDUPE=1、SMAA_CLEAR=1、ANIMATION_CLOCK=0，所有旁路/DOM/UI/生命周期/小地图默认0，镜头预备1。每批中文commit/push后干净构建真机，每局60秒上传核对关闭。目标active，接续id=boss，USB常亮2，无授权阻塞，不并发CDP。
-
-
-
-
-
-
-
-更新日期：2026-10-26（北京时间）。本文件是接续开发入口，与根目录AGENTS.md共同维护。每批改动后更新相关记录并立即提交、推送。
+更新日期：2026-10-27（北京时间）。本文件是接续开发入口，与根目录AGENTS.md共同维护。每批改动后更新相关记录并立即提交、推送。
 
 面向新手的背景解释见[云层烘焙负载说明](android/CLOUD-BAKING-BEGINNER.zh-CN.md)，涵盖本次手机降载、2倍高清与初始化/帧率验收的区别。
 
 后续纹理优化参考[PC/手机纹理分级与UE4思路](android/DEVICE-TEXTURE-SCALABILITY.zh-CN.md)：第一批v18已应用并巡检手机海港远景反射256（PC512），详见[纹理test18](android/TEXTURE-test18.zh-CN.md)。其余候选尚未降档，继续逐项真机对照。
 
-最新补充：当前安装v1.0.31（干净源码0b59a2f），游戏关闭。只优化Boss，先稳定30再60，未达标。SMAA/Output合并少一遍、像素/预备程序/退出恢复通过；正式29.044/28.044，恢复v31热机27.211FPS（45→46°C），v30对照28.871（41→45°C），不能只报最高或宣称严格因果改善，见[Boss test31](android/BOSS-PERFORMANCE-test31.zh-CN.md)。新30秒V8样本_drawInk自耗时800.7ms，下一步仅手机Boss缓存小地图未变化像素计算；保持原0.15秒/3段刷新、分辨率、bilinear/emboss/owner/flash字节。加载期有界缓存、重建/配色失效，先真实Canvas与原入口随机/清除/换色/翻转/最坏负载逐字节和性能验证，证明有益再提交构建。保持2倍/SMAA/8人/物理/AI/枪口/PC；目标active，无授权阻塞，USB常亮2，30分钟接续已建，不并发USB/CDP，每局60秒上传核对关闭。音频旁路不作成绩；窗口偏好不能称锁60，全局省电0未修改。
+历史v31记录（当前版本见上）：当时安装v1.0.31（干净源码0b59a2f），游戏关闭。只优化Boss，先稳定30再60，未达标。SMAA/Output合并少一遍、像素/预备程序/退出恢复通过；正式29.044/28.044，恢复v31热机27.211FPS（45→46°C），v30对照28.871（41→45°C），不能只报最高或宣称严格因果改善，见[Boss test31](android/BOSS-PERFORMANCE-test31.zh-CN.md)。新30秒V8样本_drawInk自耗时800.7ms，下一步仅手机Boss缓存小地图未变化像素计算；保持原0.15秒/3段刷新、分辨率、bilinear/emboss/owner/flash字节。加载期有界缓存、重建/配色失效，先真实Canvas与原入口随机/清除/换色/翻转/最坏负载逐字节和性能验证，证明有益再提交构建。保持2倍/SMAA/8人/物理/AI/枪口/PC；目标active，无授权阻塞，USB常亮2，30分钟接续已建，不并发USB/CDP，每局60秒上传核对关闭。音频旁路不作成绩；窗口偏好不能称锁60，全局省电0未修改。
 
 ## 1. 先读结论
 
 - 用户仓库：<https://github.com/gzbin7878at2016/inkwave>。
 - **最新工作分支：`codex/android-capacitor`。不要只拉main就开始开发。** main目前仍停在早期Android方案文档阶段，未合并本轮实现。
 - 历史v1.0.11手机加载与稳定帧耗功能源码`fd9ec0f79d3dde6fa41db5c8a4c03ebee7dc5efa`已推送并从干净提交构建；上一版功能源码0918cea，真机分析记录6920525。交付文档有后续独立提交，APK源码以`releases/android-build-info.json`为准。
-- 当前为v1.0.31；可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
+- 当前为v1.0.43；可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
 - 按用户最新优先级，手机默认目标改为30FPS（仍可手动30/60），固定2倍高清、SMAA、自动降低清晰度关闭，原对局人数不变；PC保留默认。v11一次性迁移帧率设置，不清档。
 - v10真机已确认Boss准备19.879秒，首衣服仍1630ms长任务；6个无新增程序角色仍等待9.009秒。v11按真实程序对象复用、约5ms预算让帧，移除缓存命中固定10ms等待；进度条覆盖角色、战斗效果、Boss登场/音效/小怪首绘和GPU完成等待。**真机稳定30帧及不再掉个位数尚待安装复测，不能把桌面软件渲染FPS当作达标证据。**
 - PC保留原渲染路径。不要为手机性能直接改共享QUALITY或PC地面着色器。
