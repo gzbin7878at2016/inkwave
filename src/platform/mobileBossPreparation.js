@@ -4,6 +4,7 @@ import { BOSS_INTRO_SOUNDS } from '../audio/bossAudio.js';
 import { BOSS_CACHED_SOUNDS } from '../audio/bossOneShotCache.js';
 import { prepareMobileBossReverb, restoreMobileBossReverb } from '../audio/mobileBossReverb.js';
 import { clearMobileBossMinimapInkForMatch } from './mobileBossMinimapInk.js';
+import { prepareMobileBossLens } from './mobileBossLensPreparation.js';
 import { createMobileWarmSession, prepareMobileMesh } from './mobileWarmup.js';
 
 const sum = (total, row) => {
@@ -62,6 +63,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
       enabled: () => !!globalThis.inkwaveMobile && !!game.match?.boss && G.mode === 'match' }) || { skipped: true }, { sound: name }));
   add('准备手机Boss空间混响', () => prepareMobileBossReverb(game, match, { isCurrent: current }));
   // 真机同图对照未证明小地图像素缓存有收益，保留原计算路径；实验工具独立验证候选。
+  add('准备Boss镜头墨水', () => prepareMobileBossLens(game, match, { isCurrent: current, yieldTurn: session.yieldNow }));
   add('准备手机Boss抗锯齿输出', () => game.R.prepareMobileBossOutput?.(match, { isCurrent: current, yieldTurn: session.yieldNow }) || { skipped: true });
   add('准备Boss标题与字体', () => game.hud?.boss?.prepareIntro?.({ isCurrent: current }) || { skipped: true });
   const total = tasks.length;

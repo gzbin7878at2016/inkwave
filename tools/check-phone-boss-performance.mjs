@@ -122,6 +122,9 @@ try{
    };
    const renderer=g.R.renderer,direct=renderer.renderBufferDirect;
    renderer.renderBufferDirect=function(...args){const before=this.info.programs.length;const result=direct.apply(this,args);
+    if(p.match===g.match&&g.match?.state==='playing'&&args[4]?.parent===g.screenfx?.lens?.scene){
+     p.lensDraws=(p.lensDraws||0)+1;p.firstLensDraw||={activeMs:p.activeMs,programId:this.properties.get(args[3]).currentProgram?.id};
+    }
     if(p.match===g.match&&g.match?.state==='playing'&&this.info.programs.length>before&&p.newPrograms.length<50){
      const material=args[3],object=args[4],owner=g.match.actors.find(a=>a.character?.root?.getObjectById(object.id));
      p.newPrograms.push({at:Date.now(),activeMs:p.activeMs,object:object?.name,parent:object?.parent?.name,material:material?.name,type:material?.type,
@@ -265,6 +268,9 @@ try{
  report.reverbInfo=await c.evaluate('window.__G?.audio?._bossReverbInfo||null');
  report.postprocess=await c.evaluate('({fusion:__inkwave.R.mobileAA?.bossOutput||null,outputEnabled:__inkwave.R.outputPass?.enabled,passes:__inkwave.R.composer.passes.map(p=>({type:p.constructor.name,enabled:p.enabled}))})');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
+ report.lensInk=await c.evaluate('({preparation:__inkwave._bossLensPreparation||null,programId:__G.renderer.properties.get(__inkwave.screenfx.lens.mat).currentProgram?.id,draws:__phonePerf.lensDraws||0,firstDraw:__phonePerf.firstLensDraw||null})');
+ if(process.env.BOSS_REQUIRE_LENS_PREPARATION==='1'&&(!report.lensInk.preparation?.prepared||report.lensInk.programId!==report.lensInk.preparation.programId))throw Error('Boss镜头墨水准备缺失或实际程序与准备不一致');
+ if(process.env.BOSS_REQUIRE_LENS_DRAW==='1'&&(!report.lensInk.draws||report.lensInk.firstDraw?.programId!==report.lensInk.preparation?.programId))throw Error('本调查未验证首次真实镜头墨水绘制复用准备程序');
  if(process.env.BOSS_REQUIRE_MINIMAP_CACHE==='1' && (!report.minimapInk?.active || !report.minimapInk.calls))throw Error('本批要求小地图缓存实际启用并处理像素，不能将未启用的原路径当作优化结果');
  report.simulationProbe=await c.evaluate('({stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
  report.pannerTransitions=await c.evaluate('window.__phonePerf.pannerTransitions||null');
