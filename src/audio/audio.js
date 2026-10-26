@@ -47,6 +47,7 @@
 // Every builder works on any BaseAudioContext so tools/audio-test.mjs renders them through OfflineAudioContext.
 
 import { DEFAULT_SETTINGS } from '../config.js';
+import { BossOneShotCache } from './bossOneShotCache.js';
 import {
   V, music as musicSingleton, makeImpulse, noiseBuffer, mulberry32, mtof, perc, ahr, adsr, pts, sweep, strokeWave, pulseWave,
   kick, snare, crash, tom, brass, bell, pad, bass,
@@ -351,6 +352,14 @@ export class AudioEngine {
     } finally { voice.dispose(); }
   }
 
+  // 入口只由手机Boss准备队列调用；PC/普通对局不创建缓存，离线审计也保留原配方。
+  async prepareBossSample(name, { isCurrent = () => true, enabled = () => false } = {}) {
+    if (!globalThis.inkwaveMobile || !this.ctx || this.offline) return { name, skipped: true };
+    this._bossSamples ??= new BossOneShotCache(this.ctx.sampleRate);
+    this._bossSampleEnabled = enabled;
+    return this._bossSamples.prepare(name, SFX[name]?.build, isCurrent);
+  }
+
   // 【播放单发音效】六步流水线:①minGap 窗口内同名连发合并丢弃;②查配方;
   // ③每名字 max 与全局 MAX_VOICES 上限,超限偷最老;④jitter 随机变调
   // (高速连发不机械重复);⑤_voice() 搭图;⑥build() 烹制——loop 型配方
@@ -385,7 +394,9 @@ export class AudioEngine {
     const voice = this._voice(d, t, o.pos, vol);
     const v = voice.v;
     try {
-      if (d.build) d.build(v, pitch, o);
+      if (this._bossSamples && this._bossSampleEnabled?.() && this._bossSamples.play(v, name, pitch, o)) {
+        // 仅手机Boss命中预备缓存；原限额、空间声道、混响和播放后释放流程不变。
+      } else if (d.build) d.build(v, pitch, o);
       else if (d.loop) {
         // 【loop 配方当单发】播 oneShot 时长的短爆发,淡入淡出后 kill。
         // loop sound fired as a one-shot: short burst with a fade out

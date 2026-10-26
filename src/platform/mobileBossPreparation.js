@@ -1,6 +1,7 @@
 // 手机Boss登场准备：绘制真实模型/实例缓冲并预付标题与音效缓存，不推进Boss、比赛或任何事件总线。
 import { G } from '../core/ctx.js';
 import { BOSS_INTRO_SOUNDS } from '../audio/bossAudio.js';
+import { BOSS_CACHED_SOUNDS } from '../audio/bossOneShotCache.js';
 import { createMobileWarmSession, prepareMobileMesh } from './mobileWarmup.js';
 
 const sum = (total, row) => {
@@ -54,6 +55,9 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     }) || {}, { crab: index, phase: 'pop' });
   }
   BOSS_INTRO_SOUNDS.forEach((sound, index) => add(`准备登场音效 ${index + 1}/${BOSS_INTRO_SOUNDS.length}`, () => G.audio?.prepare?.(sound.name, sound) || { skipped: true }, { sound: sound.name }));
+  BOSS_CACHED_SOUNDS.forEach((name, index) => add(`准备战斗短音 ${index + 1}/${BOSS_CACHED_SOUNDS.length}`,
+    () => G.audio?.prepareBossSample?.(name, { isCurrent: current,
+      enabled: () => !!globalThis.inkwaveMobile && !!game.match?.boss && G.mode === 'match' }) || { skipped: true }, { sound: name }));
   add('准备Boss标题与字体', () => game.hud?.boss?.prepareIntro?.({ isCurrent: current }) || { skipped: true });
   const total = tasks.length;
   const trace = diagnostics && {

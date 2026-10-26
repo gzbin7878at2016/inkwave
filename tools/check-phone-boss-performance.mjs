@@ -136,6 +136,7 @@ try{
  if(!a.length||(seconds<duration&&!report.roundCompleted))throw Error('实际战斗采样时长不足');
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
+ report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
