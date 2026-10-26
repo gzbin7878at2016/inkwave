@@ -6,14 +6,14 @@
 
 后续纹理优化参考[PC/手机纹理分级与UE4思路](android/DEVICE-TEXTURE-SCALABILITY.zh-CN.md)：第一批v18已应用并巡检手机海港远景反射256（PC512），详见[纹理test18](android/TEXTURE-test18.zh-CN.md)。其余候选尚未降档，继续逐项真机对照。
 
-最新补充：当前已安装v1.0.29（干净功能源码ec3c3e7），游戏关闭。只优化Boss，先稳定30再60，仍未达标。v28短音3→14类、约4.67MiB/失败0，减图有效；v29窗口偏好与暂停/后台恢复通过，但首次进入仍报告120Hz，后台返回后才观察60Hz，不能宣称始终锁60。正式26.155/26.511FPS，详见[Boss test29](android/BOSS-PERFORMANCE-test29.zh-CN.md)和[test28](android/BOSS-PERFORMANCE-test28.zh-CN.md)。原生跟踪发现音频线程高占用；下一步独立声像探针同步sched/freq，对比HRTF/equalpower真实运行和活跃声道，不靠随机阶段FPS下结论；保留音乐/音效，结束恢复，不提前修改正式声像。目标active，无授权阻塞，USB供电常亮2，每30分钟空闲接续已建，不并发争抢USB；每局60秒、上传核对后关闭，PC/2倍/SMAA/8人/玩法保持。
+最新补充：当前已安装v1.0.30（干净功能源码1baf5a7），游戏关闭。只优化Boss，先稳定30再60，仍未达标。v30缩短低能量混响尾音、早期归一化响度保留，实际0.4/0.6秒及回菜单恢复原1.5/2.2秒通过；正式26.882/26.952FPS，WebAudio负载仍高，不能宣称提帧成功，见[Boss test30](android/BOSS-PERFORMANCE-test30.zh-CN.md)。声像/停音乐原生对照没有显著减负；整图旁路89→19%单核只是静音调查，绝不当成绩。下一步评估仅Boss合并SMAA最后混合与OutputPass输出变换，保持SMAA/调色顺序/2倍/8人/PC，先真实WebGL像素/目标/主题验证；不再凭不充分证据削音乐/声像。目标active，无授权阻塞，USB供电常亮2，30分钟空闲接续已建，不并发争抢USB；每局60秒、上传核对后关闭。v29窗口偏好首次120/后台返回60Hz，不能宣称始终锁60。
 
 ## 1. 先读结论
 
 - 用户仓库：<https://github.com/gzbin7878at2016/inkwave>。
 - **最新工作分支：`codex/android-capacitor`。不要只拉main就开始开发。** main目前仍停在早期Android方案文档阶段，未合并本轮实现。
 - 历史v1.0.11手机加载与稳定帧耗功能源码`fd9ec0f79d3dde6fa41db5c8a4c03ebee7dc5efa`已推送并从干净提交构建；上一版功能源码0918cea，真机分析记录6920525。交付文档有后续独立提交，APK源码以`releases/android-build-info.json`为准。
-- 当前为v1.0.29；可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
+- 当前为v1.0.30；可构建Android debug APK，最低Android10/API29，包名`com.demoink.inkwave`。v1.0.11新增[对局加载进度与资源准备](android/LOADING-test11.zh-CN.md)，固定下载页和日志上传继续沿用。
 - 按用户最新优先级，手机默认目标改为30FPS（仍可手动30/60），固定2倍高清、SMAA、自动降低清晰度关闭，原对局人数不变；PC保留默认。v11一次性迁移帧率设置，不清档。
 - v10真机已确认Boss准备19.879秒，首衣服仍1630ms长任务；6个无新增程序角色仍等待9.009秒。v11按真实程序对象复用、约5ms预算让帧，移除缓存命中固定10ms等待；进度条覆盖角色、战斗效果、Boss登场/音效/小怪首绘和GPU完成等待。**真机稳定30帧及不再掉个位数尚待安装复测，不能把桌面软件渲染FPS当作达标证据。**
 - PC保留原渲染路径。不要为手机性能直接改共享QUALITY或PC地面着色器。
