@@ -2,7 +2,7 @@
 export function createBossRayCellCacheCandidate(level){
  let hash=level.hash;const original=level.queryBlocks,cache=new Map();let bytes=0;
  const maxEntries=256,maxBytes=65536;
- const stats={queries:0,singleCell:0,hits:0,misses:0,resets:0,evictions:0,entries:0,bytes:0};
+ const stats={queries:0,singleCell:0,hits:0,misses:0,largeBypass:0,resets:0,evictions:0,entries:0,bytes:0};
  const queryBounds=(minX,minZ,maxX,maxZ,out)=>{
   stats.queries++;
   if(hash!==level.hash){cache.clear();hash=level.hash;bytes=0;stats.resets++;stats.entries=0;stats.bytes=0;}
@@ -10,6 +10,8 @@ export function createBossRayCellCacheCandidate(level){
   if(!Number.isFinite(x0+x1+z0+z1)||x0>x1||z0>z1)return original.call(level,minX,minZ,maxX,maxZ,out);
   // 每个块在同一个格子仅登记一次，直接读原cell即与原去重后的顺序完全一致。
   if(x0===x1&&z0===z1){stats.singleCell++;return hash[z0*level.hw+x0];}
+  // 实战大多是一至四格；长射线矩形低复用，直接走原路避免Map/复制/淘汰开销。
+  if((x1-x0+1)*(z1-z0+1)>4){stats.largeBypass++;return original.call(level,minX,minZ,maxX,maxZ,out);}
   const cells=level.hw*level.hd,key=(z0*level.hw+x0)*cells+z1*level.hw+x1;
   if(!Number.isSafeInteger(key))return original.call(level,minX,minZ,maxX,maxZ,out);
   const saved=cache.get(key);if(saved){stats.hits++;return saved;}
