@@ -1,7 +1,7 @@
 // 真机Boss自动游玩：只操作输入，不改血量、人数、伤害、碰撞或模拟速度。
 import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir} from 'node:fs/promises';
-const duration=Number(process.env.BOSS_TEST_SECONDS||240),name=process.env.BOSS_TEST_NAME||'baseline';
+const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
 const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
@@ -56,7 +56,8 @@ try{
    return record.call(this,ms);
   };
   window.__phoneCleanup=()=>{for(const restore of restores)restore();g._frame=frame;g.mobile.recordFrame=record;g.input.keys.clear();g.input.mouse.left=false;delete window.__phoneCleanup;};
-  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater'}).then(v=>{__phoneStarted=v;if(v)p.match=g.match},e=>__phoneStarted=String(e));};
+  // 用户要求每局1分钟；只改自动测试的对局参数，不改正式游戏默认时长。
+  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v)p.match=g.match},e=>__phoneStarted=String(e));};
   __phoneStart();return true;
  })()`);
  const deadline=Date.now()+(duration+300)*1000;

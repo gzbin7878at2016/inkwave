@@ -14,14 +14,14 @@
 
 ```powershell
 $env:ANDROID_SERIAL='A38YUT3C19022796'
-$env:BOSS_TEST_SECONDS='240'
+$env:BOSS_TEST_SECONDS='60'
 $env:BOSS_TEST_NAME='v13-baseline'
 $env:BOSS_METHOD_PROBE='0'
 node tools/check-phone-boss-performance.mjs
 ```
 
 4. 原始帧间隔、每2秒角色坐标/存活/墨量/输入意图/8人数量、CPU分段、最终诊断及前后温度，保存到 `releases/investigation/phone-boss-v13-baseline.json`。每次使用新名称避免覆盖；这些本地原始日志不提交Git。
-5. 脚本自动开始标准240秒Boss对局；每帧通过原输入控制器模拟操作，不修改血量、伤害、人数、模拟速度或角色位置。自然结算后重新开局，直到累计实际playing时长满足要求。加载/开场/结算不计入帧耗统计，但战斗内全部慢帧保留。
+5. 脚本自动开始60秒Boss对局；每帧通过原输入控制器模拟操作，不修改血量、伤害、人数、模拟速度或角色位置。自然结算后重新开局，直到累计实际playing时长满足要求。加载/开场/结算不计入帧耗统计，但战斗内全部慢帧保留。
 6. 需要调查HUD时将BOSS_METHOD_PROBE设为1并使用独立名称，结果明确标记带探针；完成后设回0做最终验收。方法级调查不能作为最终性能成绩。
 7. 长期验收将BOSS_TEST_SECONDS设为1800。脚本的stable30Validated要求：无探针、至少1800秒实际战斗、平均至少29.5FPS、p95不超过36ms、p99不超过50ms、100ms以上帧为0；同时固定2倍、SMAA、8人Boss、无shader失败/安全暂停。该标记只涵盖本机本场景，不代表所有手机/地图均通过。
 8. status=measured仅表示完整采样结束，不能等同稳定30帧；aborted表示中断/图形异常/时长不足，禁止当作通过。每2秒保存已采数据，USB断线立即拒绝请求并保存失败信息，正常收尾恢复原游戏方法和输入。若直接杀死Node而未收尾，必须重启游戏，避免遗留包装器重复统计。
