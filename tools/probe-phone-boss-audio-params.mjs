@@ -16,7 +16,7 @@ try{
  ws=new WebSocket(page.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject;});
  ws.onmessage=e=>{const v=JSON.parse(e.data),p=pending.get(v.id);if(!p)return;clearTimeout(p.timer);pending.delete(v.id);if(v.error)p.reject(Error(JSON.stringify(v.error)));else if(v.result.exceptionDetails)p.reject(Error(JSON.stringify(v.result.exceptionDetails)));else p.resolve(v.result.result.value);};
  ws.onclose=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('音频调查连接关闭'));}pending.clear();};
- let live=false;for(let i=0;i<100;i++){const s=await evaluate('({probe:!!window.__phonePerf?.methods,live:__inkwave.match===window.__phonePerf?.match&&__inkwave.match.state==="playing",active:window.__phonePerf?.activeMs||0})');if(s.probe&&s.live&&s.active>=5000){if(s.active>30000)throw Error('方法轮剩余时间不足');report.activeStartMs=s.active;live=true;break;}await new Promise(r=>setTimeout(r,500));}
+ let live=false;for(let i=0;i<100;i++){const s=await evaluate('({probe:!!window.__phonePerf?.methods,live:!!window.__inkwave?.match&&window.__inkwave.match===window.__phonePerf?.match&&window.__inkwave.match.state==="playing",active:window.__phonePerf?.activeMs||0})');if(s.probe&&s.live&&s.active>=5000){if(s.active>30000)throw Error('方法轮剩余时间不足');report.activeStartMs=s.active;live=true;break;}await new Promise(r=>setTimeout(r,500));}
  if(!live)throw Error('未找到带探针的真实Boss战，不允许附着正式轮');
  report.before=await evaluate(`(${installBossAudioParamProbe.toString()})(__G.audio)`);installed=true;report.status='sampling';
  await new Promise(r=>setTimeout(r,seconds*1000));
