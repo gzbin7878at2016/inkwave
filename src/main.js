@@ -19,6 +19,7 @@
 // ========================================================================================
 import * as THREE from 'three';
 import { mobileViewport } from './platform/mobileViewport.js';
+import { mobileFrameDue } from './platform/mobileFramePacing.js';
 import { G, on, emit, clamp, damp } from './core/ctx.js';
 import { Renderer } from './core/renderer.js';
 import { Input } from './core/input.js';
@@ -1368,7 +1369,9 @@ class Game {
     requestAnimationFrame((t) => this._loop(t));
     this._trackVsync(ts);
     const cap = this.settings.fpsCap || 0;
-    if (cap && ts !== undefined && this._lastTs !== undefined && ts - this._lastTs < 1000 / cap - 2) return;
+    if (window.inkwaveMobile) {
+      if (!mobileFrameDue(this._mobilePacing || (this._mobilePacing = {}), ts, cap)) return;
+    } else if (cap && ts !== undefined && this._lastTs !== undefined && ts - this._lastTs < 1000 / cap - 2) return;
     this._lastTs = ts;
     this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());
     if (this.frozen || this._building || this.mobileSuspended) return;
