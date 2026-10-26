@@ -409,7 +409,7 @@ export class Menus {
 
   /** A short notification in the top-right corner (survives screen swaps). kind: 'info' | 'good' | 'error' | 'join' | 'leave'.
    *  `tag: { name, weapon }` leads with that player's mini splashtag (in `color`) instead of the icon. */
-  toast(text, { kind = 'info', icon = null, color = null, ms = 3400, tag = null } = {}) {
+  toast(text, { kind = 'info', icon = null, color = null, tag = null } = {}) {
     if (!text) return null;
     if (!this._toasts || !this._toasts.isConnected) { this._toasts = h('div', { class: 'iw-toasts', 'aria-live': 'polite' }); this.el.insertBefore(this._toasts, this.cursorEl); }
     const ico = icon || GLYPHS[kind === 'error' ? 'close' : kind === 'join' ? 'plus' : kind === 'leave' ? 'exit' : kind === 'good' ? 'check' : 'sparkle'];
@@ -423,7 +423,9 @@ export class Menus {
     this._toasts.appendChild(t);
     const max = this.current === 'lobby' ? 2 : 4;   // the lobby's feed band is small: the newest two
     while (this._toasts.childElementCount > max) this._toasts.firstElementChild.remove();
-    setTimeout(() => { t.classList.add('is-out'); setTimeout(() => t.remove(), 420); }, ms);
+    // 临时通知统一从显示起3秒移除，退场动画包含在3秒内。
+    setTimeout(() => t.classList.add('is-out'), 2580);
+    setTimeout(() => t.remove(), 3000);
     return t;
   }
 
@@ -2538,7 +2540,7 @@ export class Menus {
     this.show('online', { wipe: true, back: true });
     const E = joinErrOf(key);
     // one message id (translated by toast's own h() plumbing) — no title/sentence splicing
-    this.toast(E ? E.short : (key === 'left' ? 'You left the room' : String(key || 'Left the room')), { kind: 'error', icon: GLYPHS[(E && E.icon) || 'exit'], ms: 5200 });
+    this.toast(E ? E.short : (key === 'left' ? 'You left the room' : String(key || 'Left the room')), { kind: 'error', icon: GLYPHS[(E && E.icon) || 'exit'] });
   }
 
   _teamColors() { return this._accent(); }

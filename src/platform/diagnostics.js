@@ -295,5 +295,7 @@ export function installDiagnostics(nativePlugin) {
 function showStatus(text) {
   document.getElementById('mobile-log-status')?.remove();
   const el = document.createElement('div'); el.id = 'mobile-log-status'; el.textContent = text;
-  const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => el.remove(); el.append(close); document.body.append(el);
+  // 每条提示独立计时；旧提示的定时器只操作旧节点，不能提前关闭新结果。
+  const timer = setTimeout(() => el.remove(), 3000);
+  const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => { clearTimeout(timer); el.remove(); }; el.append(close); document.body.append(el);
 }

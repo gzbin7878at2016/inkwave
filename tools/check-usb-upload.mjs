@@ -14,7 +14,7 @@ const command=(...args)=>execFileSync(adb,['-s',serial,...args],{encoding:'utf8'
 try{
  const before=new Set(await readdir('releases/logs')); const success=await upload();assert.ok(success.includes('上传成功（USB）'),success);
  const files=(await readdir('releases/logs')).filter(n=>!before.has(n)&&n.endsWith('.json'));assert.equal(files.length,1);
- const log=JSON.parse(await readFile('releases/logs/'+files[0],'utf8'));assert.equal(log.current.build.versionCode,12);console.log('USB真实日志已落盘',files[0]);
+ const log=JSON.parse(await readFile('releases/logs/'+files[0],'utf8'));const metadata=JSON.parse(await readFile('releases/android-build-info.json','utf8'));assert.equal(log.current.build.versionCode,metadata.versionCode);assert.equal(log.current.build.sourceCommit,metadata.sourceCommit);console.log('USB真实日志已落盘',files[0]);
  command('reverse','--remove','tcp:18765');const failed=await upload();assert.ok(failed.includes('上传失败'));assert.equal((await readdir('releases/logs')).length,before.size+1);console.log('断开USB通道正确失败，无新增日志');
  command('reverse','tcp:18765','tcp:8765');assert.ok((await upload()).includes('上传成功（USB）'));console.log('恢复通道重试成功');
  await writeFile('releases/investigation/usb-upload-check.json',JSON.stringify({success,failed,files,device:serial},null,2));
