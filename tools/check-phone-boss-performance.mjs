@@ -1,5 +1,6 @@
 // 真机Boss自动游玩：只操作输入，不改血量、人数、伤害、碰撞或模拟速度。
 import {androidCDP} from './android-cdp.mjs';
+import {createBossPlaybackDirector} from './boss-playback-director.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
 import {computeMinimapInkBand} from './minimap-band-kernel.mjs';
@@ -15,6 +16,8 @@ import {compareBossSmaaEdges} from './compare-boss-smaa-edges.mjs';
 import {RGFormat,UnsignedByteType,HalfFloatType} from 'three';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
+const playbackMode=process.env.BOSS_PLAYBACK||'director';
+if(!['director','legacy'].includes(playbackMode))throw Error('BOSS_PLAYBACK只允许director/legacy');
 if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
 const ablation=process.env.BOSS_GPU_ABLATION==='1';
 const cpuAblation=process.env.BOSS_CPU_ABLATION==='1';
@@ -61,7 +64,7 @@ if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerA
 if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',nativePaint,markerVars,layerHints,domAblation,domPart,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={playbackMode,methodProbe:process.env.BOSS_METHOD_PROBE==='1',nativePaint,markerVars,layerHints,domAblation,domPart,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -80,6 +83,8 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  const director=${playbackMode==='director'}?(${createBossPlaybackDirector.toString()})(g,__G,p.actions):null;
+  if(director){p.playbackInfo=()=>director.info();restores.push(()=>director.dispose());}
   const domProbe=${domAblation}?(${createBossDomProbe.toString()})(${JSON.stringify(domPart)}):null;if(domProbe)restores.push(()=>domProbe.dispose());
   const layerProbe=${layerHints}?(${createBossLayerHintProbe.toString()})():null;if(layerProbe)restores.push(()=>layerProbe.dispose());
   const markerVarProbe=${markerVars}?(${createBossMarkerVarProbe.toString()})(g.hud):null;if(markerVarProbe)restores.push(()=>markerVarProbe.dispose());
@@ -245,7 +250,8 @@ try{
     const phase=['baseline','sea','background','props','hud','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
     if(p.ablationPhase!==phase){g.hud.el.style.visibility=phase==='hud'?'hidden':hudVisibility;p.ablationPhase=phase;}
    }
-   if(live&&a?.alive){
+   if(director){try{director.step(live?p.activeMs:null,dt);}catch(error){p.playbackError=String(error);director.dispose();}}
+   else if(live&&a?.alive){
     const t=p.activeMs/1000,cycle=t%18,b=m.boss;
     g.input.keys.clear();g.input.mouse.left=false;
     const dx=b.pos.x-a.pos.x,dz=b.pos.z-a.pos.z,dist=Math.hypot(dx,dz);
@@ -270,7 +276,7 @@ try{
   };
   window.__phoneCleanup=()=>{for(const restore of [...restores].reverse())restore();g._frame=frame;g.mobile.recordFrame=record;g.input.keys.clear();g.input.mouse.left=false;delete window.__phoneCleanup;};
   // 用户要求每局1分钟；只改自动测试的对局参数，不改正式游戏默认时长。
-  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v){p.match=g.match;p.installMatchProbe?.(g.match)}},e=>__phoneStarted=String(e));};
+  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v){p.match=g.match;director?.bind(g.match);p.installMatchProbe?.(g.match)}},e=>__phoneStarted=String(e));};
   __phoneStart();return true;
  })()`);
  const deadline=Date.now()+(duration+300)*1000;
@@ -285,12 +291,13 @@ try{
      for(const v of audio?.voices||[]){if(v.v.dead||v.stolen)continue;const model=v.panner?.panningModel||'2d';voicePanners[model]=(voicePanners[model]||0)+1;voiceNodes+=v.v.nodes.length;}
      return {stats,voicePanners,voiceNodes,sampleRate:audio?.ctx?.sampleRate,baseLatency:audio?.ctx?.baseLatency,outputLatency:audio?.ctx?.outputLatency,music:__G.music?.current?.id,playerType:__G.music?.current?.constructor.name,players:__G.music?.players.length};
     })():undefined,
-    timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,bossMaxHp:m?.boss?.maxHp,bossPhase:m?.boss?.phase,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
+    timeLeft:m?.time,alive:a?.alive,ink:a?.ink,bossHp:m?.boss?.hp,bossMaxHp:m?.boss?.maxHp,bossPhase:m?.boss?.phase,playback:p?.playbackInfo?.()||null,playbackError:p?.playbackError||null,actors:m?.actors.length,fire:a?.intent.fire,move:a?.intent.move?.length(),
     profile:g.mobile.profile.snapshot(),cpu:{...g.perf},calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,
     intervals:p.intervals.splice(0)};
    if(m?.state==='results'&&${duration}>60&&p.activeMs<${duration}*1000)__phoneStart();return sample;
   })()`);
   const intervals=sample.intervals;delete sample.intervals;report.intervals.push(...intervals);report.timeline.push(sample);
+  if(sample.playbackError)throw Error('自动输入失败，已保留原模拟继续并清空输入：'+sample.playbackError);
   if(report.methodProbe&&sample.state==='playing'&&sample.activeMs>=5000&&!report.displayDuringPlay){
    report.displayDuringPlay=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
    if(report.displayDuringPlay.observedWidth!==report.displayBeforeBoss.observedWidth||report.displayDuringPlay.observedHeight!==report.displayBeforeBoss.observedHeight)throw Error('Boss窗口实验改变了实际物理分辨率');
@@ -363,6 +370,11 @@ try{
  if(process.env.BOSS_REQUIRE_SMAA_EDGES==='1'&&(!report.postprocess.edges?.active||report.postprocess.edges.format!=='RG16F'||report.postprocess.edges.frames<report.summary.frames*.9||report.postprocess.edges.typeCode!==1016||report.postprocess.edges.weightsType!==1016))throw Error('Boss RG16F边缘缓冲未在整局实际使用');
  if(process.env.BOSS_REQUIRE_SMAA_CLEAR==='1'&&!report.postprocess.smaaClear?.active)throw Error('本批Boss SMAA清零修复未实际启用');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
+ report.playbackResult=await c.evaluate('__phonePerf.playbackInfo?.()||null');
+ if(playbackMode==='director'){
+  const run=report.playbackResult;
+  if(!run||run.distanceTravelled<25||run.movedFrames<report.summary.frames*.2||!run.pathSuccess||run.bossDamage<=0)throw Error('自动游玩未证明真实移动/有效攻击/原导航覆盖，不能将按键计数当完成');
+ }
  report.minimapWorker=await c.evaluate('__inkwave.minimap.bossWorkerInfo?.()||null');
  if(process.env.BOSS_REQUIRE_MINIMAP_WORKER==='1'){
   const worker=report.minimapWorker;
