@@ -5,8 +5,8 @@ import { promisify } from 'node:util';
 import { inflateSync } from 'node:zlib';
 const name = process.env.BOSS_TRACE_NAME, kind = process.env.BOSS_TRACE_PROBE;
 const passive=kind==='passive',dom=kind==='dom';
-const early=dom||kind==='ui';
-const flag = { music: 'musicAblation', panner: 'pannerAblation', 'audio-suspend': 'audioSuspend', 'audio-graph': 'audioGraphBypass',passive:'methodProbe',dom:'domAblation',ui:'uiAblation' }[kind];
+const early=dom||kind==='ui'||kind==='layers';
+const flag = { music: 'musicAblation', panner: 'pannerAblation', 'audio-suspend': 'audioSuspend', 'audio-graph': 'audioGraphBypass',passive:'methodProbe',dom:'domAblation',ui:'uiAblation',layers:'layerHints' }[kind];
 if (!name || !/^[a-z0-9-]+$/i.test(name) || !flag) throw Error('须明确BOSS_TRACE_NAME与BOSS_TRACE_PROBE=music/panner/audio-suspend/audio-graph/passive/dom/ui');
 const base = `releases/investigation/systemtrace-${name}`, reportPath = `releases/investigation/phone-boss-${name}.json`;
 try { await access(base + '.meta.json'); throw Error('不能覆盖已有原生调查，请使用新名称'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -19,7 +19,7 @@ for (let i = 0; i < 200; i++) {
   let p; try { p = JSON.parse(await readFile(reportPath, 'utf8')); } catch (e) { if (!(e.code === 'ENOENT' || e instanceof SyntaxError)) throw e; }
   if (p) {
     if (p.status === 'aborted') throw Error('主调查已中止，不再等待或重开');
-    if(passive&&['gpuAblation','cpuAblation','uiAblation','musicAblation','pannerAblation','audioSuspend','audioGraphBypass','audioReverbBypass','domAblation'].some(key=>p[key]))throw Error('被动原生调查不能夹带音画/模拟旁路');
+    if(passive&&['gpuAblation','cpuAblation','uiAblation','musicAblation','pannerAblation','audioSuspend','audioGraphBypass','audioReverbBypass','domAblation','layerHints'].some(key=>p[key]))throw Error('被动原生调查不能夹带音画/模拟旁路');
     const s = p.timeline.at(-1), fresh = Date.now() - Date.parse(p.startedAt) < 180000;
     if (fresh && p.methodProbe && p[flag] && p.status === 'running' && s?.state === 'playing' && s.activeMs >= (early?4000:8000)) {
       if (s.activeMs > (early?8000:13000)) throw Error('已错过切换前采集窗口，不中断或重开本局');
