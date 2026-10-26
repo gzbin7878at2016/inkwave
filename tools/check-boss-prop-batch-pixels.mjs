@@ -13,6 +13,10 @@ report.backend=process.env.BOSS_PROP_BACKEND||'batch';
 report.threeModulePath=await resolveBundledThree();
 try{
  const page=await browser.newPage();await page.setViewport({width:778,height:370,deviceScaleFactor:2,isMobile:true,hasTouch:true});
+ if(process.env.BOSS_PROP_PHONE_CORE==='1'){
+  report.images=[];const prefix='releases/investigation/prop-reference-'+Date.now()+'-';
+  await page.exposeFunction('__writePropProbeImage',async(name,url)=>{if(!/^[a-z-]+$/.test(name)||!url.startsWith('data:image/png;base64,'))throw Error('诊断PNG参数无效');const path=prefix+name+'.png';await writeFile(path,Buffer.from(url.split(',')[1],'base64'));report.images.push(path);});
+ }
  page.on('pageerror',e=>report.errors.push(e.message));page.on('console',m=>{if(m.type()==='error')report.errors.push(m.text());});
  await page.goto('http://localhost:8490/dist-mobile/',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>window.__inkwave?.mobile,{timeout:120000});await page.mouse.click(2,2);
  await page.evaluate(()=>{window.__batchReady=null;__inkwave.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>__batchReady=v,e=>__batchReady=String(e));});
