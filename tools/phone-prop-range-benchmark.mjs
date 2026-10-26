@@ -10,7 +10,7 @@ export async function benchmarkBossPropRanges(game,G,T,create){
  const sources=[];G.scene.traverse(o=>{if(['props:paint','props:paint~ns','props:gloss','props:gloss~ns'].includes(o.name)&&o.isMesh&&!o.isInstancedMesh)sources.push(o);});
  if(sources.length!==4)throw Error('未找到4个原静态桶');
  const viewport=new T.Vector4(),scissor=new T.Vector4();r.getViewport(viewport);r.getScissor(scissor);
- const saved={frozen:game.frozen,pos:camera.position.clone(),q:camera.quaternion.clone(),direct:r.renderBufferDirect,target:r.getRenderTarget(),face:r.getActiveCubeFace(),mip:r.getActiveMipmapLevel(),test:r.getScissorTest()};
+ const saved={frozen:game.frozen,pos:camera.position.clone(),q:camera.quaternion.clone(),direct:r.renderBufferDirect,target:r.getRenderTarget(),face:r.getActiveCubeFace(),mip:r.getActiveMipmapLevel(),test:r.getScissorTest(),visible:sources.map(m=>m.visible)};
  const begin=performance.now(),yieldTurn=()=>new Promise(resolve=>setTimeout(resolve,0));let candidate,result,savedProof=false;
  const checkTime=()=>{if(performance.now()-begin>15000)throw Error('手机副本超过15秒预算，恢复原绘制');};
  try{
@@ -70,7 +70,7 @@ export async function benchmarkBossPropRanges(game,G,T,create){
  }finally{
   candidate?.dispose();camera.position.copy(saved.pos);camera.quaternion.copy(saved.q);camera.updateMatrixWorld(true);game.frozen=saved.frozen;
   r.setRenderTarget(saved.target,saved.face,saved.mip);r.setViewport(viewport);r.setScissor(scissor);r.setScissorTest(saved.test);
-  const restored=r.renderBufferDirect===saved.direct&&sources.every(m=>m.visible);
+  const restored=r.renderBufferDirect===saved.direct&&sources.every((m,i)=>m.visible===saved.visible[i]);
   if(result)result.restored=restored;if(!restored)throw Error('手机副本没有恢复原绘制');
  }
 }
