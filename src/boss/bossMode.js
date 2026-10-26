@@ -26,6 +26,7 @@
 import { G, emit } from '../core/ctx.js';
 import { Boss, BOSS } from './boss.js';
 import { restoreMobileBossReverb } from '../audio/mobileBossReverb.js';
+import { clearMobileBossMinimapInkForMatch } from '../platform/mobileBossMinimapInk.js';
 
 export const BOSS_MODE = {
   duration: 240,          // default match length (s)
@@ -87,5 +88,5 @@ export class BossMode {
   }
 
   // 【销毁】释放 Boss 持有的几何/材质/实例网格等 GPU 资源,并清空全局引用 G.boss(避免悬挂)
-  dispose() { restoreMobileBossReverb(this.match); this.boss.dispose(); if (G.boss === this.boss) G.boss = null; }
+  dispose() { clearMobileBossMinimapInkForMatch(this.match); restoreMobileBossReverb(this.match); this.boss.dispose(); if (G.boss === this.boss) G.boss = null; }
 }

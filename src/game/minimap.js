@@ -16,6 +16,7 @@
 //                                      respawn pulses (splats: the HUD's death markers)
 import { G, on } from '../core/ctx.js';
 import { SPECIALS, SUB } from '../config.js';
+import { drawMobileBossMinimapInk, mobileBossMinimapInkInfo } from '../platform/mobileBossMinimapInk.js';
 
 const TAU = Math.PI * 2;
 let CURRENT = null;          // the live Minimap (a new one is built per stage layout)
@@ -320,6 +321,7 @@ export class Minimap {
   // pays for the whole bilinear field + emboss (≈ 1/3 of the work per frame).
   // 按行更新 CPU 墨水颜色；分段刷新让大地图的像素写入成本摊开。
   _drawInk(y0 = 0, y1 = this.h) {
+    if (drawMobileBossMinimapInk(this, y0, y1)) return;
     const W = this.w, H = this.h, N = W * H;
     const grid = this.paint.grid, cell = this.pixCell, fxA = this.pixFx, fyA = this.pixFy, sxA = this.pixSx, syA = this.pixSy;
     const d = this.inkImg.data, fd = this.flashImg.data, own = this.owner;
@@ -373,6 +375,9 @@ export class Minimap {
     this.fctx.putImageData(this.flashImg, 0, 0, 0, y0, W, y1 - y0);
     if (flashes && !this._quiet) this.flashT = 0;
   }
+
+  // 仅诊断时读取；不把大缓存或match对象交给日志序列化。
+  bossInkInfo() { return mobileBossMinimapInkInfo(this); }
 
   // ------------------------------------------------------------------------------------------ per frame
   // 分别推进墨迹更新与动态合成；force 用于需要立即刷新的场景，不应常开抵消节流。

@@ -3,6 +3,7 @@ import { G } from '../core/ctx.js';
 import { BOSS_INTRO_SOUNDS } from '../audio/bossAudio.js';
 import { BOSS_CACHED_SOUNDS } from '../audio/bossOneShotCache.js';
 import { prepareMobileBossReverb, restoreMobileBossReverb } from '../audio/mobileBossReverb.js';
+import { prepareMobileBossMinimapInk, clearMobileBossMinimapInkForMatch } from './mobileBossMinimapInk.js';
 import { createMobileWarmSession, prepareMobileMesh } from './mobileWarmup.js';
 
 const sum = (total, row) => {
@@ -60,6 +61,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     () => G.audio?.prepareBossSample?.(name, { isCurrent: current,
       enabled: () => !!globalThis.inkwaveMobile && !!game.match?.boss && G.mode === 'match' }) || { skipped: true }, { sound: name }));
   add('准备手机Boss空间混响', () => prepareMobileBossReverb(game, match, { isCurrent: current }));
+  add('准备Boss战术地图', () => prepareMobileBossMinimapInk(game.minimap, match));
   add('准备手机Boss抗锯齿输出', () => game.R.prepareMobileBossOutput?.(match, { isCurrent: current, yieldTurn: session.yieldNow }) || { skipped: true });
   add('准备Boss标题与字体', () => game.hud?.boss?.prepareIntro?.({ isCurrent: current }) || { skipped: true });
   const total = tasks.length;
@@ -79,6 +81,7 @@ export async function prepareMobileBoss(game, match, { isCurrent = () => true, o
     if (!current()) cancelled = true;
     else { failed = true; throw error; }
   } finally {
+    if (cancelled || failed) clearMobileBossMinimapInkForMatch(match);
     if (cancelled || failed) game.R.mobileAA?.clearBossOutput?.(match);
     if (cancelled || failed) restoreMobileBossReverb(match);
     if (cancelled || failed) pool?.dispose();
