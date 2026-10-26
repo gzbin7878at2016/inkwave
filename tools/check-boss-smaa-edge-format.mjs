@@ -17,7 +17,10 @@ try{const page=await browser.newPage();await page.goto('http://localhost:8490/re
     const result=compare({R:{renderer:r,composer:c,mobileAA:aa},match,frozen:false},compact);cases.push({mode,angle,...result});
     if(result.maxByteDifference||result.nonBinary||!result.restored)throw Error('RG8像素/二值/恢复不一致：'+JSON.stringify(cases.at(-1)));
    }
-   return {cases:cases.length,maxDifference:Math.max(...cases.map(x=>x.maxByteDifference)),nonZeroEdgeSamples:cases.reduce((n,x)=>n+x.nonZero,0),allRestored:cases.every(x=>x.restored),performanceTest:false};
+   await aa.prepareBossEdges(r,match);c.render();
+   const installed=compare({R:{renderer:r,composer:c,mobileAA:aa},match,frozen:false},{format:T.RGFormat,type:T.HalfFloatType,internalFormat:'RG16F',expectedBits:[16,16,0,0]});
+   if(!installed.testedInstalledTarget||installed.originalFormat!==T.RGBAFormat||installed.maxByteDifference||!installed.restored)throw Error('安装目标未与真实原RGBA16F参考比较');
+   return {cases:cases.length,maxDifference:Math.max(...cases.map(x=>x.maxByteDifference)),nonZeroEdgeSamples:cases.reduce((n,x)=>n+x.nonZero,0),allRestored:cases.every(x=>x.restored),installedTargetComparedToOriginal:true,performanceTest:false};
   }finally{aa.dispose();c.dispose();output.dispose();source.dispose();r.dispose();delete window.inkwaveMobile;}
  });console.log(JSON.stringify(report));await writeFile('releases/investigation/smaa-edge-format-browser.json',JSON.stringify(report,null,2));
 }finally{await browser.close();}
