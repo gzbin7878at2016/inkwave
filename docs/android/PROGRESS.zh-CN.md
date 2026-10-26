@@ -622,3 +622,5 @@ v42已补实战CPU证据：独立方法25.322FPS、正常结束/USB191357-788467
 距离变量方法已完成：4945次距离写入拦截、15.001秒启用/45.015秒恢复，自然60游戏秒/69.6596实际秒=23.4569FPS，USB191733-083655-8a8a00f5核对并关闭。两段均存活且Trace未丢失/截断，基线6.421～9.464秒 vs本地值20.253～23.321：UpdateLayoutTree CPU343.18→388.44ms、每事件3.69→3.92ms，Layerize149.13→164.87ms、EndRaster738.29→868.22ms；世界绘制76～84 vs94～101calls，未证明样式收益，**不产品化该假设**。
 
 新增仅方法工具BOSS_NATIVE_PAINT_PROBE=1：15～45秒对无限循环且确实涉及boxShadow/filter等重绘属性的CSS动画加原生全局steps（约15Hz）；保留原关键帧曲线/时钟，忽略有限动画、transition和纯transform，animationstart事件捕获新动画，非逐帧getAnimations/seek/pause。暂停/45秒/退出恢复原easing并拆监听，弱引用最多128条，不影响APK产品。真实Edge选择/动态动画/时钟与关键帧曲线保持/暂停恢复与重新接管通过，待提交后手机同局短Trace对照；不把15Hz装饰刷新当游戏15帧或正式成绩，PC/画质/玩法保持。
+
+原生装饰15Hz手机API通过但未证明总体收益：8次接管/0错误、6个存活动画恢复、余下CSS已取消；UpdateLayoutTree CPU304.11→290.49ms/3秒，Main RunTask2659.77→2711.66ms，世界绘制65～78vs116～125不同，暂不产品化。方法26.18271FPS，USB192301-348242-301f843b核对/退出恢复/关闭。主线程/频率/变量负结果完整见BOSS-MAIN-INVESTIGATION.zh-CN.md；下一步补整体DOM隐藏中尚未单独测的controls/panel/crosshair+墨量条，不能用隐藏成绩交付。产品仍v42 f7bd686、正式18.341/18.013、30未稳/60未开始。
