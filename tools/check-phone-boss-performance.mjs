@@ -83,6 +83,22 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  if(${process.env.BOSS_VERIFY_READY_STATE==='1'&&process.env.BOSS_METHOD_PROBE==='1'}){
+   // 仅方法轮监听8个槽自身的class变化，不读布局、不逐帧轮询，不修改游戏状态。
+   p.readyStateProbe={gains:0,losses:0,stale:0,events:[]};
+   const slots=[...g.hud.el.querySelectorAll('.iw-sq')],last=new Map(slots.map(el=>[el,el.classList.contains('is-ready')]));
+   const observer=new MutationObserver(records=>{
+    for(const el of new Set(records.map(r=>r.target))){
+     const ready=el.classList.contains('is-ready'),prev=last.get(el);last.set(el,ready);
+     if(!g.match?.boss||g.match.attract||__G.mode!=='match')continue;
+     const s=p.readyStateProbe,flash=el.classList.contains('is-readyflash');
+     if(ready&&!prev)s.gains++;if(!ready&&prev)s.losses++;if(!ready&&flash)s.stale++;
+     if(ready!==prev&&s.events.length<32)s.events.push({activeMs:p.activeMs,slot:slots.indexOf(el),ready,flash});
+    }
+   });
+   for(const el of slots)observer.observe(el,{attributes:true,attributeFilter:['class']});
+   restores.push(()=>observer.disconnect());
+  }
   const director=${playbackMode==='director'}?(${createBossPlaybackDirector.toString()})(g,__G,p.actions):null;
   if(director){p.playbackInfo=()=>director.info();restores.push(()=>director.dispose());}
   const domProbe=${domAblation}?(${createBossDomProbe.toString()})(${JSON.stringify(domPart)}):null;if(domProbe)restores.push(()=>domProbe.dispose());
@@ -377,6 +393,8 @@ try{
  if(process.env.BOSS_REQUIRE_SMAA_CLEAR==='1'&&!report.postprocess.smaaClear?.active)throw Error('本批Boss SMAA清零修复未实际启用');
  report.minimapInk=await c.evaluate('__inkwave.minimap.bossInkInfo?.()||null');
  report.playbackResult=await c.evaluate('__phonePerf.playbackInfo?.()||null');
+ report.readyStateProbe=await c.evaluate('__phonePerf.readyStateProbe||null');
+ if(process.env.BOSS_VERIFY_READY_STATE==='1'&&report.methodProbe&&(!report.readyStateProbe?.losses||report.readyStateProbe.stale))throw Error('手机未覆盖真正就绪消耗/死亡的迁移，或仍有未就绪光晕残留');
  if(playbackMode==='director'){
   const run=report.playbackResult;
   if(!run||run.distanceTravelled<25||run.movedFrames<report.summary.frames*.2||!run.pathSuccess||run.bossDamage<=0)throw Error('自动游玩未证明真实移动/有效攻击/原导航覆盖，不能将按键计数当完成');

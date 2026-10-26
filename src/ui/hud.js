@@ -1344,6 +1344,9 @@ export class HUD {
   //   复活/就绪各有独立的小弹出动画
   _updSquads(teams) {
     const L = this._L;
+    // 仅手机正式Boss：就绪被消耗/阵亡/空槽后清理一次性就绪类，避免其附带的循环光晕残留。
+    // 保留真正就绪时的原首次闪光与循环反馈；PC、普通局、演示仍走原路径。
+    const clearSpentReady = !!globalThis.inkwaveMobile && !!G.match?.boss && !G.match.attract && G.mode === 'match';
     for (let t = 0; t < 2; t++) {
       const ps = (teams[t] && teams[t].players) || [];
       const icons = this.squads[t].children;
@@ -1351,7 +1354,13 @@ export class HUD {
         const p = ps[i];
         const el = icons[i];
         const k = `sq${t}${i}`;
-        if (!p) { if (L[k] !== 'none') { L[k] = 'none'; el.classList.add('is-empty'); } continue; }
+        if (!p) {
+          if (L[k] !== 'none') {
+            L[k] = 'none'; el.classList.add('is-empty');
+            if (clearSpentReady) el.classList.remove('is-ready', 'is-readyflash');
+          }
+          continue;
+        }
         const w = p.weapon || (this._actorFor(t, i) || {}).weaponId || 'shooter';
         const key = `${p.alive ? 1 : 0}|${p.alive ? 0 : Math.ceil(p.respawn || 0)}|${p.specialReady ? 1 : 0}|${p.isSelf ? 1 : 0}|${w}`;
         if (L[k] === key) continue;
@@ -1363,6 +1372,7 @@ export class HUD {
         const wasReady = prev && prev !== 'none' ? prev.split('|')[2] === '1' : false;
         el.classList.toggle('is-dead', !p.alive);
         el.classList.toggle('is-ready', !!p.specialReady && !!p.alive);
+        if (clearSpentReady && (!p.specialReady || !p.alive)) el.classList.remove('is-readyflash');
         el.classList.toggle('is-self', !!p.isSelf);
         el.querySelector('.iw-sq__n').textContent = p.alive ? '' : String(Math.max(0, Math.ceil(p.respawn || 0)) || '');
         if (wasAlive && !p.alive) {
