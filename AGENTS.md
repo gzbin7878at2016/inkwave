@@ -1,5 +1,7 @@
 # 本仓库开发与跨电脑同步规则
 
+2026-10-26第33批接续：当前安装v1.0.33，干净功能源码391966c，游戏关闭。仅手机Boss小地图缓存，1,548,466字节，实际启用及退出恢复通过；但正式28.232/26.151FPS（42→45/45→46°C），未稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test32.zh-CN.md的v33结果；新CPU缓存925.5ms对原路径624.4ms为反向线索，场景温度不同，不能认定收益。接着用BOSS_MINIMAP_BENCHMARK=1、BOSS_METHOD_PROBE=1、BOSS_REQUIRE_MINIMAP_CACHE=1、BOSS_VERIFY_BOSS_EXIT=1跑60秒调查，在结算后复制地图四种负载交替测原入口，确认后修正或撤回候选。保持2倍/SMAA/8人/玩法/PC，仅Boss；每批中文提交推送后测试，每局上传核对关闭。目标active，接续id=boss；USB常亮2，不并发CDP。以下较早版本记录仅供历史参考。
+
 本规则适用于整个仓库。用户要求每批修改及时提交GitHub并逐批汇报。
 
 1. 开始工作先阅读 `docs/DEVELOPMENT-HANDOFF.zh-CN.md` 和 `docs/android/PROGRESS.zh-CN.md`，检查分支、远端和工作区。最新Android开发分支为 `codex/android-capacitor`，不是main。

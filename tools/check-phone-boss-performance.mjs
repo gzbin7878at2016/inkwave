@@ -1,6 +1,7 @@
 // 真机Boss自动游玩：只操作输入，不改血量、人数、伤害、碰撞或模拟速度。
 import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
+import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
@@ -13,6 +14,8 @@ const audioSuspend=process.env.BOSS_AUDIO_SUSPEND==='1';
 const audioGraphBypass=process.env.BOSS_AUDIO_GRAPH_BYPASS==='1';
 const audioReverbBypass=process.env.BOSS_AUDIO_REVERB_BYPASS==='1';
 const verifyBossExit=process.env.BOSS_VERIFY_BOSS_EXIT==='1';
+const minimapBenchmark=process.env.BOSS_MINIMAP_BENCHMARK==='1';
+if(minimapBenchmark && (process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('小地图计算对照仅允许一分钟方法调查轮');
 if(ablation&&process.env.BOSS_METHOD_PROBE!=='1')throw Error('分组遮蔽仅允许带探针调查轮');
 if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU分组调查须开启方法探针且不能与渲染遮蔽同时运行');
 if(uiAblation&&(ablation||cpuAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('UI分组须独占一分钟带探针调查轮');
@@ -268,6 +271,7 @@ try{
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
+ if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
   report.bossExit=await c.evaluate(`(async()=>{const oldMap=__inkwave.minimap;await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);

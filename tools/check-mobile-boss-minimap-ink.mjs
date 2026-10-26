@@ -79,8 +79,12 @@ try {
     G.match = { boss: null }; check(prepare(b, G.match).skipped, '普通对局错误准备'); G.match = match;
     check(prepare({ w: 2000000, h: 2, ensure() {} }, match).reason === 'cache-budget', '容量未限制');
     prepare(b, match); a.paint.grid.fill(7); b.paint.grid.fill(7); a._drawInk(); b._drawInk(); equal(a, b); check(!info(b), '异常格值未保守回退');
-    const newer = { boss: {} }; G.match = newer; prepare(b, newer); clear(match);
+    const newer = { boss: {} }; G.match = newer; b.paint.grid.fill(1); prepare(b, newer); clear(match);
     check(info(b)?.active, '旧局清理误清新局');
+    const {benchmarkBossMinimapKernel} = await import('/tools/boss-minimap-kernel-benchmark.mjs');
+    const oldCache = b._bossInkCache, oldGrid = b.paint.grid.slice(), oldInk = b.inkImg.data.slice();
+    const kernel = benchmarkBossMinimapKernel(b);
+    check(kernel.results.length === 4 && b._bossInkCache === oldCache && b.paint.grid.every((v,i)=>v===oldGrid[i]) && b.inkImg.data.every((v,i)=>v===oldInk[i]), '对照工具改变真实地图');
     const mode = Object.create(BossMode.prototype); mode.match = newer; let disposed = 0;
     mode.boss = { dispose() { disposed++; } }; G.boss = mode.boss; mode.dispose();
     check(disposed === 1 && G.boss === null && !info(b), '实际Boss释放未清缓存或改变原释放'); G.match = match;

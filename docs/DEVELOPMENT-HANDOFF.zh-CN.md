@@ -1,5 +1,7 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
+2026-10-26第33批接续：当前安装v1.0.33，干净功能源码391966c，游戏关闭。仅手机Boss小地图缓存，1,548,466字节，实际启用及退出恢复通过；但正式28.232/26.151FPS（42→45/45→46°C），未稳定30，60未开始。读docs/android/BOSS-PERFORMANCE-test32.zh-CN.md的v33结果；新CPU缓存925.5ms对原路径624.4ms为反向线索，场景温度不同，不能认定收益。接着用BOSS_MINIMAP_BENCHMARK=1、BOSS_METHOD_PROBE=1、BOSS_REQUIRE_MINIMAP_CACHE=1、BOSS_VERIFY_BOSS_EXIT=1跑60秒调查，在结算后复制地图四种负载交替测原入口，确认后修正或撤回候选。保持2倍/SMAA/8人/玩法/PC，仅Boss；每批中文提交推送后测试，每局上传核对关闭。目标active，接续id=boss；USB常亮2，不并发CDP。以下较早版本记录仅供历史参考。
+
 更新日期：2026-10-26（北京时间）。本文件是接续开发入口，与根目录AGENTS.md共同维护。每批改动后更新相关记录并立即提交、推送。
 
 面向新手的背景解释见[云层烘焙负载说明](android/CLOUD-BAKING-BEGINNER.zh-CN.md)，涵盖本次手机降载、2倍高清与初始化/帧率验收的区别。
