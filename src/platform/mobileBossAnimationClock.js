@@ -1,7 +1,7 @@
 // 手机Boss无限CSS动画跟随实际游戏帧采样；原关键帧/时长/延迟/告警保持，有限动画交给浏览器。
 export function createMobileBossAnimationClock() {
   const scope='.iw-hud.is-boss,.iw-hud-over.is-boss',entries=new Map(),names=new Map();
-  const waiting=new WeakSet();let pendingCount=0;
+  const waiting=new WeakSet(),writes=[];let pendingCount=0;
   const supported=typeof CSSAnimation!=='undefined'&&!!document.timeline&&typeof document.getAnimations==='function'&&typeof Element.prototype.getAnimations==='function';
   let enabled=false,frames=0,captured=0,resumed=0,dropped=0,skipped=0;
   const belongs=target=>target?.isConnected&&typeof target.closest==='function'&&!!target.closest(scope);
@@ -56,17 +56,21 @@ export function createMobileBossAnimationClock() {
       if(!live){if(enabled||entries.size)suspend();return;}
       if(!enabled){enabled=true;for(const root of document.querySelectorAll(scope))for(const animation of root.getAnimations({subtree:true}))capture(animation);}
       const now=document.timeline.currentTime;if(!Number.isFinite(now))return;
-      frames++;
+      frames++;writes.length=0;
+      // 先读完状态再统一写时间；交错读写会让每个playState读取都刷新样式。
       for(const [animation,entry] of entries){
-        if(!belongs(animation.effect?.target)||animation.playState==='idle'){
-          if(animation.playState==='paused'&&animation.effect?.target?.isConnected)release(animation,entry);
+        const state=animation.playState;
+        if(!belongs(animation.effect?.target)||state==='idle'){
+          if(state==='paused'&&animation.effect?.target?.isConnected)release(animation,entry);
           else entries.delete(animation);
           dropped++;continue;
         }
         if(animation.playbackRate!==entry.rate||animation.effect.getTiming().iterations!==Infinity){release(animation,entry);continue;}
-        if(animation.playState!=='paused'&&!animation.pending){entries.delete(animation);dropped++;continue;}
-        animation.currentTime=(now-entry.startTime)*entry.rate;
+        if(state!=='paused'&&!animation.pending){entries.delete(animation);dropped++;continue;}
+        writes.push(animation,entry);
       }
+      for(let i=0;i<writes.length;i+=2)writes[i].currentTime=(now-writes[i+1].startTime)*writes[i+1].rate;
+      writes.length=0;
     },
     suspend,
     info:()=>({supported,active:enabled,tracked:entries.size,pending:pendingCount,frames,captured,resumed,dropped,skipped,names:Object.fromEntries(names)}),
