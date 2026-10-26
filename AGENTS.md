@@ -3,11 +3,11 @@
 ## 当前接续（2026-10-27，优先于历史版本说明）
 
 - 仅Android Boss；先稳定30再60，保持2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB在线常亮2，不并发操作CDP。
-- 已安装v1.0.43/code43，干净功能源码e7e8329，当前游戏关闭。读docs/android/BOSS-PERFORMANCE-test43.zh-CN.md：RG16F仅省边缘未用通道，保留浮点精度、权重/HDR/全尺寸；失败/取消/离场恢复RGBA16F，72组接口/54组像素、手机实际目标对原参考均字节差0。
+- 已安装v1.0.44/code44，干净源码21980d5，当前游戏关闭。v44仅补日志，真实USB201534-767389-92c6f686含实际RG16F字段，26.44778FPS未稳30，详见docs/android/BOSS-PERFORMANCE-test44.zh-CN.md。读docs/android/BOSS-PERFORMANCE-test43.zh-CN.md：RG16F仅省边缘未用通道，保留浮点精度、权重/HDR/全尺寸；失败/取消/离场恢复RGBA16F，72组接口/54组像素、手机实际目标对原参考均字节差0。
 - 正式无探针26.416/17.428FPS，45→48/47→48°C；**30未稳，60未开始，未证明正式提帧收益**。所有自然60游戏秒、真实UI USB核对源码后关闭；不能用方法/遮蔽/格式比较或4.39MiB逻辑省量当成绩。
 - APK releases/INKWAVE-android-test43-e7e8329.apk，21,148,049字节，SHA256 8a59014670726e12bebfa15a7e26d063f5a5090c21084c867e97a944da3cfc67；v2签名与390资产一致。RG8手机max差102已拒绝；RG16F安装目标与RGBA16F参考差0，161397非空边缘全二值、权重/目标恢复，USB200752-803967-3329cc3d。
 - 已完成HUD all/bar/special/markers/map/top/controls/panel/crosshair隔离；变量本地化、原生装饰15Hz无明确收益，未产品化。详见BOSS-MAIN-INVESTIGATION.zh-CN.md/BOSS-DOM-INVESTIGATION.zh-CN.md，勿重复负结果。实战CPU4/7策略1324.8/1651.2MHz且曾打满；不能把空闲921.6或热状态3单独当因果。
-- 下一批先补上传诊断的边缘格式/逻辑字节（只读对象，不加帧内GL查询），再做小地图像素计算Worker离线实验：原算法/像素/owner闪光一致、消息/复制成本和取消回退先验；只在主循环消费，不额外触发UI重绘。有收益才产品化，不删子步或降低分辨率/人数。
+- 上传诊断边缘字段已补且真机落盘确认。下一批做小地图像素计算Worker离线实验：原算法/像素/owner闪光一致、消息/复制成本和取消回退先验；只在主循环消费，不额外触发UI重绘。有收益才产品化，不删子步或降低分辨率/人数。
 - 正式METHOD_PROBE=0；GPU/CPU/UI/DOM/音频旁路、BOSS_LAYER_HINTS、BOSS_MARKER_VAR_PROBE、BOSS_NATIVE_PAINT_PROBE、COMPARE_SMAA_CLEAR/EDGES、生命周期/小地图benchmark均0。REQUIRE_SMAA_EDGES=1、RASTER_HINTS=1、AUDIO_PARAM_DEDUPE=1、SMAA_CLEAR=1、LENS_PREPARATION=1，ANIMATION_CLOCK/MINIMAP_CACHE=0。先中文commit/push用户fork，再干净构建安装测试，结论独立中文提交。
 - Trace禁/json/protocol（曾SIGTRAP）、禁详细Skia12秒超256MiB。只用已验证3秒短Trace或独立20秒native，本页标记绑定PID、严格CPU字段正则、buffer完整/切换一致0。原始含系统线程只留本地releases，不入Git；保留用户Logs/、play.bat、start-game.bat。
 
