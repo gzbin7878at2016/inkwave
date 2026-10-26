@@ -20,7 +20,8 @@ export async function benchmarkBossPropRanges(game,G,T,create){
   const pixels=[];
   for(const [name,eye,target] of [['actual',null,null],['spawn',[0,5,-35],[0,3,0]],['left',[-12,4,-15],[0,2,0]]]){
    if(eye){camera.position.set(...eye);camera.lookAt(...target);camera.updateMatrixWorld(true);}
-   draw(false,true,false);draw(true,true,false);
+   // 切相机/绘制路径后先让原onBeforeRender和材质状态稳定；真正采样仍必须连续重复一致。
+   for(let i=0;i<3;i++)draw(false,true,false);for(let i=0;i<3;i++)draw(true,true,false);for(let i=0;i<3;i++)draw(false,true,false);
    const a1=draw(false),a=draw(false),b1=draw(true),b=draw(true),after=draw(false),full=draw(true,false);
    const p={view:name,referenceRepeat:diff(a1.data,a.data),referenceAcross:diff(a.data,after.data),candidateRepeat:diff(b1.data,b.data),candidate:diff(a.data,b.data),withoutCulling:diff(a.data,full.data),submittedTriangles:b.submittedTriangles};pixels.push(p);
    if([p.referenceRepeat,p.referenceAcross,p.candidateRepeat,p.candidate,p.withoutCulling].some(d=>d.max))throw Error('手机实际像素或重复参考不一致：'+JSON.stringify(p));
