@@ -2,6 +2,8 @@
 import {androidCDP} from './android-cdp.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
+const testWeapon=process.env.BOSS_TEST_WEAPON||'';
+if(testWeapon&&!/^[a-z0-9_]+$/i.test(testWeapon))throw Error('测试武器名称无效');
 const ablation=process.env.BOSS_GPU_ABLATION==='1';
 const cpuAblation=process.env.BOSS_CPU_ABLATION==='1';
 const uiAblation=process.env.BOSS_UI_ABLATION==='1';
@@ -10,7 +12,7 @@ if(cpuAblation&&(ablation||process.env.BOSS_METHOD_PROBE!=='1'))throw Error('CPU
 if(uiAblation&&(ablation||cpuAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('UI分组须独占一分钟带探针调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={methodProbe:process.env.BOSS_METHOD_PROBE==='1',gpuAblation:ablation,cpuAblation,uiAblation,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -28,6 +30,7 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  if(${JSON.stringify(testWeapon)}){const old=g.profile.weapon;g.profile.weapon=${JSON.stringify(testWeapon)};restores.push(()=>g.profile.weapon=old);}
   const uiAblationEnabled=${uiAblation};
   let pauseStyle,flatStyle;
   if(uiAblationEnabled){
@@ -81,8 +84,12 @@ try{
    const renderer=g.R.renderer,direct=renderer.renderBufferDirect;
    renderer.renderBufferDirect=function(...args){const before=this.info.programs.length;const result=direct.apply(this,args);
     if(p.match===g.match&&g.match?.state==='playing'&&this.info.programs.length>before&&p.newPrograms.length<50){
-     const material=args[3],object=args[4];p.newPrograms.push({at:Date.now(),activeMs:p.activeMs,object:object?.name,parent:object?.parent?.name,material:material?.name,type:material?.type,
-      programs:this.info.programs.slice(before).map(v=>({id:v.id,name:v.name,cacheKey:String(v.cacheKey||'').slice(0,160)}))});}
+     const material=args[3],object=args[4],owner=g.match.actors.find(a=>a.character?.root?.getObjectById(object.id));
+     p.newPrograms.push({at:Date.now(),activeMs:p.activeMs,object:object?.name,parent:object?.parent?.name,material:material?.name,type:material?.type,
+      owner:owner?{name:owner.name,weapon:owner.weaponId,local:owner.isLocal}:null,flags:{transparent:material?.transparent,depthWrite:material?.depthWrite,side:material?.side,alphaTest:material?.alphaTest,
+       vertexColors:material?.vertexColors,skinned:!!object?.isSkinnedMesh,determinant:object?.matrixWorld.determinant(),colorSize:object?.geometry?.attributes.color?.itemSize},
+      shaderHead:material?.isShaderMaterial?{vertex:material.vertexShader.slice(0,120),fragment:material.fragmentShader.slice(0,200)}:undefined,
+      programs:this.info.programs.slice(before).map(v=>({id:v.id,name:v.name,cacheKey:String(v.cacheKey||'').slice(0,5000)}))});}
     return result;
    };restores.push(()=>renderer.renderBufferDirect=direct);
    const wrap=(o,k,label)=>{const fn=o[k],values=p.methods[label]=[];o[k]=function(...args){const start=performance.now();try{return fn.apply(this,args)}finally{if(values.length<10000)values.push(performance.now()-start)}};restores.push(()=>o[k]=fn);};
