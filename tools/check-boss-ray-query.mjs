@@ -29,11 +29,20 @@ for(const [name,layout]of cases){
  if(name==='captured'){rays.length=0;for(const a of layout.records)rays.push([new T.Vector3(...a.slice(0,3)),new T.Vector3(...a.slice(3,6)),a[6],a[7]]);}
  const run=(ray,optimized,out)=>{const[o,d,max,skip]=ray;if(optimized)level.queryBlocks=(_a,_b,_c,_d,ids)=>candidate.queryBounds?candidate.queryBounds(_a,_b,_c,_d,ids):candidate.query(o,d,max,ids);try{return physics.raycast(o,d,max,out,skip);}finally{level.queryBlocks=original;}};
  const snap=h=>[h.hit,h.dist,h.block,h.face,...h.point,...h.normal,h.u,h.v];
- for(let i=0;i<rays.length;i++){const a=new Hit(),b=new Hit();a.u=b.u=17;a.v=b.v=19;assert.deepEqual(snap(run(rays[i],false,a)),snap(run(rays[i],true,b)),`${name} ray ${i}`);}
+ for(let i=0;i<rays.length;i++){
+  if(candidate.queryBounds){
+   const[o,d,max]=rays[i],ex=o.x+d.x*max,ez=o.z+d.z*max,args=[Math.min(o.x,ex),Math.min(o.z,ez),Math.max(o.x,ex),Math.max(o.z,ez)];
+   assert.deepEqual([...candidate.queryBounds(...args,[])],[...original.call(level,...args,[])],`${name} 候选id顺序 ${i}`);
+  }
+  const a=new Hit(),b=new Hit();a.u=b.u=17;a.v=b.v=19;assert.deepEqual(snap(run(rays[i],false,a)),snap(run(rays[i],true,b)),`${name} ray ${i}`);
+ }
  const timing=[],out=new Hit();for(const optimized of [false,true,true,false,false,true,true,false]){const start=performance.now();for(const ray of rays)run(ray,optimized,out);timing.push({optimized,rays:rays.length,totalMs:performance.now()-start});}
  reports.push({name,rays:rays.length,blocks:level.blocks.length,controlBytes:candidate.controlBytes,stats:{...candidate.stats},timing});
  if(process.env.BOSS_RAY_QUERY_KIND==='cache'){
   assert.ok(candidate.stats.entries<=256&&candidate.stats.bytes<=65536,'缓存预算');
+  const args=[level.hx0+4.1,level.hz0+4.1,level.hx0+8.1,level.hz0+8.1],scratch=[];
+  const expected=[...candidate.queryBounds(...args,scratch)];scratch.length=0;scratch.push(-100);
+  assert.deepEqual([...candidate.queryBounds(...args,[])],expected,'原查询scratch后续改写不能污染缓存');
   if(name!=='captured'){level._buildHash();const ids=[],expected=[...level.queryBlocks(-12,-12,12,12,ids)];assert.deepEqual([...candidate.queryBounds(-12,-12,12,12,[])],expected);assert.equal(candidate.stats.resets,1,'重新建哈希必须失效');}
  }
 }
