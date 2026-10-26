@@ -256,10 +256,12 @@ try{
    if(report.displayDuringPlay.observedWidth!==report.displayBeforeBoss.observedWidth||report.displayDuringPlay.observedHeight!==report.displayBeforeBoss.observedHeight)throw Error('Boss窗口实验改变了实际物理分辨率');
   }
   if(verifyDisplayLifecycle&&sample.state==='playing'&&sample.activeMs>=20000&&!report.displayLifecycle){
-   const query='(async()=>({native:await inkwaveMobile.BossDisplay.getState(),hidden:document.hidden,suspended:__inkwave.mobileSuspended,paused:__inkwave.match.paused}))()';
+   const query='(async()=>({native:await inkwaveMobile.BossDisplay.getState(),app:await inkwaveMobile.App.getState(),hidden:document.hidden,suspended:!!__inkwave.mobileSuspended,needsResume:__inkwave.mobile.state.needsResume,paused:__inkwave.match.paused}))()';
    report.displayLifecycle={before:await c.evaluate(query)};
-   try{c.command('shell','input','keyevent','KEYCODE_HOME');await new Promise(r=>setTimeout(r,700));report.displayLifecycle.background=await c.evaluate(query);}
+   // App状态变化来自onStop，可能晚于onPause/Home动画；等待实际暂停，不能用固定700ms假定已完成。
+   try{c.command('shell','input','keyevent','KEYCODE_HOME');for(let i=0;i<24;i++){await new Promise(r=>setTimeout(r,250));report.displayLifecycle.background=await c.evaluate(query);if(report.displayLifecycle.background.suspended&&!report.displayLifecycle.background.native.foreground)break;}}
    finally{c.command('shell','am','start','-n','com.demoink.inkwave/.MainActivity');}
+   if(!report.displayLifecycle.background.suspended)throw Error('未收到实际后台暂停状态：'+JSON.stringify(report.displayLifecycle.background));
    let resumed=false;
    for(let i=0;i<60;i++){
     resumed=await c.evaluate('(()=>{const d=document.querySelector("#mobile-dialog");if(document.hidden||!d||d.hidden||!d.querySelector("button"))return false;d.querySelector("button").click();return true;})()');
@@ -268,7 +270,7 @@ try{
    if(!resumed)throw Error('前台继续按钮未出现，生命周期调查未自动恢复');
    for(let i=0;i<60;i++){report.displayLifecycle.resumed=await c.evaluate(query);if(report.displayLifecycle.resumed.native.owned&&!report.displayLifecycle.resumed.paused)break;await new Promise(r=>setTimeout(r,100));}
    const e=report.displayLifecycle,b=report.displayBeforeBoss;
-   e.ok=e.background.hidden&&e.background.suspended&&e.background.paused&&!e.background.native.owned
+   e.ok=!e.background.app.isActive&&e.background.suspended&&e.background.paused&&!e.background.native.owned
     &&e.background.native.preferredDisplayModeId===b.preferredDisplayModeId&&Math.abs(e.background.native.preferredRefreshRate-b.preferredRefreshRate)<.01
     &&!e.resumed.hidden&&!e.resumed.suspended&&!e.resumed.paused&&e.resumed.native.owned&&e.resumed.native.preferredDisplayModeId===e.resumed.native.requestedModeId;
    if(!e.ok)throw Error('后台窗口恢复/前台重新申请验证失败');

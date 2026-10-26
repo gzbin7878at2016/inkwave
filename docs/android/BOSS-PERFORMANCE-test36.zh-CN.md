@@ -29,3 +29,13 @@ Android官方建议仅改刷新率时优先preferredRefreshRate，但该方式�
 第一局设置60秒、BOSS_METHOD_PROBE=1、BOSS_VERIFY_DISPLAY_LIFECYCLE=1、BOSS_VERIFY_BOSS_EXIT=1，保持BOSS_REQUIRE_LENS_PREPARATION=1及所有音画旁路/小地图缓存/计算对照为0。开局前、实战5秒和40秒读取原生状态及物理尺寸；20秒后实际按Home、核对后台原窗口字段恢复，再启动同一个游戏并点击真实继续按钮，核对重新申请。实际间隔（包括后台调查干扰）保留，整局不作正式成绩；自然结算后返回菜单核对原字段，再USB上传核对并关闭。系统是否采纳60Hz如实记录，不强行改全局刷新设置。
 
 若功能/尺寸/恢复通过，再运行两局BOSS_METHOD_PROBE=0、BOSS_VERIFY_DISPLAY_LIFECYCLE=0的60秒正式测试：固定2倍、SMAA、scale1、8人、原物理/AI/伤害/音画，分别记录温度、FPS、p95/p99及≥100ms，逐局上传核对关闭。稳定30未通过前不进入60FPS目标，也不把面板60Hz等同于游戏60FPS。
+
+## 首次真机调查未完成及工具修正
+
+v36已从干净源码3d13ca3f7193bfe4412f12943f29e6d49d406aaa构建安装，APK21,141,006字节，SHA-256 60456902fedc552c9014cceee73e9ba450ef93ff936d7b7b649b253303fa57d6，v2签名通过，385个网页资源逐字节匹配。
+
+实战5秒及约20秒均显示：请求modeId1、preferredRefreshRate60，但实际modeId2/120Hz，物理仍1200×2652。该设备没有采纳新模式偏好，不能称已锁60Hz或提帧。
+
+20秒Home调查，原生foreground/owned变false，窗口两字段恢复0；但700ms时网页hidden=false、paused=false，未出现继续按钮，调查中止，不是完整60秒成绩。真实USB日志INKWAVE-logs-20261026-144721-452430-edbcc52c.json核对源码后已关闭。
+
+查本机固定依赖代码：Capacitor BridgeActivity在onStop发App.isActive=false，在onPause调用插件pause；AppPlugin另有pause/resume事件，当前网页监听appStateChange。不能仅凭700ms推定整个Home/Stop过程已完成，也不能断言一定是网页缺陷。工具改为等待实际暂停（最多24次×250ms加查询），同时读取原生App.getState、BossDisplay状态、网页needsResume/suspended/paused；用App.isActive而不是document.hidden认定后台，避免WebView可见性实现差异。始终在finally回到游戏前台；确实没有暂停则保留状态并失败，不能调用suspend伪造通过。只改调查工具，安装APK仍为3d13ca3；再次调查前中文提交推送。
