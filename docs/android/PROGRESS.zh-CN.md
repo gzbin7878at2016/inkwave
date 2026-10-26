@@ -466,3 +466,9 @@
 
 - 新增capture-phone-boss-native.mjs，只附着名字/隔离类型匹配且新鲜的带探针轮，等战斗8～13秒；窗口已过/主轮中止/无目标即退出，不重开游戏、不改变ADB转发。只采sched/freq/idle20秒，16MiB每CPU，保存实时CDP时钟的前后uptime锚点；连接/指令/进程/解压上限均有限制，不覆盖旧原件。
 - PowerShell在主轮启动后另开进程设置BOSS_TRACE_NAME为同一新名称、BOSS_TRACE_PROBE为music/panner/audio-suspend，执行node tools/capture-phone-boss-native.mjs。原件仅本地忽略目录，含其他进程信息不提交；带跟踪不计成绩。先语法检查中文提交，再用于音乐原生对照。
+
+### 音乐原生对照完成，下一步区分DSP图与输出设备
+
+- v29音乐隔离完整游玩、USB文件INKWAVE-logs-20261026-122750-262611-adee6267.json核对关闭；25.287FPS只是调查。21秒后players=0，原战斗音效仍在，原生20.0005秒、1201267/1201267记录、锚点±125ms；12～14.2秒和22～28.5秒完整覆盖，AudioOutput单核81.34%→75.12%，主线程89.63%→88.40%。窗口/声道数不同，不据此量化音乐真实成本，未见大幅减负，不改正式BGM。
+- 下一独立BOSS_AUDIO_GRAPH_BYPASS=1探针在15秒断开原主限幅器到destination输出，只保留80Hz/百万分之一振幅单振荡器；上下文保持running，用于区分整个DSP图与输出设备/回调负担。阻止新音效/循环/切歌，原音乐音序仍可排期但图不输出；finally停止试验音源并重接原限幅器，创建失败也恢复。新增采样率/baseLatency/outputLatency，捕获类型audio-graph。
+- 此轮会静音原游戏声音，严格互斥、只许一分钟带探针，不进入APK/正式成绩；不得以静音实现性能目标。先语法检查中文提交，再采集。图未连接与ctx挂起是两个不同条件，需实际state确认。

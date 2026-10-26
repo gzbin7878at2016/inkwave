@@ -4,8 +4,8 @@ import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { inflateSync } from 'node:zlib';
 const name = process.env.BOSS_TRACE_NAME, kind = process.env.BOSS_TRACE_PROBE;
-const flag = { music: 'musicAblation', panner: 'pannerAblation', 'audio-suspend': 'audioSuspend' }[kind];
-if (!name || !/^[a-z0-9-]+$/i.test(name) || !flag) throw Error('须明确BOSS_TRACE_NAME与BOSS_TRACE_PROBE=music/panner/audio-suspend');
+const flag = { music: 'musicAblation', panner: 'pannerAblation', 'audio-suspend': 'audioSuspend', 'audio-graph': 'audioGraphBypass' }[kind];
+if (!name || !/^[a-z0-9-]+$/i.test(name) || !flag) throw Error('须明确BOSS_TRACE_NAME与BOSS_TRACE_PROBE=music/panner/audio-suspend/audio-graph');
 const base = `releases/investigation/systemtrace-${name}`, reportPath = `releases/investigation/phone-boss-${name}.json`;
 try { await access(base + '.meta.json'); throw Error('不能覆盖已有原生调查，请使用新名称'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 const adb = process.env.ADB_PATH || `${process.env.USERPROFILE}/.cache/demoink-android/sdk/platform-tools/adb.exe`;
