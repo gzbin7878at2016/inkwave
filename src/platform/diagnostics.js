@@ -282,10 +282,11 @@ export function installDiagnostics(nativePlugin) {
         } finally { clearTimeout(timer); }
       }
       if (result.ok !== true || !/^INKWAVE-logs-[\w-]+\.json$/.test(result.filename || '')) throw new Error('电脑没有确认保存成功');
-      showStatus(`上传成功，电脑已保存：releases/logs/${result.filename}`);
+      record('upload-succeeded', { transport: result.transport || 'web', filename: result.filename });
+      showStatus(`上传成功${result.transport === 'usb' ? '（USB）' : ''}，电脑已保存：releases/logs/${result.filename}`);
     } catch (e) {
       record('upload-failed', e, 'error');
-      showStatus(`上传失败：${clean(e, 300)}。请确认电脑接收服务已开启、手机与电脑同一Wi-Fi；也可使用“导出日志”。`);
+      showStatus(`上传失败：${clean(e, 300)}。USB调试请在电脑运行tools/start-usb-debug.ps1；局域网上传需同一Wi-Fi。也可使用“导出日志”。`);
     } finally { upload.disabled = false; upload.textContent = '上传日志'; }
   };
   return manager;

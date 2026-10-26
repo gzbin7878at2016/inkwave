@@ -54,6 +54,17 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(self.post(b'{}', {'Content-Type': 'application/json', 'Origin': 'https://example.com'})[0], 403)
         self.assertFalse(self.logs.exists())
 
+    def test_usb_handshake(self):
+        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        try:
+            conn.request('GET', '/api/usb')
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), {'service': 'inkwave-log-receiver', 'usbProtocol': 1})
+            self.assertFalse(self.logs.exists())
+        finally:
+            conn.close()
+
 
 if __name__ == '__main__':
     unittest.main()

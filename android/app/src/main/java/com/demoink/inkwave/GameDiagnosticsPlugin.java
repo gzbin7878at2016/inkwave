@@ -24,11 +24,27 @@ import org.json.JSONObject;
 // 只导出用户主动请求的本地诊断：Android10+通过MediaStore写“下载”，无需存储权限。
 @CapacitorPlugin(name = "GameDiagnostics")
 public class GameDiagnosticsPlugin extends Plugin {
+    // adb reverse tcp:18765 tcp:8765 把手机回环端口映射到开发机，无需同一局域网。
+    private boolean usbReceiverAvailable() {
+        HttpURLConnection probe = null;
+        try {
+            probe = (HttpURLConnection) new URL("http://127.0.0.1:18765/api/usb").openConnection();
+            probe.setConnectTimeout(700); probe.setReadTimeout(700);
+            probe.setInstanceFollowRedirects(false);
+            if (probe.getResponseCode() != 200) return false;
+            try (java.io.InputStream input = probe.getInputStream(); java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream()) {
+                byte[] bytes = new byte[256]; int n;
+                while ((n = input.read(bytes)) != -1) { buffer.write(bytes, 0, n); if (buffer.size() > 1024) return false; }
+                JSONObject response = new JSONObject(new String(buffer.toByteArray(), StandardCharsets.UTF_8));
+                return "inkwave-log-receiver".equals(response.optString("service")) && response.optInt("usbProtocol") == 1;
+            }
+        } catch (Exception unavailable) { return false; }
+        finally { if (probe != null) probe.disconnect(); }
+    }
     @PluginMethod
     public void uploadReport(PluginCall call) {
         String text = call.getString("text");
-        String endpoint = getContext().getString(R.string.log_upload_url);
-        if (endpoint.isEmpty()) { call.reject("此APK未配置电脑日志接收地址"); return; }
+        String lanEndpoint = getContext().getString(R.string.log_upload_url);
         if (text == null || text.isEmpty()) { call.reject("日志为空"); return; }
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > 4 * 1024 * 1024) { call.reject("日志超过4MiB"); return; }
@@ -36,6 +52,9 @@ public class GameDiagnosticsPlugin extends Plugin {
         bridge.execute(() -> {
             HttpURLConnection connection = null;
             try {
+                boolean usb = usbReceiverAvailable();
+                String endpoint = usb ? "http://127.0.0.1:18765/api/logs" : lanEndpoint;
+                if (endpoint.isEmpty()) throw new IllegalStateException("USB接收未就绪，且未配置局域网地址；请在电脑运行tools/start-usb-debug.ps1");
                 JSONObject report = new JSONObject(text);
                 if (!"inkwave-android-diagnostics-v1".equals(report.optString("format"))) throw new IllegalArgumentException("日志格式无效");
                 connection = (HttpURLConnection) new URL(endpoint).openConnection();
@@ -60,8 +79,10 @@ public class GameDiagnosticsPlugin extends Plugin {
                 String filename = saved.optString("filename");
                 if (!saved.optBoolean("ok") || !filename.matches("INKWAVE-logs-[\\w-]+\\.json")) throw new IllegalStateException("电脑未确认保存");
                 JSObject result = new JSObject(); result.put("ok", true); result.put("filename", filename);
+                result.put("transport", usb ? "usb" : "lan");
                 call.resolve(result);
             } catch (Exception error) {
+                // 已开始POST后不换通道重发，避免回执丢失时重复保存。
                 call.reject("无法上传到电脑：" + error.getMessage());
             } finally { if (connection != null) connection.disconnect(); }
         });

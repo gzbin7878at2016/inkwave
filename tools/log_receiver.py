@@ -55,6 +55,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Private-Network', 'true')
         self.end_headers()
 
+    def do_GET(self):
+        # USB反向端口握手；不返回项目绝对路径或原始日志。
+        if self.path == '/api/usb':
+            self.reply(200, {'service': 'inkwave-log-receiver', 'usbProtocol': 1})
+            return
+        super().do_GET()
+
     def do_POST(self):
         if self.path != '/api/logs':
             self.reply(404, {'error': '接口不存在'})
