@@ -14,6 +14,7 @@ import {benchmarkMinimapWorkerPipeline} from './minimap-worker-pipeline.mjs';
 import {compareBossSmaaClear} from './compare-boss-smaa-clear.mjs';
 import {createBossDomProbe} from './boss-dom-probe.mjs';
 import {createBossWorkerLoadProbe} from './boss-worker-load-probe.mjs';
+import {createBossStageProbe} from './boss-stage-probe.mjs';
 import {createBossLayerHintProbe} from './boss-layer-hint-probe.mjs';
 import {createBossMarkerVarProbe} from './boss-marker-var-probe.mjs';
 import {createBossNativePaintProbe} from './boss-native-paint-probe.mjs';
@@ -77,6 +78,8 @@ if(minimapWorkerBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||
 if(minimapWorkerPipeline&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||minimapWorkerBenchmark||compareSmaaEdges||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('Worker流水线仅允许结算后独立一分钟方法轮');
 // 并行核心余量调查：独占一分钟方法轮，15～45秒Worker承担固定计算量，其他旁路/比较全关。
 const workerLoadMs=process.env.BOSS_WORKER_LOAD_MS?Number(process.env.BOSS_WORKER_LOAD_MS):0;
+const stageProbe=process.env.BOSS_STAGE_PROBE==='1';
+if(stageProbe&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||workerLoadMs||verifyWorkerRecovery||propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||coatBenchmark||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('细分阶段仅供独立一分钟方法轮');
 if(workerLoadMs&&(!Number.isInteger(workerLoadMs)||workerLoadMs<1||workerLoadMs>30))throw Error('BOSS_WORKER_LOAD_MS须为1～30整数');
 if(workerLoadMs&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyWorkerRecovery||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('Worker负载调查仅允许独立一分钟方法轮');
 if(compareSmaaClear&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('SMAA同输入比较仅允许一分钟独立方法调查');
@@ -116,6 +119,7 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:${fpsCap},mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
+  const stages=${stageProbe}?(${createBossStageProbe.toString()})(g,__G):null;if(stages){p.stages=stages;p.installMatchProbe=m=>stages.bind(m);restores.push(()=>stages.dispose());}
   if(${process.env.BOSS_VERIFY_READY_STATE==='1'&&process.env.BOSS_METHOD_PROBE==='1'}){
    // 仅方法轮监听8个槽自身的class变化，不读布局、不逐帧轮询，不修改游戏状态。
    p.readyStateProbe={gains:0,losses:0,stale:0,events:[]};
@@ -200,7 +204,7 @@ try{
    restores.push(()=>g.R.render=render);
   }
   // 可选方法级调查会增加计时开销，单独标记，不能混充无探针基线。
-  if(${process.env.BOSS_METHOD_PROBE==='1'}){
+  if(${process.env.BOSS_METHOD_PROBE==='1'&&!stageProbe}){
    p.methods={};
    p.simulationStats={};p.slowMethods=[];p.newPrograms=[];p.combatProgramDraws={};
    const aggregate=(o,k,label,actor)=>{if(!o||typeof o[k]!=='function')return;const fn=o[k],row=p.simulationStats[label]??={calls:0,totalMs:0,maxMs:0};
@@ -278,6 +282,7 @@ try{
   // 每帧在原输入控制器之前注入操作，仍经过正常物理和武器逻辑。
   g._frame=function(dt,...args){
    const m=g.match,a=m?.local,live=!!(p.match===m&&m?.boss&&m.state==='playing'&&!m.paused&&__G.mode==='match');
+   stages?.begin(live,p.activeMs,dt);
    if(audioSuspendEnabled&&live&&!p.audioSuspendedForProbe&&p.activeMs>=15000){p.audioSuspendedForProbe=true;const ctx=__G.audio.ctx;
     if(!ctx)p.audioSuspendError='战斗音频上下文未创建';else ctx.suspend().catch(e=>{p.audioSuspendError=String(e)});}
    if(audioGraphBypassEnabled&&live&&!p.audioBypassedForProbe&&p.activeMs>=15000){p.audioBypassedForProbe=true;
@@ -328,7 +333,7 @@ try{
     const phase=['baseline','sea','background','props','hud','baseline-restored'][Math.min(5,Math.floor(p.activeMs/10000))];
     if(p.ablationPhase!==phase){g.hud.el.style.visibility=phase==='hud'?'hidden':hudVisibility;p.ablationPhase=phase;}
    }
-   if(director){try{director.step(live?p.activeMs:null,dt);}catch(error){p.playbackError=String(error);director.dispose();}}
+   if(director){stages?.enterDriver();try{director.step(live?p.activeMs:null,dt);}catch(error){p.playbackError=String(error);director.dispose();}finally{stages?.leave();}}
    else if(live&&a?.alive){
     const t=p.activeMs/1000,cycle=t%18,b=m.boss;
     g.input.keys.clear();g.input.mouse.left=false;
@@ -344,7 +349,7 @@ try{
     if(cycle>9&&cycle<9.25){g.input.keys.add('KeyE');p.actions.sub++;}
     if(cycle>12&&cycle<12.25){g.input.keys.add('KeyQ');p.actions.special++;}
    }else {g.input.keys.clear();g.input.mouse.left=false;}
-   return frame.call(this,dt,...args);
+   stages?.enterGame();try{return frame.call(this,dt,...args);}finally{stages?.leave();stages?.end();}
   };
   // 只统计连续战斗帧，排除跨阶段间隔，保留战斗内全部慢帧。
   g.mobile.recordFrame=function(ms){
@@ -448,6 +453,7 @@ try{
  report.summary={frames:a.length,seconds,averageFps:a.length/seconds,p50:a[Math.floor(a.length*.5)],p95:a[Math.floor(a.length*.95)],p99:a[Math.floor(a.length*.99)],over100:a.filter(x=>x>=100).length};
  if(!a.length||(seconds<duration&&!report.roundCompleted))throw Error('实际战斗采样时长不足');
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
+ report.stageProbe=await c.evaluate('window.__phonePerf.stages?.summary()||null');
  report.audioNames=await c.evaluate('window.__phonePerf.audioNames||null');
  report.audioCache=await c.evaluate('window.__G?.audio?._bossSamples?.stats||null');
  report.domProbe=await c.evaluate('__phonePerf.domProbe||null');
