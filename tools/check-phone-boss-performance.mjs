@@ -451,7 +451,7 @@ try{
  report.minimapWorker=await c.evaluate('__inkwave.minimap.bossWorkerInfo?.()||null');
  if(process.env.BOSS_REQUIRE_MINIMAP_WORKER==='1'){
   const worker=report.minimapWorker;
-  if(!worker||worker.submitted<200||worker.applied<worker.submitted*.95||worker.fallbacks||worker.maxPending>3||worker.maxAgeFrames>3||worker.maxAgeMs>250||worker.gridAllocations>3||worker.rowAllocations>6||worker.recycled!==worker.applied)throw Error('小地图Worker未覆盖整局、缓冲未复用或发生回退，不能算候选实战成绩');
+  if(!worker||worker.submitted<200||worker.applied<worker.submitted*.95||worker.fallbacks||worker.maxPending>3||worker.maxAgeFrames>3||worker.maxAgeMs>250||worker.gridAllocations>3||worker.rowAllocations>6||worker.recycled!==worker.applied+(worker.dropped||0))throw Error('小地图Worker未覆盖整局、缓冲未复用或发生回退，不能算候选实战成绩');
  }
  report.lensInk=await c.evaluate('({preparation:__inkwave._bossLensPreparation||null,programId:__G.renderer.properties.get(__inkwave.screenfx.lens.mat).currentProgram?.id,draws:__phonePerf.lensDraws||0,firstDraw:__phonePerf.firstLensDraw||null})');
  if(process.env.BOSS_REQUIRE_LENS_PREPARATION==='1'&&(!report.lensInk.preparation?.prepared||report.lensInk.programId!==report.lensInk.preparation.programId))throw Error('Boss镜头墨水准备缺失或实际程序与准备不一致');

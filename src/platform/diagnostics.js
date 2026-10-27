@@ -23,7 +23,7 @@ export function installDiagnostics(nativePlugin) {
   const current = { build: BUILD, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, events: [], shaderFailures: [], gpu: null, native: null,
     startup: { stages: [], checkpoints: [{ atMs: 0, phase: 'module-import' }], completedAtMs: null },
     responsiveness: { longTaskSupported: false, thresholdMs: 200, longTasks: [], longTaskCount: 0, maxLongTaskMs: 0, stalls: [], maxDelayMs: 0, operations: [], slowOperations: [], operationCount: 0 } };
-  let previous = null, renderer = null, savedTimer = null, lastTick = 0;
+  let previous = null, renderer = null, savedTimer = null, lastTick = 0, inCombat = false, deferred = false, urgent = false;
   let shaderId = 0;
   // 战斗期间不主动向GPU发同步错误查询；着色器失败/上下文丢失仍立即走原回调。
   current.glErrorChecks = { pending: false, deferredCount: 0, completedCount: 0, lastCompletedAt: null };
@@ -38,7 +38,16 @@ export function installDiagnostics(nativePlugin) {
       current.events.push({ at: new Date().toISOString(), ms: Math.round(performance.now() - started), level, category, detail: text, count: 1 });
       if (current.events.length > MAX_EVENTS) current.events.shift();
     }
-    if (!savedTimer) savedTimer = setTimeout(persist, 1500);
+    if (level !== 'info') urgent = true;
+    else if (inCombat) { deferred = true; return; }
+    if (!savedTimer) savedTimer = setTimeout(scheduledPersist, 1500);
+  };
+  // 实战中普通记录只留内存，脱离战斗（结束/暂停）或页面隐藏时补存；警告/错误仍按原1.5秒落盘供强退取证。
+  // 整份日志同步序列化并写localStorage会在战斗帧内造成周期性停顿。
+  const scheduledPersist = () => {
+    savedTimer = null;
+    if (inCombat && !urgent) { deferred = true; return; }
+    persist();
   };
 
   // 独立于每4帧CPU抽样，保留启动关键路径及超过阈值的停顿，避免P95隐藏少数超长卡顿。
@@ -95,7 +104,7 @@ export function installDiagnostics(nativePlugin) {
   }, 250);
   document.addEventListener('visibilitychange', () => { heartbeatAt = performance.now(); heartbeatVisible = !document.hidden; });
 
-  function sceneSnapshot() {
+  function sceneSnapshot(withProfile = true) {
     const game = globalThis.__inkwave, G = globalThis.__G;
     if (!game || !G) return { bootComplete: false };
     const p = G.paint, m = game.match;
@@ -104,7 +113,7 @@ export function installDiagnostics(nativePlugin) {
     return {
       bootComplete: true, mode: G.mode, mapId: game.mapDef?.id, worldKey: game.worldKey, matchState: m?.state, practice: !!m?.practice,
       mobileGpu: game.R.mobileSafety?.state,
-      profile: game.mobile?.profile.snapshot(),
+      profile: withProfile ? game.mobile?.profile.snapshot() : undefined,
       settings: { quality: game.settings.quality, mobileVisual: game.settings.mobileVisual, mobileDynamicResolution: game.settings.mobileDynamicResolution, shadows: game.settings.shadows, bloom: game.settings.bloom, fpsCap: game.settings.fpsCap },
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
       level: { faces: G.level?.faces?.length, visible: game.levelMesh?.visible, vertices: game.levelMesh?.geometry?.attributes?.position?.count, material: material(game.levelMat), grateMaterial: material(game.grateMat) },
@@ -129,7 +138,7 @@ export function installDiagnostics(nativePlugin) {
   }
 
   function persist() {
-    if (savedTimer) clearTimeout(savedTimer); savedTimer = null;
+    if (savedTimer) clearTimeout(savedTimer); savedTimer = null; deferred = false; urgent = false;
     try {
       const text = JSON.stringify({ ...current, scene: sceneSnapshot() });
       if (text.length < 1900000) localStorage.setItem(STORAGE_KEY, text);
@@ -225,11 +234,12 @@ export function installDiagnostics(nativePlugin) {
     finishStartup() { startupCheckpoint('interactive'); current.startup.completedAtMs = Math.round(performance.now() - started); persist(); }, tick() {
     const game = globalThis.__inkwave, match = game?.match;
     const combat = globalThis.__G?.mode === 'match' && match?.state === 'playing' && !match.attract && !match.paused;
+    inCombat = combat;
     const now = performance.now();
-    // 对局结束/暂停后的第一帧补查，不再额外等待下一个5秒周期。
-    if (now - lastTick < 5000 && !(current.glErrorChecks.pending && !combat)) return; lastTick = now;
-    // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串。
-    const snapshot = sceneSnapshot(); delete snapshot.profile;
+    // 对局结束/暂停后的第一帧补查，不再额外等待下一个5秒周期；战斗中暂缓的日志也在此帧补存一次。
+    if (now - lastTick < 5000 && !(current.glErrorChecks.pending && !combat)) { if (!combat && deferred) persist(); return; } lastTick = now;
+    // 详细排行在current.scene与每秒样本中保存，不重复塞进有长度上限的事件字符串，也不为此排序。
+    const snapshot = sceneSnapshot(false);
     record('scene-snapshot', snapshot);
     if (renderer) {
       if (combat) { current.glErrorChecks.pending = true; current.glErrorChecks.deferredCount++; }
@@ -241,7 +251,7 @@ export function installDiagnostics(nativePlugin) {
         if (errors.length) record('webgl-errors', { errors, note: '补查时间不是错误发生时间；错误可能产生于上次查询之后。' }, 'error');
       }
     }
-    persist();
+    if (combat) deferred = true; else persist();
   } };
   globalThis.inkwaveDiagnostics = manager;
 

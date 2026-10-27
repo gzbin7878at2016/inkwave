@@ -20,6 +20,7 @@ export function createMinimapBandWorker(initial, kernel, { timeoutMs = 2000, max
     if(m.kind==='init'){state=m.state;postMessage({id:m.id,ready:true});return;}
     if(m.kind==='recycle'){if(pool.length<3)pool.push(m.rows);return;}
     if(m.resetOwner)state.owner.fill(0);
+    if(m.sync){state.owner.set(m.sync.owner);state.ink.set(m.sync.ink);state.flash.set(m.sync.flash);}
     state.grid=m.grid;const start=performance.now();
     const flashes=compute(state,m.y0,m.y1,m.colors),workerMs=performance.now()-start;
     const a=m.y0*state.w,b=m.y1*state.w;
@@ -83,14 +84,16 @@ export function createMinimapBandWorker(initial, kernel, { timeoutMs = 2000, max
       try { worker.postMessage({ kind: 'recycle', rows }, [rows.ink.buffer, rows.flash.buffer, rows.owner.buffer]); recycled++; }
       catch (error) { dispose(String(error)); throw error; }
     },
-    draw(grid, y0, y1, colors, { inspect = false, resetOwner = false } = {}) {
+    // sync为主线程owner/墨迹/闪光的同步副本（结构化克隆，不转移真实地图buffer），停用恢复时使用。
+    draw(grid, y0, y1, colors, { inspect = false, resetOwner = false, sync = null } = {}) {
       if (!Number.isInteger(y0) || !Number.isInteger(y1) || y0 < 0 || y1 > height || y0 >= y1) return Promise.reject(Error('行范围无效'));
       if (grid.length !== gridLength) return Promise.reject(Error('网格尺寸变更'));
+      if (sync && (sync.owner.length !== n || sync.ink.length !== n * 4 || sync.flash.length !== n * 4)) return Promise.reject(Error('同步尺寸变更'));
       const start = performance.now(); let copy = gridPool.pop();
       if (!copy) { copy = new grid.constructor(grid.length); gridAllocations++; }
       copy.set(grid); const copyMs = performance.now() - start;
-      const retained = (y1 - y0) * initial.w * 9 + copy.byteLength + (inspect ? n * 6 : 0);
-      return request({ kind: 'draw', grid: copy, y0, y1, colors, inspect, resetOwner }, [copy.buffer], retained)
+      const retained = (y1 - y0) * initial.w * 9 + copy.byteLength + (inspect ? n * 6 : 0) + (sync ? n * 9 : 0);
+      return request({ kind: 'draw', grid: copy, y0, y1, colors, inspect, resetOwner, sync }, [copy.buffer], retained)
         .then(result => { result.enqueueMs += copyMs; return result; });
     },
   };
