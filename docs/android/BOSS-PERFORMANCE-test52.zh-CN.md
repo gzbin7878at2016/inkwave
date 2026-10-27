@@ -15,3 +15,7 @@ SpecialSystem用现有swirl/beam/bubble/aura工厂和共享几何创建4个离�
 ## 真机状态
 
 源码基础检查后先中文提交并推送，再干净构建v1.0.52/code52、校验签名/全部资产并安装。待一分钟方法轮检查晚建程序、实际游玩/退出/USB落盘/关闭；正式轮继续使用原Worker250ms门槛。当前30未稳、60未开始。
+
+## 干净构建与安装
+
+功能源码0af291972ae9c75a8a0eea879321a30a85f19df9已推送fork。构建时trackedChanges=false，APK releases/INKWAVE-android-test52-0af2919.apk，21,160,615字节，SHA256 b3fdfe1612c8bbe2fbc69910dc31aab26378835c1628410a026e95870807a258。签名验证通过，证书SHA256 201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69，与旧安装相同。APK内398份Capacitor同步资源与396份dist-mobile源产物逐字节核对通过，ADB install -r成功，手机versionCode52/versionName1.0.52已核对。方法轮运行中，未得出性能结论。
