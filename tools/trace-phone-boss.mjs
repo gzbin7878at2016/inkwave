@@ -5,12 +5,17 @@ import {createTraceEventCollector} from './trace-event-collector.mjs';
 import {readCdpTraceStream} from './read-cdp-trace-stream.mjs';
 let ws,seq=0,tracing=false,ending=false,complete,streamHandle,layerTreeEnabled=false,layers=[];
 const rendering=process.env.BOSS_TRACE_RENDERING==='1';
-const pending=new Map(),collector=createTraceEventCollector({limit:rendering?200000:80000,minUs:rendering?50:100}),events=collector.events;
+const mainStages=process.env.BOSS_TRACE_MAIN_STAGES==='1',invalidations=process.env.BOSS_TRACE_INVALIDATIONS==='1';
+const streamed=rendering||mainStages;
+const instantNames=invalidations?['StyleRecalcInvalidationTracking','StyleInvalidatorInvalidationTracking','ScheduleStyleInvalidationTracking','LayoutInvalidationTracking','PaintInvalidationTracking']:[];
+const pending=new Map(),collector=createTraceEventCollector({limit:streamed?200000:80000,minUs:streamed?50:100,instantNames}),events=collector.events;
+let nodeMap=[];
 const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
 const startSeconds=Number(process.env.BOSS_TRACE_START_SECONDS||0);
 if(!Number.isFinite(startSeconds)||startSeconds<0||startSeconds+seconds>50)throw Error('Trace起点须非负且结束不晚于50秒');
 if(!Number.isFinite(seconds)||seconds<1||seconds>45)throw Error('BOSS_TRACE_SECONDS须为1～45');
-const report={status:'waiting',requestedSeconds:seconds,renderingProbe:rendering,eventsTruncated:false,performanceTest:false};
+if((mainStages&&(seconds>3||rendering))||(invalidations&&(!mainStages||seconds!==1||rendering)))throw Error('主阶段最多3秒，样式失效仅独立主阶段1秒');
+const report={status:'waiting',requestedSeconds:seconds,renderingProbe:rendering,mainStagesProbe:mainStages,invalidationsProbe:invalidations,eventsTruncated:false,performanceTest:false};
 const base=`releases/investigation/boss-trace-${new Date().toISOString().replace(/[:.]/g,'-')}`;
 const call=(method,params={})=>new Promise((resolve,reject)=>{
  const id=++seq,timer=setTimeout(()=>{pending.delete(id);reject(Error(`${method}超时`))},method==='Tracing.end'?60000:20000);
@@ -54,12 +59,15 @@ try {
  if(!ready)throw Error('没有运行带探针的Boss实战');
  const available=(await call('Tracing.getCategories')).categories;
  report.availableRenderingCategories=available.filter(c=>/gpu|skia|viz|^cc/.test(c));
+ if(mainStages)report.availableMainCategories=available.filter(c=>/blink|invalidation|animation/.test(c));
  // 详细Skia逐命令事件12秒超过256MiB；先定位合成/栅格阶段，不能一次开启所有细类。
  const categories=rendering?['blink.user_timing','gpu']:['devtools.timeline','disabled-by-default-devtools.timeline','blink.user_timing','v8','gpu'];
  if(rendering)for(const name of ['cc','viz','skia'])if(available.includes(name))categories.push(name);
+ if(mainStages)for(const name of ['cc','blink'])if(available.includes(name))categories.push(name);
+ if(invalidations){const category='disabled-by-default-devtools.timeline.invalidationTracking';if(!available.includes(category))throw Error('当前WebView未提供失效跟踪类别');categories.push(category);}
  report.categories=categories;
- const params={categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:rendering?'ReturnAsStream':'ReportEvents'};
- if(rendering){
+ const params={categories:categories.join(','),options:'record-continuously',bufferUsageReportingInterval:1000,transferMode:streamed?'ReturnAsStream':'ReportEvents'};
+ if(streamed){
   // 当前WebView访问/json/protocol时出现原生NOTREACHED/SIGTRAP；只用已验证的CDP方法。
   report.protocolQuerySkipped=true;
   await evaluate('window.__inkwaveRenderTrace={pending:true,startedAt:Date.now()};true');
@@ -68,13 +76,17 @@ try {
  if(rendering){try{await call('LayerTree.enable');layerTreeEnabled=true;}catch(error){report.layerMappingError=String(error);}}
  report.before=await snapshot();
  await call('Tracing.start',params);tracing=true;
- report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase}})()');
+ report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase}})()');
  await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),60000);complete=()=>{clearTimeout(timer);resolve()}});
- report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase}})()');
+ report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase}})()');
  ending=true;await Promise.all([call('Tracing.end'),done]);tracing=false;
  report.after=await snapshot();
- if(rendering){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
+ if(streamed){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
+ if(invalidations){
+  const root=(await call('DOM.getDocument',{depth:-1,pierce:true})).root;
+  const walk=n=>{const a=n.attributes||[],label=n.nodeName+(a.includes('id')?'#'+a[a.indexOf('id')+1]:'')+(a.includes('class')?'.'+a[a.indexOf('class')+1].trim().replace(/\s+/g,'.'):'');nodeMap.push({nodeId:n.nodeId,backendNodeId:n.backendNodeId,label});for(const c of n.children||[])walk(c);for(const c of n.shadowRoots||[])walk(c);if(n.contentDocument)walk(n.contentDocument);};walk(root);report.nodeMapCount=nodeMap.length;
+ }
  Object.assign(report,collector.info());
  report.markers=events.filter(e=>e.name?.startsWith('inkwave-render-')).map(e=>({name:e.name,pid:e.pid,tid:e.tid,ts:e.ts}));
  report.status='collected';
@@ -85,10 +97,10 @@ try {
 }catch(error){report.status='failed';report.error=String(error);process.exitCode=1;}
 finally{
  if(tracing&&!ending&&ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({id:++seq,method:'Tracing.end'}));
- if(rendering&&ws?.readyState===WebSocket.OPEN)await evaluate('if(window.__inkwaveRenderTrace)__inkwaveRenderTrace.pending=false;true').catch(()=>{});
+ if(streamed&&ws?.readyState===WebSocket.OPEN)await evaluate('if(window.__inkwaveRenderTrace)__inkwaveRenderTrace.pending=false;true').catch(()=>{});
  if(layerTreeEnabled&&ws?.readyState===WebSocket.OPEN)await call('LayerTree.disable').catch(()=>{});
  ws?.close();
  Object.assign(report,collector.info());
- await writeFile(`${base}.json`,JSON.stringify({report,traceEvents:events}));
+ await writeFile(`${base}.json`,JSON.stringify({report,traceEvents:events,nodeMap}));
  console.log(JSON.stringify({path:`${base}.json`,...report}));
 }

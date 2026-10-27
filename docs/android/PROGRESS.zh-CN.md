@@ -780,3 +780,7 @@ v49/ef0e0a1，METHOD_PROBE=0，区段副本及全部遮蔽/旁路/比较为0，�
 ## 2026-10-27 原生主线程栈工具
 
 新增仅本页PID/TID的3秒99Hz/8MiB simpleperf方法调查，归属校验单测及语法通过，尚未真机执行；不改全局perf/温控、不使用root，不把地址或权限失败当作根因。见BOSS-NATIVE-STACK-INVESTIGATION.zh-CN.md。
+
+## 2026-10-27 原生栈权限与样式线索
+
+simpleperf本页PID绑定通过但cpu-clock权限被拒，未提权；同局3秒浏览器Trace成功，裁边样式CPU417.613ms在JS回调外/2.951ms在内，尚未定位节点原因。整局方法26.10628FPS非成绩，UI USB000605-896864-5d7e5f8e核对668/恢复关闭。新增最多1秒CSS失效Trace和真实帧号，用流式有界导出；白名单/默认兼容单测及手机菜单流兼容通过，新采集待验。见BOSS-NATIVE-STACK-INVESTIGATION.zh-CN.md。
