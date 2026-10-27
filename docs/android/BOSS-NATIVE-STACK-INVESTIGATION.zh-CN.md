@@ -45,3 +45,9 @@ boss-trace-2026-10-27T00-09-33-495Z.json：7,859,325字节/34048原始事件，d
 方法整局1671帧/66.3067秒=25.20107FPS、P95 58.4/P99 83.2ms、长帧9，44→47°C；189.65米/14148伤害/116弱点，本轮实际大招0，虽有按键也不称覆盖，阶段[1,2]。UI USB001125-455840-738b9742核对6686333/退出恢复/关闭。
 
 据此下一批只消除手机真实Boss的幂等DOM写入，不修改CSS动画/精度/继承/场景或PC分支。更多SVG/动画成本继续保留为线索，不重复未经控制的“停全部装饰”方案。
+
+## 后备假设（尚未验证，不称根因）
+
+样式失效中每次inline修改常伴Related style rule。项目styles/ui.css存在一个菜单舞台图片的[style*=...]属性选择器。已查看与本机WebView相同131.0.6778.260标签的Chromium源码：InlineCSSStyleDeclaration::DidMutate调用Element::InvalidateStyleAttribute，后者调用StyleEngine::AttributeChangedForElement收集属性规则失效；独立属性变化也经过该入口。来源：[inline_css_style_declaration.cc](https://chromium.googlesource.com/chromium/src/+/refs/tags/131.0.6778.260/third_party/blink/renderer/core/css/inline_css_style_declaration.cc)、[element.cc](https://chromium.googlesource.com/chromium/src/+/refs/tags/131.0.6778.260/third_party/blink/renderer/core/dom/element.cc)、[style_engine.cc](https://chromium.googlesource.com/chromium/src/+/refs/tags/131.0.6778.260/third_party/blink/renderer/core/css/style_engine.cc)。
+
+这仅支持进一步检查属性规则失效机制，尚未证明上述菜单规则导致当前成本，更不能据此直接删除PC规则或称为主要根因。若后续调查，应先独立固定HUD输入的可恢复CSS规则对照，再在手机方法轮验证；目前优先检查已观察到的运行期新程序首绘长停顿。
