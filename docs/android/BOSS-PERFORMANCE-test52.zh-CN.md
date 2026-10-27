@@ -25,3 +25,9 @@ SpecialSystem用现有swirl/beam/bubble/aura工厂和共享几何创建4个离�
 v52-combat-programs-method：1662帧/67.9253秒=24.468055FPS，P95 66.7/P99 91.6ms，>=100ms11次；43→46°C。171.62米、14477.40伤害、130弱点、1次真实大招，阶段[1,2]。Worker最大271.8ms，result-age一次回退，不放宽250ms。退出恢复通过，UI USB INKWAVE-logs-20261027-003833-874308-7e46cd4a.json落盘核对0af2919，游戏关闭。
 
 本轮阵容没有brolly，不能把未出现新伞面程序算作覆盖通过。新程序未出现SWIRL，但仍有mitts:fists首绘36.8ms及waddle标记圈/boomerang旋转盘15.1～27.4ms（后续重复创建10.7～21.8ms）。只说明仍有其他遗漏，不证明本批提高平均帧率。原始phone-boss-v52-combat-programs-method.json本机保留。正式无探针轮运行中，另需brolly实际游玩覆盖本批透明飞出伞面。
+
+## 无探针正式轮（失败）
+
+v52-combat-programs-formal：1651帧/67.8846秒=24.320685FPS，P95 66.6/P99 83.3ms，>=100ms11次；起始46°C，门槛异常提前中止采集，无结束电池温度，不补造。Worker最大252.6ms、result-age一次回退，状态aborted/进程exit1。实际170.71米、15165.98伤害、128弱点、1次真实大招、阶段[1,2]。真实UI USB INKWAVE-logs-20261027-004045-546294-cc2643a5.json，源码0af2919，落盘及关闭确认。不能认为稳定30或本批已提帧。
+
+接续增加仅方法轮目标绘制计数（heldCanopy/launchedCanopy/swirl及实际程序ID），选原游戏brolly武器正常游玩一分钟，核对飞出伞面确实出现且没有重复程序。正式轮不启用该分支，不修改APK。

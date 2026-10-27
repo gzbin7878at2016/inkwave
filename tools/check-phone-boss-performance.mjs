@@ -186,7 +186,7 @@ try{
   // 可选方法级调查会增加计时开销，单独标记，不能混充无探针基线。
   if(${process.env.BOSS_METHOD_PROBE==='1'}){
    p.methods={};
-   p.simulationStats={};p.slowMethods=[];p.newPrograms=[];
+   p.simulationStats={};p.slowMethods=[];p.newPrograms=[];p.combatProgramDraws={};
    const aggregate=(o,k,label,actor)=>{if(!o||typeof o[k]!=='function')return;const fn=o[k],row=p.simulationStats[label]??={calls:0,totalMs:0,maxMs:0};
     o[k]=function(...args){const start=performance.now();try{return fn.apply(this,args)}finally{
      if(p.match===g.match&&g.match?.state==='playing'){const ms=performance.now()-start;row.calls++;row.totalMs+=ms;row.maxMs=Math.max(row.maxMs,ms);
@@ -195,6 +195,7 @@ try{
    };
    p.installMatchProbe=m=>{
     p.actorRoster=m.actors.map(a=>({name:a.name,weaponId:a.weaponId,specialId:a.specialId,local:!!a.isLocal}));
+    p.actorRoots=new Set(m.actors.map(a=>a.character?.root).filter(Boolean));
     aggregate(m,'update','match');
     for(const a of m.actors){aggregate(a,'update','actor',a.name);aggregate(a.bot,'update','bot',a.name);aggregate(a.character,'update','character',a.name);aggregate(a.weaponRunner,'update','weapon',a.name);}
     aggregate(m.bossMode,'update','bossMode');aggregate(__G.projectiles,'update','projectiles');aggregate(__G.specials,'update','specials');
@@ -209,6 +210,16 @@ try{
    };
    const renderer=g.R.renderer,direct=renderer.renderBufferDirect;
    renderer.renderBufferDirect=function(...args){const before=this.info.programs.length,drawStart=performance.now();const result=direct.apply(this,args);
+    // 仅方法轮证明目标特效确实上屏；“没有新程序”必须配合实际绘制覆盖，不能把缺少武器当作命中缓存。
+    if(p.match===g.match&&g.match?.state==='playing'){
+     const material=args[3],object=args[4];let kind=null;
+     if(material?.name==='iw-brolly-ink'&&material.transparent){
+      let held=false;for(let node=object;node;node=node.parent)if(p.actorRoots?.has(node)){held=true;break;}
+      kind=held?'heldCanopy':'launchedCanopy';
+     }else if(material?.isShaderMaterial&&material.fragmentShader.includes('uniform float uSpeed;')&&material.vertexShader.includes('uniform float uWobble;'))kind='swirl';
+     if(kind){const row=p.combatProgramDraws[kind]??={draws:0,firstActiveMs:p.activeMs,programIds:[]};row.draws++;row.lastActiveMs=p.activeMs;
+      const id=this.properties.get(material).currentProgram?.id;if(id!==undefined&&!row.programIds.includes(id))row.programIds.push(id);}
+    }
     if(p.match===g.match&&g.match?.state==='playing'&&args[4]?.parent===g.screenfx?.lens?.scene){
      p.lensDraws=(p.lensDraws||0)+1;p.firstLensDraw||={activeMs:p.activeMs,programId:this.properties.get(args[3]).currentProgram?.id};
     }
@@ -436,7 +447,7 @@ try{
  if(process.env.BOSS_REQUIRE_LENS_PREPARATION==='1'&&(!report.lensInk.preparation?.prepared||report.lensInk.programId!==report.lensInk.preparation.programId))throw Error('Boss镜头墨水准备缺失或实际程序与准备不一致');
  if(process.env.BOSS_REQUIRE_LENS_DRAW==='1'&&(!report.lensInk.draws||report.lensInk.firstDraw?.programId!==report.lensInk.preparation?.programId))throw Error('本调查未验证首次真实镜头墨水绘制复用准备程序');
  if(process.env.BOSS_REQUIRE_MINIMAP_CACHE==='1' && (!report.minimapInk?.active || !report.minimapInk.calls))throw Error('本批要求小地图缓存实际启用并处理像素，不能将未启用的原路径当作优化结果');
- report.simulationProbe=await c.evaluate('({actors:window.__phonePerf.actorRoster||[],stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
+ report.simulationProbe=await c.evaluate('({actors:window.__phonePerf.actorRoster||[],combatProgramDraws:window.__phonePerf.combatProgramDraws||null,stats:window.__phonePerf.simulationStats||null,slow:window.__phonePerf.slowMethods||[],newPrograms:window.__phonePerf.newPrograms||[]})');
  report.pannerTransitions=await c.evaluate('window.__phonePerf.pannerTransitions||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
