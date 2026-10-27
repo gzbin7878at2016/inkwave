@@ -4,6 +4,7 @@ import {createBossPlaybackDirector} from './boss-playback-director.mjs';
 import {runPhoneBossPropRanges} from './phone-prop-range-benchmark.mjs';
 import {runPhoneBossHiddenLod} from './phone-hidden-lod-benchmark.mjs';
 import {runPhoneBossRayQuery} from './phone-ray-query-benchmark.mjs';
+import {runPhoneBossCoat} from './phone-boss-coat-benchmark.mjs';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {benchmarkBossMinimapKernel} from './boss-minimap-kernel-benchmark.mjs';
 import {computeMinimapInkBand} from './minimap-band-kernel.mjs';
@@ -22,6 +23,8 @@ const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 const propRangeBenchmark=process.env.BOSS_PROP_RANGE_BENCHMARK==='1';
 const hiddenLodBenchmark=process.env.BOSS_HIDDEN_LOD_BENCHMARK==='1';
 const rayQueryBenchmark=process.env.BOSS_RAY_QUERY_BENCHMARK==='1';
+const coatBenchmark=process.env.BOSS_COAT_BENCHMARK==='1';
+if(coatBenchmark&&(propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('清漆对照须独占一分钟Boss方法轮自然结算');
 if(rayQueryBenchmark&&!['rows','cache'].includes(process.env.BOSS_RAY_QUERY_KIND||'rows'))throw Error('射线副本类型只支持rows/cache');
 if(rayQueryBenchmark&&(propRangeBenchmark||hiddenLodBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('射线副本须独占一分钟方法轮');
 if(hiddenLodBenchmark&&(propRangeBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('隐藏LOD副本须独占一分钟方法轮自然结算');
@@ -60,6 +63,7 @@ const compareSmaaEdges=process.env.BOSS_COMPARE_SMAA_EDGES==='1';
 if(propRangeBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('区段副本须独占自然结算后的方法调查，不能混用其他旁路/比较');
 if(hiddenLodBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('隐藏LOD副本不能混用其他旁路或比较');
 if(rayQueryBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('射线副本不能混用其他旁路或比较');
+if(coatBenchmark&&[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean))throw Error('清漆对照不能混用其他旁路或比较');
 const edgeFormat=process.env.BOSS_EDGE_FORMAT||'rg8';if(!['rg8','rg16f'].includes(edgeFormat))throw Error('BOSS_EDGE_FORMAT只支持rg8/rg16f');
 if(compareSmaaEdges&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('SMAA边缘格式比较仅供结算后独立方法调查');
 if(minimapWorkerBenchmark&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||compareSmaaEdges||compareSmaaClear||nativePaint||markerVars||layerHints||domAblation||verifyDisplayLifecycle||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||minimapBenchmark))throw Error('Worker比较仅允许结算后独立一分钟方法轮');
@@ -462,6 +466,7 @@ try{
  if(propRangeBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行区段副本');report.propRangeBenchmark=await runPhoneBossPropRanges(c);await save();}
  if(hiddenLodBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行隐藏LOD副本');report.hiddenLodBenchmark=await runPhoneBossHiddenLod(c);await save();}
  if(rayQueryBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行射线副本');report.rayQueryBenchmark=await runPhoneBossRayQuery(c);await save();}
+ if(coatBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行清漆对照');report.coatBenchmark=await runPhoneBossCoat(c);await save();}
  if(minimapWorkerBenchmark){
   if(!report.roundCompleted)throw Error('必须自然结算后才运行副本Worker实验');
   report.minimapWorkerBenchmark=[];
