@@ -47,3 +47,11 @@ v54-stage-detail-trace-method已自然30秒结算、USB INKWAVE-logs-20261027-10
 为降低等待随机大招的成本，准备BOSS_STAGE_BUILD_BENCHMARK=1：30秒自然结束后，仅取本人与另一角色的sp_zooka实例，测第一次/缓存取用，不发动技能、不切手持武器/不改战斗资源；新实例留在原角色缓存由原离局清理。该构造不含GPU完成，不作实战收益。细分setWeapon/_getWeapon/_weaponInstance，标签预算扩至64，固定容量仍有界。工具基础检查后先提交，真机待验。
 
 结算构造实测：本地sp_zooka未缓存，_getWeapon首次130.3ms、重复0ms；另一角色同样未缓存但共享定义已建立，首次0.2ms。原手持武器保持，USB101752-768529-ed6162b8核对2b7ed77/关闭通过。仅构造方法证据，尚不能把旧长帧逐一绑定到它。下一轮分离getWeaponDef共享定义构造与角色实例，导入同一构建共享入口、导入时间排除，并加时间线标记；不改产品或发动技能。
+
+## 真实大招长帧已定位到模型定义首次生成
+
+v54-stage-definition-build-method在25.415秒真实Player/zooka发动96.6ms，整帧124.6ms：SpecialSystem.start94.4ms→Character.setWeapon94.1ms→_getWeapon93.8ms（自身93.6），_weaponInstance仅0.2ms，banner/特效/音效远低于此。_getWeapon源码对zooka非双持路径的主要未追踪工作为getWeaponDef首次BUILDERS[kind]/finishParts和共享缓存建立。此前独立首次构造130.3ms、缓存0、另一角色0.2ms与此相互支持。不能将其说成纯GC或GPU编译问题，也不说明全部慢帧同因。
+
+本轮结算getWeaponDef已经被真实大招填充，测得0ms是正确缓存命中，不是实验失败；29秒Trace未覆盖25秒发动，也没覆盖稍后异步构造标记，不能用这份Trace排除发动时的GC。USB102032-508118-80a78fbc核对2b7ed77/关闭通过。
+
+下一批只继续定位Character更新51ms与结算HUD约50ms，扩展7个角色表现入口及8个HUD入口，仍64标签固定预算，不做产品修复。主问题后续修复建议是在可取消的Boss准备期为实际阵容构建专用武器定义/实例并真实首绘；需另行实施验证，当前未做。

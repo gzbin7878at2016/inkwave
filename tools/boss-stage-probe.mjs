@@ -20,7 +20,8 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
   [game.decor,'update','decor'],[game.props,'update','props'],[game.rig,'update','camera'],[G.paint,'flush','paintFlush'],[game.R,'render','renderSubmit'],
   [game,'_updateHud','hud'],[game.menus,'update','menus'],[globalThis.inkwaveDiagnostics,'tick','diagnostics']])wrap(o,k,label);
  if(detail){wrap(G.audio,'play','audioPlay');wrap(G.subs,'blockActor','actorBlock');wrap(G.specials,'start','specialStart');
-  wrap(game.hud,'banner','hudBanner');wrap(game.hud,'_restart','hudRestart');wrap(game.fxHooks,'_specialUse','specialFx');}
+  wrap(game.hud,'banner','hudBanner');wrap(game.hud,'_restart','hudRestart');wrap(game.fxHooks,'_specialUse','specialFx');
+  for(const k of ['_updCrosshair','_updSquads','_updSpecial','_updTurf','_updMarkers','_updMap','_updTank'])wrap(game.hud,k,'hud'+k);wrap(game.hud?.boss,'update','bossHud');}
  let observer=null;
  if(globalThis.PerformanceObserver?.supportedEntryTypes?.includes('long-animation-frame')){
   observer=new PerformanceObserver(list=>{if(disposed||!game.match?.boss||game.match.state!=='playing')return;for(const e of list.getEntries()){
@@ -33,7 +34,7 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
  const stats=a=>{const x=Array.from(a.subarray(0,Math.min(frames,capacity))).sort((a,b)=>a-b);return {p50:x[Math.floor((x.length-1)*.5)]||0,p95:x[Math.floor((x.length-1)*.95)]||0,p99:x[Math.floor((x.length-1)*.99)]||0};};
  return {
   bind(m){wrap(m,'updateController','controller');wrap(m,'update','match');for(const a of m.actors){wrap(a,'update','actors');wrap(a.bot,'update','bots');wrap(a.character,'update','characters');wrap(a.weaponRunner,'update','weapons');}
-   if(detail)for(const a of m.actors){for(const k of ['_surface','_updateClimb','_horizontal','_integrate','_spawnBarrier','_finishFrame','_events','respawn','_startSpecial','_updateSpecial','_updateSuperJump'])wrap(a,k,'actor'+k);wrap(a.character,'trigger','characterTrigger');for(const k of ['setWeapon','_getWeapon','_weaponInstance'])wrap(a.character,k,'character'+k);}
+   if(detail)for(const a of m.actors){for(const k of ['_surface','_updateClimb','_horizontal','_integrate','_spawnBarrier','_finishFrame','_events','respawn','_startSpecial','_updateSpecial','_updateSuperJump'])wrap(a,k,'actor'+k);wrap(a.character,'trigger','characterTrigger');for(const k of ['setWeapon','_getWeapon','_weaponInstance','_buildPose','_applyPose','_updateFeet','_updateSquid','_updateMaterials','_updateLod','_updateHair'])wrap(a.character,k,'character'+k);}
    const b=m.boss;wrap(m.bossMode,'update','bossMode');wrap(b,'update','boss');wrap(b?.brain,'update','bossBrain');wrap(b?.model,'update','bossModel');wrap(b?.hz,'update','bossHazards');},
   begin(live,ms,delta){active=!!live;if(!active)return;activeMs=ms;dt=delta;depth=0;start=performance.now();for(const r of rows){r.frame=r.frameSelf=r.frameCalls=0;}},
   enterDriver(){enter(driver);},enterGame(){enter(frame);},leave,
