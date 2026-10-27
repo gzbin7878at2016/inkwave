@@ -3,14 +3,15 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
  const limit=48,capacity=4096,rows=[],restores=[],seen=new WeakMap();
  const starts=new Float64Array(64),children=new Float64Array(64),ids=new Int16Array(64);
  let depth=0,active=false,frames=0,start=0,activeMs=0,dt=0,overflow=false,disposed=false;
- const slow=[],loafs=[];
+ const slow=[],loafs=[],specialEvents=[];
  const id=label=>{let n=rows.findIndex(r=>r.label===label);if(n>=0)return n;if(rows.length>=limit)throw Error('阶段计数预算超限');
   n=rows.length;rows.push({label,calls:0,total:0,self:0,max:0,frame:0,frameSelf:0,frameCalls:0,inclusive:new Float32Array(capacity),exclusive:new Float32Array(capacity)});return n;};
  const enter=n=>{if(!active)return;if(depth>=64)throw Error('阶段嵌套预算超限');ids[depth]=n;starts[depth]=performance.now();children[depth]=0;depth++;};
  const leave=()=>{if(!active)return;const t=performance.now();depth--;const n=ids[depth],ms=t-starts[depth],own=Math.max(0,ms-children[depth]),r=rows[n];
-  if(depth)children[depth-1]+=ms;r.calls++;r.frameCalls++;r.total+=ms;r.self+=own;r.max=Math.max(r.max,ms);r.frame+=ms;r.frameSelf+=own;};
+  if(depth)children[depth-1]+=ms;r.calls++;r.frameCalls++;r.total+=ms;r.self+=own;r.max=Math.max(r.max,ms);r.frame+=ms;r.frameSelf+=own;return ms;};
  const wrap=(o,k,label)=>{if(!o||typeof o[k]!=='function')return;let keys=seen.get(o);if(!keys){keys=new Set();seen.set(o,keys);}if(keys.has(k))return;keys.add(k);
-  const fn=o[k],n=id(label);o[k]=function(...args){if(!active)return fn.apply(this,args);enter(n);try{return fn.apply(this,args)}finally{leave();}};
+  const fn=o[k],n=id(label);o[k]=function(...args){if(!active)return fn.apply(this,args);enter(n);try{return fn.apply(this,args)}finally{const ms=leave();
+   if(label==='actor_startSpecial'&&specialEvents.length<32)specialEvents.push({at:Date.now(),activeMs,name:o.name,specialId:o.specialId,local:!!o.isLocal,ms});}};
   restores.push(()=>o[k]=fn);
  };
  const driver=id('testDirector'),frame=id('gameFrame');
@@ -18,7 +19,7 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
   [G.specials,'update','specials'],[G.fx,'update','effects'],[game.fxHooks,'update','fxHooks'],[game.screenfx,'update','screenFx'],[G.env,'update','environment'],
   [game.decor,'update','decor'],[game.props,'update','props'],[game.rig,'update','camera'],[G.paint,'flush','paintFlush'],[game.R,'render','renderSubmit'],
   [game,'_updateHud','hud'],[game.menus,'update','menus'],[globalThis.inkwaveDiagnostics,'tick','diagnostics']])wrap(o,k,label);
- if(detail){wrap(G.audio,'play','audioPlay');wrap(G.subs,'blockActor','actorBlock');}
+ if(detail){wrap(G.audio,'play','audioPlay');wrap(G.subs,'blockActor','actorBlock');wrap(G.specials,'start','specialStart');}
  let observer=null;
  if(globalThis.PerformanceObserver?.supportedEntryTypes?.includes('long-animation-frame')){
   observer=new PerformanceObserver(list=>{if(disposed||!game.match?.boss||game.match.state!=='playing')return;for(const e of list.getEntries()){
@@ -42,7 +43,7 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
    frames++;active=false;},
   summary(){return {frames,overflow,detail,scope:'JS墙钟，含抢占/GC/驱动等待；inclusive有嵌套，不可相加；self仅扣除已追踪子层，非纯CPU。',
    rows:rows.map(r=>({label:r.label,calls:r.calls,totalMs:r.total,selfMs:r.self,maxCallMs:r.max,meanMs:r.total/Math.max(1,frames),meanSelfMs:r.self/Math.max(1,frames),perFrame:stats(r.inclusive),selfPerFrame:stats(r.exclusive)})),
-   slow:slow.slice().sort((a,b)=>b.elapsed-a.elapsed),loafSupported:!!observer,loafs};},
+   slow:slow.slice().sort((a,b)=>b.elapsed-a.elapsed),specialEvents,loafSupported:!!observer,loafs};},
   dispose(){if(disposed)return;disposed=true;active=false;observer?.disconnect();for(const restore of restores.reverse())restore();}
  };
 }
