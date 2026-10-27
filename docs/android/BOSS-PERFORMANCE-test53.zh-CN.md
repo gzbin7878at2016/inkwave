@@ -24,3 +24,9 @@ v52方法轮观察到mitts:fists首次程序36.8ms，以及waddle标记圈/boome
 ## 构建安装
 
 干净功能提交356277bd6203b4a94e5902ce1326e0722e3996f6已推送fork。APK releases/INKWAVE-android-test53-356277b.apk，21,161,767字节，SHA256 a7cb14230b4033898306a0979e6971fc1bdf14012bdee11a68757c7df1779dae，构建trackedChanges=false。v2签名及证书201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69通过；398份Capacitor同步资产/396份dist-mobile资产与APK逐字节相符。ADB安装成功，手机versionCode53/versionName1.0.53确认。mitts方法轮已启动，尚无手机性能结论。
+
+## 第一轮方法结果
+
+v53-kit-programs-method：1676帧/66.9594秒=25.030093FPS，P95 66.6/P99 83.3ms、>=100ms8次，44→48°C。实际240.19米、8651.47伤害、29弱点、1次大招，仅阶段1。Worker最大226.4ms，fallbacks0，结束inactive整图1次正常。退出恢复通过，UI USB INKWAVE-logs-20261027-004928-028280-35145480.json核对356277b，游戏关闭。
+
+真实阵容包括本地mitts/boomerang、槽6 bow/waddle；盘136次程序90、圈64次程序91，无新对应Shader程序。本轮只有另一个MeshBasicMaterial新程序首绘66.7ms。拳头原计数1677次包括count=0的renderBufferDirect调用，不能当作1677次真实绘制；方法工具已排除零实例/零drawRange，需补测确认非空池实际绘制。帧率与Worker数据仍有效，但属方法轮及不同武器，不能当正式成绩或独立提帧证据。原始phone-boss-v53-kit-programs-method.json保留。

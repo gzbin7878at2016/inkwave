@@ -222,7 +222,8 @@ try{
       else if(material.fragmentShader.includes('uniform float uGrow; uniform float uLock;'))kind='waddleRing';
       else if(material.fragmentShader.includes('uniform float uAlpha; uniform float uAng;'))kind='boomerangBlur';
      }
-     if(kind){const row=p.combatProgramDraws[kind]??={draws:0,firstActiveMs:p.activeMs,programIds:[]};row.draws++;row.lastActiveMs=p.activeMs;
+     const hasPrimitives=(object?.geometry?.drawRange.count??Infinity)>0&&(!object?.isInstancedMesh||object.count>0);
+     if(kind&&hasPrimitives){const row=p.combatProgramDraws[kind]??={draws:0,firstActiveMs:p.activeMs,programIds:[]};row.draws++;row.lastActiveMs=p.activeMs;
       const id=this.properties.get(material).currentProgram?.id;if(id!==undefined&&!row.programIds.includes(id))row.programIds.push(id);}
     }
     if(p.match===g.match&&g.match?.state==='playing'&&args[4]?.parent===g.screenfx?.lens?.scene){
