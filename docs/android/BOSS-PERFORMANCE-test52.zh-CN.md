@@ -19,3 +19,9 @@ SpecialSystem用现有swirl/beam/bubble/aura工厂和共享几何创建4个离�
 ## 干净构建与安装
 
 功能源码0af291972ae9c75a8a0eea879321a30a85f19df9已推送fork。构建时trackedChanges=false，APK releases/INKWAVE-android-test52-0af2919.apk，21,160,615字节，SHA256 b3fdfe1612c8bbe2fbc69910dc31aab26378835c1628410a026e95870807a258。签名验证通过，证书SHA256 201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69，与旧安装相同。APK内398份Capacitor同步资源与396份dist-mobile源产物逐字节核对通过，ADB install -r成功，手机versionCode52/versionName1.0.52已核对。方法轮运行中，未得出性能结论。
+
+## 第一轮方法结果（未达标）
+
+v52-combat-programs-method：1662帧/67.9253秒=24.468055FPS，P95 66.7/P99 91.6ms，>=100ms11次；43→46°C。171.62米、14477.40伤害、130弱点、1次真实大招，阶段[1,2]。Worker最大271.8ms，result-age一次回退，不放宽250ms。退出恢复通过，UI USB INKWAVE-logs-20261027-003833-874308-7e46cd4a.json落盘核对0af2919，游戏关闭。
+
+本轮阵容没有brolly，不能把未出现新伞面程序算作覆盖通过。新程序未出现SWIRL，但仍有mitts:fists首绘36.8ms及waddle标记圈/boomerang旋转盘15.1～27.4ms（后续重复创建10.7～21.8ms）。只说明仍有其他遗漏，不证明本批提高平均帧率。原始phone-boss-v52-combat-programs-method.json本机保留。正式无探针轮运行中，另需brolly实际游玩覆盖本批透明飞出伞面。
