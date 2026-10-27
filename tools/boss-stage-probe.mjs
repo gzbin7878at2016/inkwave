@@ -19,7 +19,8 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
   [G.specials,'update','specials'],[G.fx,'update','effects'],[game.fxHooks,'update','fxHooks'],[game.screenfx,'update','screenFx'],[G.env,'update','environment'],
   [game.decor,'update','decor'],[game.props,'update','props'],[game.rig,'update','camera'],[G.paint,'flush','paintFlush'],[game.R,'render','renderSubmit'],
   [game,'_updateHud','hud'],[game.menus,'update','menus'],[globalThis.inkwaveDiagnostics,'tick','diagnostics']])wrap(o,k,label);
- if(detail){wrap(G.audio,'play','audioPlay');wrap(G.subs,'blockActor','actorBlock');wrap(G.specials,'start','specialStart');}
+ if(detail){wrap(G.audio,'play','audioPlay');wrap(G.subs,'blockActor','actorBlock');wrap(G.specials,'start','specialStart');
+  wrap(game.hud,'banner','hudBanner');wrap(game.hud,'_restart','hudRestart');wrap(game.fxHooks,'_specialUse','specialFx');}
  let observer=null;
  if(globalThis.PerformanceObserver?.supportedEntryTypes?.includes('long-animation-frame')){
   observer=new PerformanceObserver(list=>{if(disposed||!game.match?.boss||game.match.state!=='playing')return;for(const e of list.getEntries()){

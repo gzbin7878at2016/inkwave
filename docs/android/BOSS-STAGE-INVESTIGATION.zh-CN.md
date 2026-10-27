@@ -41,3 +41,5 @@ v54-stage-detail-trace-method已自然30秒结算、USB INKWAVE-logs-20261027-10
 用户要求继续排查并保持手机常亮：已设svc power stayon usb=2，增加每3分钟独立常亮检查（不启动游戏/不操作CDP），本地状态文件有6小时过期上限，排查结束可停用。后续扩大不同短窗口覆盖，仍30秒定位、不改产品。
 
 第二组30秒方法复现168.3ms慢帧：active28.352秒，actor_startSpecial自身93.0ms、characters48.3ms。该轮25秒Trace结束在28.286秒，恰未覆盖，不能用其1～4ms MinorGC解释下一帧。新增大招发动者/类型及SpecialSystem.start分段，下轮改27～30秒窄Trace，仍先提交工具。该轮USB100932-562551-3d52d048核对2b7ed77/恢复关闭通过。
+
+静态调用核对：Actor._startSpecial会同步emit special:use，本地主角监听调用hud.banner，再播放音效并执行SpecialSystem.start。为区分事件UI/特效和技能本体，二级工具补hud.banner、hud._restart和fxHooks._specialUse计时，仍48标签上限；仅观察不改事件/布局。真机待验。
