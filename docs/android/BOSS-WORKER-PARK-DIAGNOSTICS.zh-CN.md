@@ -35,3 +35,7 @@
 2. 方法轮确认：`bossWorkerInfo()` 在一次超龄后 `parked` 很快回到false、`resyncs` 增加、`fallbacks` 为0；V8剖面中 `_drawInk` 不再居首。
 3. 方法轮包裹 `Storage.setItem`/`diagnosticsTick`：战斗中 `storageWrite` 次数应为0（除警告/错误），对比≥100ms长帧是否与5秒节拍相关。
 4. ABBA同温对照正式轮；超龄仍按原门槛作废整轮，不能把含超龄的轮次写成成绩。
+
+## Windows接续：2026-10-27独立暂停恢复方法准备
+
+Windows/Edge源码Worker与日志保存时机检查已通过。v54干净源码2b7ed77构建安装；旧/新/新/旧一分钟正式对照正在采集，不能预称提帧。正常轮暂未触发park，新增仅工具开关 `BOSS_VERIFY_WORKER_RECOVERY=1`，限制METHOD_PROBE=1、VERIFY_BOSS_EXIT=1、一分钟，在20秒经原pause/resume入口检查park与排空恢复，不改游戏时间/资源；方法轮不作为帧率成绩。该工具语法通过，真机待验。产品APK不因工具更新重建。

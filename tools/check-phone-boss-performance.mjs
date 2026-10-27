@@ -24,6 +24,9 @@ const propRangeBenchmark=process.env.BOSS_PROP_RANGE_BENCHMARK==='1';
 const hiddenLodBenchmark=process.env.BOSS_HIDDEN_LOD_BENCHMARK==='1';
 const rayQueryBenchmark=process.env.BOSS_RAY_QUERY_BENCHMARK==='1';
 const coatBenchmark=process.env.BOSS_COAT_BENCHMARK==='1';
+// 仅独立方法轮通过原暂停/继续入口验证Worker恢复，不把暂停轮当帧率成绩。
+const verifyWorkerRecovery=process.env.BOSS_VERIFY_WORKER_RECOVERY==='1';
+if(verifyWorkerRecovery&&(process.env.BOSS_METHOD_PROBE!=='1'||process.env.BOSS_VERIFY_BOSS_EXIT!=='1'||duration!==60||coatBenchmark||propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark))throw Error('Worker暂停恢复仅供一分钟独立方法轮并验证离局恢复');
 if(coatBenchmark&&(propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('清漆对照须独占一分钟Boss方法轮自然结算');
 if(rayQueryBenchmark&&!['rows','cache'].includes(process.env.BOSS_RAY_QUERY_KIND||'rows'))throw Error('射线副本类型只支持rows/cache');
 if(rayQueryBenchmark&&(propRangeBenchmark||hiddenLodBenchmark||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('射线副本须独占一分钟方法轮');
@@ -376,6 +379,23 @@ try{
   if(process.env.BOSS_REQUIRE_HUD_DECOR==='1'&&report.methodProbe&&sample.state==='playing'&&sample.activeMs>=5000&&!report.hudDecorStyles){
    report.hudDecorStyles=await c.evaluate(`(()=>{const root=__inkwave.hud.el,selectors=['.iw-sp__wave','.iw-sp__wave2','.iw-sp__bub','.iw-timer__drip','.iw-bb__embsplat','.iw-bb__stripes'];return {active:root.matches('.iw-hud.is-boss.iw-mobile-boss-decor'),decorations:[...root.querySelectorAll('.iw-sq:not(.is-self) .iw-sq__you')].map(el=>({name:getComputedStyle(el).animationName})),visible:selectors.flatMap(selector=>[...root.querySelectorAll(selector)].map(el=>({selector,name:getComputedStyle(el).animationName}))),self:getComputedStyle(root.querySelector('.iw-sq.is-self .iw-sq__you')).animationName};})()`);
    if(!report.hudDecorStyles.active||report.hudDecorStyles.decorations.length!==7||report.hudDecorStyles.decorations.some(x=>x.name!=='none')||report.hudDecorStyles.visible.length!==8||report.hudDecorStyles.visible.some(x=>x.name==='none')||report.hudDecorStyles.self!=='iw-you')throw Error('不可见箭头清理或可见装饰恢复未生效');
+  }
+  if(verifyWorkerRecovery&&sample.state==='playing'&&sample.activeMs>=20000&&!report.workerRecovery){
+   report.workerRecovery={before:await c.evaluate('__inkwave.minimap.bossWorkerInfo()')};
+   try{
+    await c.evaluate('__inkwave.pause();true');
+    await new Promise(r=>setTimeout(r,500));
+    report.workerRecovery.paused=await c.evaluate('({paused:__inkwave.match.paused,worker:__inkwave.minimap.bossWorkerInfo()})');
+   }finally{await c.evaluate('if(__inkwave.match.paused)__inkwave.resume();true');}
+   for(let i=0;i<40;i++){
+    await new Promise(r=>setTimeout(r,100));
+    report.workerRecovery.resumed=await c.evaluate('({paused:__inkwave.match.paused,worker:__inkwave.minimap.bossWorkerInfo()})');
+    const w=report.workerRecovery.resumed.worker,b=report.workerRecovery.before;
+    if(!report.workerRecovery.resumed.paused&&w?.ready&&!w.parked&&w.resyncs>b.resyncs&&w.applied>b.applied)break;
+   }
+   const r=report.workerRecovery,w=r.resumed?.worker,b=r.before;
+   r.ok=!!(r.paused?.paused&&r.paused.worker?.parked&&w?.ready&&!w.parked&&!r.resumed.paused&&w.resyncs>b.resyncs&&w.applied>b.applied&&w.fallbacks===b.fallbacks);
+   await save();if(!r.ok)throw Error('真机原暂停/继续后Worker未恢复：'+JSON.stringify(r));
   }
   if(verifyDisplayLifecycle&&sample.state==='playing'&&sample.activeMs>=20000&&!report.displayLifecycle){
    const query='(async()=>({native:await inkwaveMobile.BossDisplay.getState(),app:await inkwaveMobile.App.getState(),hidden:document.hidden,suspended:!!__inkwave.mobileSuspended,needsResume:__inkwave.mobile.state.needsResume,paused:__inkwave.match.paused}))()';
