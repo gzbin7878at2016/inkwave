@@ -79,7 +79,7 @@ if(minimapWorkerPipeline&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||m
 // 并行核心余量调查：独占一分钟方法轮，15～45秒Worker承担固定计算量，其他旁路/比较全关。
 const workerLoadMs=process.env.BOSS_WORKER_LOAD_MS?Number(process.env.BOSS_WORKER_LOAD_MS):0;
 const stageProbe=process.env.BOSS_STAGE_PROBE==='1';
-if(stageProbe&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||workerLoadMs||verifyWorkerRecovery||propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||coatBenchmark||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('细分阶段仅供独立一分钟方法轮');
+if(stageProbe&&(process.env.BOSS_METHOD_PROBE!=='1'||![30,60].includes(duration)||workerLoadMs||verifyWorkerRecovery||propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||coatBenchmark||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('细分阶段仅供独立30或60秒方法轮');
 if(workerLoadMs&&(!Number.isInteger(workerLoadMs)||workerLoadMs<1||workerLoadMs>30))throw Error('BOSS_WORKER_LOAD_MS须为1～30整数');
 if(workerLoadMs&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyWorkerRecovery||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('Worker负载调查仅允许独立一分钟方法轮');
 if(compareSmaaClear&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass))throw Error('SMAA同输入比较仅允许一分钟独立方法调查');
@@ -92,7 +92,7 @@ if(pannerAblation&&(ablation||cpuAblation||uiAblation||musicAblation||process.en
 if(audioSuspend&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音频挂起须独占一分钟带探针调查轮');
 if(audioGraphBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('音频图旁路须独占一分钟带探针调查轮');
 if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('混响旁路须独占一分钟带探针调查轮');
-if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
+if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||(duration!==60&&!(stageProbe&&duration===30))))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
 const report={requestedFps:fpsCap,playbackMode,methodProbe:process.env.BOSS_METHOD_PROBE==='1',workerLoadMs,nativePaint,markerVars,layerHints,domAblation,domPart,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
@@ -358,8 +358,8 @@ try{
    return record.call(this,ms);
   };
   window.__phoneCleanup=()=>{for(const restore of [...restores].reverse())restore();g._frame=frame;g.mobile.recordFrame=record;g.input.keys.clear();g.input.mouse.left=false;delete window.__phoneCleanup;};
-  // 用户要求每局1分钟；只改自动测试的对局参数，不改正式游戏默认时长。
-  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:60}).then(v=>{__phoneStarted=v;if(v){p.match=g.match;director?.bind(g.match);p.installMatchProbe?.(g.match)}},e=>__phoneStarted=String(e));};
+  // 用户允许阶段定位缩至30秒；设置开局时长并等自然结算，正式对照仍一分钟，不改产品默认时长。
+  window.__phoneStart=()=>{p.rounds++;p.match=null;p.lastPlaying=false;window.__phoneStarted=null;g.startMatch({mode:'boss',mapId:'tidewater',duration:${stageProbe?duration:60}}).then(v=>{__phoneStarted=v;if(v){p.match=g.match;director?.bind(g.match);p.installMatchProbe?.(g.match)}},e=>__phoneStarted=String(e));};
   __phoneStart();return true;
  })()`);
  const deadline=Date.now()+(duration+300)*1000;
@@ -446,7 +446,7 @@ try{
   if(sample.ratio!==2||sample.scale!==1)throw Error('实际渲染不满足固定2倍高清');
   // 一分钟短轮等游戏自然结束，不能采够60秒就让角色停在仍进行的对局里。
   report.roundCompleted=['finish','results'].includes(sample.state);
-  if(duration===60?report.roundCompleted:sample.activeMs>=duration*1000)break;
+  if((duration===60||stageProbe&&duration===30)?report.roundCompleted:sample.activeMs>=duration*1000)break;
   await new Promise(r=>setTimeout(r,2000));
  }
  const a=report.intervals.filter(x=>Number.isFinite(x)&&x>0).sort((a,b)=>a-b),seconds=a.reduce((s,x)=>s+x,0)/1000;
