@@ -1,6 +1,6 @@
 // 独立方法轮分层墙钟计时：父层扣除已追踪子层，固定容量记录；不改变dt、返回值或异常。
 export function createBossStageProbe(game, G, {detail=false}={}) {
- const limit=48,capacity=4096,rows=[],restores=[],seen=new WeakMap();
+ const limit=64,capacity=4096,rows=[],restores=[],seen=new WeakMap();
  const starts=new Float64Array(64),children=new Float64Array(64),ids=new Int16Array(64);
  let depth=0,active=false,frames=0,start=0,activeMs=0,dt=0,overflow=false,disposed=false;
  const slow=[],loafs=[],specialEvents=[];
@@ -33,7 +33,7 @@ export function createBossStageProbe(game, G, {detail=false}={}) {
  const stats=a=>{const x=Array.from(a.subarray(0,Math.min(frames,capacity))).sort((a,b)=>a-b);return {p50:x[Math.floor((x.length-1)*.5)]||0,p95:x[Math.floor((x.length-1)*.95)]||0,p99:x[Math.floor((x.length-1)*.99)]||0};};
  return {
   bind(m){wrap(m,'updateController','controller');wrap(m,'update','match');for(const a of m.actors){wrap(a,'update','actors');wrap(a.bot,'update','bots');wrap(a.character,'update','characters');wrap(a.weaponRunner,'update','weapons');}
-   if(detail)for(const a of m.actors){for(const k of ['_surface','_updateClimb','_horizontal','_integrate','_spawnBarrier','_finishFrame','_events','respawn','_startSpecial','_updateSpecial','_updateSuperJump'])wrap(a,k,'actor'+k);wrap(a.character,'trigger','characterTrigger');}
+   if(detail)for(const a of m.actors){for(const k of ['_surface','_updateClimb','_horizontal','_integrate','_spawnBarrier','_finishFrame','_events','respawn','_startSpecial','_updateSpecial','_updateSuperJump'])wrap(a,k,'actor'+k);wrap(a.character,'trigger','characterTrigger');for(const k of ['setWeapon','_getWeapon','_weaponInstance'])wrap(a.character,k,'character'+k);}
    const b=m.boss;wrap(m.bossMode,'update','bossMode');wrap(b,'update','boss');wrap(b?.brain,'update','bossBrain');wrap(b?.model,'update','bossModel');wrap(b?.hz,'update','bossHazards');},
   begin(live,ms,delta){active=!!live;if(!active)return;activeMs=ms;dt=delta;depth=0;start=performance.now();for(const r of rows){r.frame=r.frameSelf=r.frameCalls=0;}},
   enterDriver(){enter(driver);},enterGame(){enter(frame);},leave,

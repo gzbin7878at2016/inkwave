@@ -15,6 +15,7 @@ import {compareBossSmaaClear} from './compare-boss-smaa-clear.mjs';
 import {createBossDomProbe} from './boss-dom-probe.mjs';
 import {createBossWorkerLoadProbe} from './boss-worker-load-probe.mjs';
 import {createBossStageProbe} from './boss-stage-probe.mjs';
+import {probeBossWeaponConstruction} from './boss-weapon-construction-probe.mjs';
 import {createBossLayerHintProbe} from './boss-layer-hint-probe.mjs';
 import {createBossMarkerVarProbe} from './boss-marker-var-probe.mjs';
 import {createBossNativePaintProbe} from './boss-native-paint-probe.mjs';
@@ -80,6 +81,8 @@ if(minimapWorkerPipeline&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||m
 const workerLoadMs=process.env.BOSS_WORKER_LOAD_MS?Number(process.env.BOSS_WORKER_LOAD_MS):0;
 const stageProbe=process.env.BOSS_STAGE_PROBE==='1';
 const stageDetail=process.env.BOSS_STAGE_DETAIL==='1';
+const stageBuild=process.env.BOSS_STAGE_BUILD_BENCHMARK==='1';
+if(stageBuild&&(!stageProbe||!stageDetail))throw Error('结算构造定位须独立细分方法轮');
 if(stageDetail&&!stageProbe)throw Error('阶段细分需要阶段方法轮');
 if(stageProbe&&(process.env.BOSS_METHOD_PROBE!=='1'||![30,60].includes(duration)||workerLoadMs||verifyWorkerRecovery||propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||coatBenchmark||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('细分阶段仅供独立30或60秒方法轮');
 if(workerLoadMs&&(!Number.isInteger(workerLoadMs)||workerLoadMs<1||workerLoadMs>30))throw Error('BOSS_WORKER_LOAD_MS须为1～30整数');
@@ -525,6 +528,7 @@ try{
  if(minimapWorkerPipeline&&!report.minimapWorkerPipeline)throw Error('未执行指定阶段流水线副本验证');
  if(compareSmaaClear)report.smaaClearComparison=await c.evaluate(`(${compareBossSmaaClear.toString()})(__inkwave)`);
  if(compareSmaaEdges){const half=edgeFormat==='rg16f';report.smaaEdgesComparison=await c.evaluate(`(${compareBossSmaaEdges.toString()})(__inkwave,${JSON.stringify({format:RGFormat,type:half?HalfFloatType:UnsignedByteType,internalFormat:half?'RG16F':'RG8',expectedBits:half?[16,16,0,0]:[8,8,0,0]})})`);if(!report.smaaEdgesComparison.restored||report.smaaEdgesComparison.maxByteDifference||report.smaaEdgesComparison.nonBinary)throw Error(`SMAA ${edgeFormat}未逐字节匹配参考或恢复失败`);}
+ if(stageBuild){report.weaponConstruction=await c.evaluate(`(${probeBossWeaponConstruction.toString()})(__inkwave)`);await save();}
  if(verifyBossExit){
   if(!report.reverbInfo?.active)throw Error('Boss短混响未启用，不能验证恢复');
   report.bossExit=await c.evaluate(`(async()=>{const oldMap=__inkwave.minimap;await __inkwave.quitToMenu();for(let i=0;i<30&&__inkwave.R.outputPass?.enabled===false;i++)await new Promise(r=>requestAnimationFrame(r));const a=__G.audio,c=__G.music._nodes.find(n=>n instanceof ConvolverNode);

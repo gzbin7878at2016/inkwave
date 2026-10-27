@@ -43,3 +43,5 @@ v54-stage-detail-trace-method已自然30秒结算、USB INKWAVE-logs-20261027-10
 第二组30秒方法复现168.3ms慢帧：active28.352秒，actor_startSpecial自身93.0ms、characters48.3ms。该轮25秒Trace结束在28.286秒，恰未覆盖，不能用其1～4ms MinorGC解释下一帧。新增大招发动者/类型及SpecialSystem.start分段，下轮改27～30秒窄Trace，仍先提交工具。该轮USB100932-562551-3d52d048核对2b7ed77/恢复关闭通过。
 
 静态调用核对：Actor._startSpecial会同步emit special:use，本地主角监听调用hud.banner，再播放音效并执行SpecialSystem.start。为区分事件UI/特效和技能本体，二级工具补hud.banner、hud._restart和fxHooks._specialUse计时，仍48标签上限；仅观察不改事件/布局。真机待验。
+
+为降低等待随机大招的成本，准备BOSS_STAGE_BUILD_BENCHMARK=1：30秒自然结束后，仅取本人与另一角色的sp_zooka实例，测第一次/缓存取用，不发动技能、不切手持武器/不改战斗资源；新实例留在原角色缓存由原离局清理。该构造不含GPU完成，不作实战收益。细分setWeapon/_getWeapon/_weaponInstance，标签预算扩至64，固定容量仍有界。工具基础检查后先提交，真机待验。
