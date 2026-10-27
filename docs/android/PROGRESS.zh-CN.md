@@ -784,3 +784,7 @@ v49/ef0e0a1，METHOD_PROBE=0，区段副本及全部遮蔽/旁路/比较为0，�
 ## 2026-10-27 原生栈权限与样式线索
 
 simpleperf本页PID绑定通过但cpu-clock权限被拒，未提权；同局3秒浏览器Trace成功，裁边样式CPU417.613ms在JS回调外/2.951ms在内，尚未定位节点原因。整局方法26.10628FPS非成绩，UI USB000605-896864-5d7e5f8e核对668/恢复关闭。新增最多1秒CSS失效Trace和真实帧号，用流式有界导出；白名单/默认兼容单测及手机菜单流兼容通过，新采集待验。见BOSS-NATIVE-STACK-INVESTIGATION.zh-CN.md。
+
+## 2026-10-27 v51待真机验证
+
+一秒CSS失效追踪找到两处每游戏帧重写hidden与标记--far写入；v51仅手机真实Boss省去相同DOM值写入，不改CSS动画/精度/玩法/PC。真实HUD/TouchInput/installMobile浏览器重复120次写入及状态/优先级/计算样式等价通过；待基础检查收尾后中文提交、干净打包真机复验。见BOSS-PERFORMANCE-test51.zh-CN.md。

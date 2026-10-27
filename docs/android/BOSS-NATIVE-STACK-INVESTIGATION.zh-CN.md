@@ -33,3 +33,15 @@ profile-phone-native-stacks.mjs只附着BOSS_NATIVE_STACK_TEST_NAME对应的一�
 trace-phone-boss新增BOSS_TRACE_MAIN_STAGES=1：除原时间线外加实际可用cc/blink类别，最多3秒；BOSS_TRACE_INVALIDATIONS=1仅允许独立主阶段1秒，加invalidationTracking，保留明确白名单的瞬时失效事件。使用现有ReturnAsStream/256MiB硬上限，不查/json/protocol，不加逐GL命令Skia细类；事件200000上限，超限或dataLoss不能当完整证据。标记同时读实际game._frameN，今后以两端差计实际游戏帧数，不用rAF数冒充。
 
 Trace结束后取DOM节点id/backendNodeId/class映射供失效节点归属；节点已销毁或ID歧义则保留未知，不猜测。采样主轮仍正常60游戏秒，结束上传并关闭。事件收集器白名单/旧默认行为及分批CPU/截断单测通过；当前手机菜单ReturnAsStream兼容检查17010字节/dataLoss=false/标记存在/前后PID25452未变，结束确认关闭，不计Boss轮或FPS。尚未实际采集新的失效类别，不更改产品样式。
+
+## 一秒完整CSS失效采集成功
+
+boss-trace-2026-10-27T00-09-33-495Z.json：7,859,325字节/34048原始事件，dataLoss=false、eventsTruncated=false；节点映射1894项，本页renderer25812/main25849。开始/结束玩家均存活，实际game._frameN591→610，即19个游戏帧；采集本身较重，不作为正常帧率。
+
+标记内样式失效原因：Related style rule643、Inline CSS style declaration was mutated565、Animation508、Attribute38。两处hidden属性分别19次：mobile-jumps来自TouchInput.setEnabled，隐藏的练习按钮来自installMobile.update；均与实际游戏帧数相同。队友标记--far setter132次、位置transform132次；还存在SVG波浪/气泡每帧样式/布局变化，尚不能把全部成本归因于两个hidden或变量写入。
+
+新增CPU区间分析器按同线程tts裁边、将重叠嵌套区间只分给最内层一次。最内层只是已捕获类别的划分，父层自身仍可能包含未启用/小于阈值事件，不能把它当本地符号栈。新TraceDocument::recalcStyle约117.359ms/19帧=6.177ms/游戏帧，但采集开销/世界状态使该数值不能当正式成本。旧3秒Trace有55.149ms CPU未被捕获作用域覆盖，如实保留，不能补成某个函数。
+
+方法整局1671帧/66.3067秒=25.20107FPS、P95 58.4/P99 83.2ms、长帧9，44→47°C；189.65米/14148伤害/116弱点，本轮实际大招0，虽有按键也不称覆盖，阶段[1,2]。UI USB001125-455840-738b9742核对6686333/退出恢复/关闭。
+
+据此下一批只消除手机真实Boss的幂等DOM写入，不修改CSS动画/精度/继承/场景或PC分支。更多SVG/动画成本继续保留为线索，不重复未经控制的“停全部装饰”方案。

@@ -79,9 +79,10 @@ export class TouchInput {
     return this.pressed.has(code) || Object.entries(KEYS).some(([action, key]) => key === code && this.pressed.has(action));
   }
   action(name) { return this.enabled && (this.held.has(name) || this.pressed.has(name)); }
-  setEnabled(on) {
+  setEnabled(on, dedupeVisibility = false) {
     if (on !== this.enabled) { this.clear(); this.enabled = on; this.root.hidden = !on; }
-    this.jumpPanel.hidden = !this.mapOpen;
+    // 手机Boss每帧调用；hidden的重复赋值仍会触发样式失效，只省去不变的写入。
+    if (!dedupeVisibility || this.jumpPanel.hidden !== !this.mapOpen) this.jumpPanel.hidden = !this.mapOpen;
     this.root.classList.toggle('map-open', this.mapOpen);
   }
   // 菜单/失焦/后台的统一释放口；pointer capture 一并释放，避免后续 lost 回调污染新手势。

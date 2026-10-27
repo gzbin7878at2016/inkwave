@@ -165,8 +165,11 @@ export function installMobile(game) {
       bossDisplay.update(game, G.mode, state.needsResume || state.lostContext || game.mobileSuspended);
       window.inkwaveDiagnostics?.tick();
       const live = G.mode === 'match' && game.match && !game.match.attract && game.match.state === 'playing' && !game.match.paused;
-      touch.setEnabled(!!(live && !game.menus?.current && !state.needsResume && !state.lostContext && dialog.hidden));
-      practiceButton.hidden = G.mode !== 'menu';
+      const bossDomDedupe = !!(G.mode === 'match' && game.match?.boss && !game.match.attract);
+      touch.setEnabled(!!(live && !game.menus?.current && !state.needsResume && !state.lostContext && dialog.hidden), bossDomDedupe);
+      // 读取hidden属性不查询布局；仍按真实DOM纠正外部改动，不依赖可能过期的缓存。
+      const practiceHidden = G.mode !== 'menu';
+      if (!bossDomDedupe || practiceButton.hidden !== practiceHidden) practiceButton.hidden = practiceHidden;
       state.clock += dt;
       if (state.clock >= 1) {
         state.clock = 0;

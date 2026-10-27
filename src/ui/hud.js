@@ -2086,6 +2086,7 @@ export class HUD {
   _updMarkers(ms) {
     const L = this._L;
     ms = ms || [];
+    const bossFarDedupe = !!(globalThis.inkwaveMobile && G.mode === 'match' && G.match?.boss && !G.match.attract);
     let byName = this._byName;
     const actors = this._actors();
     if (!byName || this._byNameN !== actors.length || this._byNameA !== actors[0]) {
@@ -2116,7 +2117,9 @@ export class HUD {
       if (el._on !== on) { el._on = on; el.classList.toggle('is-off', !on); }
       if (el._ready !== ready) { el._ready = ready; el.classList.toggle('is-ready', ready); }
       if (el._tracked !== !!m.tracked) { el._tracked = !!m.tracked; el.classList.toggle('is-tracked', !!m.tracked); if (m.tracked) el.querySelector('.iw-mk__tag b').textContent = t('{name} · TRACKED', { name: t(m.name) }); }
-      el.style.setProperty('--far', far.toFixed(2));
+      const farValue = far.toFixed(2);
+      // 只在手机真实Boss去重：保持原两位精度/继承/优先级，不重复刷新整棵标签变量环境。
+      if (!bossFarDedupe || el.style.getPropertyValue('--far') !== farValue || el.style.getPropertyPriority('--far')) el.style.setProperty('--far', farValue);
       el.style.transform = `translate3d(${(+m.x).toFixed(1)}px,${(+m.y).toFixed(1)}px,0)`;
       if (!on) el.lastChild.style.transform = `rotate(${(+m.angle || 0).toFixed(3)}rad)`;
     }
