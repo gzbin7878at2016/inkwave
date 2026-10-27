@@ -147,6 +147,29 @@ function makeMesh(team) {
   return outer;
 }
 
+let bossBlurPreparation = null;
+// 只在手机Boss加载期借真实工厂建立离场代理，持有旋转盘程序，避免每次投掷后dispose导致再次链接。
+export function prepareBossBoomerangMeshes(match) {
+  if (!globalThis.inkwaveMobile || !match?.boss || match.attract) return [];
+  const actor = match.actors.find(a => a.subId === KIND);
+  if (!actor) return [];
+  if (bossBlurPreparation?.match !== match) {
+    clearBossBoomerangPreparation();
+    const root = makeMesh(actor.team), meshes = [];
+    root.traverse(o => { if (o.isMesh) meshes.push(o); });
+    meshes.forEach((mesh, i) => { mesh.name = `mobile-boss-boomerang-program-${i}`; mesh.visible = false; });
+    bossBlurPreparation = { match, root, meshes };
+  }
+  return bossBlurPreparation.meshes;
+}
+
+// 只释放代理自建的盘材质；外壳/墨件材质和原型几何均属于共享资源。
+export function clearBossBoomerangPreparation(match) {
+  if (!bossBlurPreparation || (match && bossBlurPreparation.match !== match)) return;
+  const held = bossBlurPreparation; bossBlurPreparation = null;
+  held.root.userData.blur.material.dispose();
+}
+
 // ================================================================================================= the throw plan
 // Start at the throwing hand, flat along the aim (pitch clamped), stop ~range out or short of a wall, never skimming
 // the floor. Shared by the throw and the local player's aim guide.
@@ -549,6 +572,7 @@ function dispose(it) {
 }
 // 换局批量释放活动对象，清空预览和模块状态。
 function clear() {
+  clearBossBoomerangPreparation();
   for (const it of items) dispose(it);
   items.length = 0;
   if (guide) guide.group.visible = false;

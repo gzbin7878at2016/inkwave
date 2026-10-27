@@ -159,6 +159,14 @@ function ensureFistMesh() {
   return fistMesh;
 }
 
+// 仅手机Boss加载期初始化真实长期拳头池；count仍为0，不生成弹道、不推进拳套状态。
+// 材质/实例缓冲沿用原池的跨局生命周期，清场仍由原clear置零，不创建第二份池。
+export function prepareBossMittsMeshes(match) {
+  if (!globalThis.inkwaveMobile || !match?.boss || match.attract || !match.actors.some(a => a.weaponId === 'mitts')) return [];
+  const mesh = ensureFistMesh();
+  return mesh ? [mesh] : [];
+}
+
 // gloveMuzzle:求"拳头生成点"= 手套面(拳从哪出来)。优先问角色模型要该手的枪口;
 // 若返回值异常(非有限值 / 离胸口太远 / 被墙挡住视线)则回退到"胸前一拳位",保证拳头永远从合理处射出。
 // the glove's face (where a fist leaves), falling back to a point in front of the chest on the punching side

@@ -12,6 +12,10 @@ try {
     const { SpecialSystem } = await import('/src/game/specials.js');
     const { prepareBossBrollyMeshes, clearBossBrollyPreparation, BROLLY_DEBUG } = await import('/src/game/kits/brolly.js');
     const { prepareMobileCombat } = await import('/src/platform/mobileCombatPreparation.js');
+    const { prepareBossMittsMeshes, MITTS } = await import('/src/game/kits/mitts.js');
+    const { prepareBossBoomerangMeshes, clearBossBoomerangPreparation } = await import('/src/game/kits/boomerang.js');
+    const { prepareBossWaddleMeshes, clearBossWaddlePreparation } = await import('/src/game/kits/waddle.js');
+    const { MAIN_KITS, SUB_KITS } = await import('/src/game/kits/registry.js');
     const check = (ok, message) => { if (!ok) throw Error(message); };
     const renderer = new THREE.WebGLRenderer(), scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(50, 1, .1, 50);
     renderer.setSize(64, 64); camera.position.set(0, 1, 5); camera.lookAt(0, .5, 0);
@@ -65,8 +69,45 @@ try {
     finally { renderer.compile = compile; }
     check(failed && failedDisposed === 6, '首绘失败未传播或泄漏');
     check(scene.children.length === worldCount && BROLLY_DEBUG.LAUNCHED.length === launched, '准备污染真实场景');
+    const kitMatch = { boss: {}, actors: [{ weaponId: 'mitts', subId: 'boomerang', team: 0 }, { weaponId: 'shooter', subId: 'waddle', team: 0 }] };
+    const kits = m => [...prepareBossMittsMeshes(m), ...prepareBossBoomerangMeshes(m), ...prepareBossWaddleMeshes(m)];
+    for (const kind of ['PC', 'ordinary', 'attract', 'noRoster']) {
+      globalThis.inkwaveMobile = kind === 'PC' ? false : {};
+      const other = { ...kitMatch, boss: kind === 'ordinary' ? null : {}, attract: kind === 'attract', actors: kind === 'noRoster' ? [] : kitMatch.actors };
+      check(kits(other).length === 0, kind + '战斗池越界创建');
+    }
+    globalThis.inkwaveMobile = {};
+    const kitMeshes = kits(kitMatch), fists = kitMeshes[0];
+    check(kitMeshes.length === 5 && fists.isInstancedMesh && fists.count === 0 && MITTS.fists.length === 0, '拳头准备生成实际弹道');
+    check(scene.children.length === worldCount + 1 && fists.parent === scene, '只允许真实零计数长期池加入场景');
+    check(kits(kitMatch).every((mesh, i) => mesh === kitMeshes[i]), '同局重复创建战斗池代理');
+    check(await prepareMobileCombat(game, kitMatch), '战斗池准备失败');
+    const kitIds = renderer.info.programs.map(p => p.id).sort();
+    for (let cycle = 0; cycle < 5; cycle++) {
+      for (const source of kitMeshes) {
+        const mesh = source.clone(false), material = source.material.clone();
+        mesh.material = material; mesh.visible = true; mesh.frustumCulled = false;
+        if (mesh.isInstancedMesh) { mesh.count = 3; mesh.instanceColor = source.instanceColor; }
+        scene.add(mesh); renderer.setRenderTarget(target); renderer.render(scene, camera);
+        scene.remove(mesh); material.dispose();
+      }
+      check(JSON.stringify(renderer.info.programs.map(p => p.id).sort()) === JSON.stringify(kitIds), '战斗池临时材质销毁后重新链接');
+    }
+    const owned = kitMeshes.filter(mesh => mesh.material.isShaderMaterial);
+    check(owned.length === 2, '临时程序引用计数错误');
+    let kitDisposed = 0;
+    for (const mesh of owned) mesh.material.addEventListener('dispose', () => kitDisposed++);
+    clearBossBoomerangPreparation({}); clearBossWaddlePreparation({});
+    check(kitDisposed === 0, '旧任务释放当前战斗池');
+    SUB_KITS.boomerang.clear(); SUB_KITS.waddle.clear(); MAIN_KITS.mitts.clear();
+    check(kitDisposed === 2 && fists.count === 0 && MITTS.fists.length === 0, '正常清场泄漏或推进拳套');
+    const pending = kits(kitMatch).filter(mesh => mesh.material.isShaderMaterial);
+    let kitCancelled = 0, kitChecks = 0;
+    for (const mesh of pending) mesh.material.addEventListener('dispose', () => kitCancelled++);
+    check(!await prepareMobileCombat(game, kitMatch, { isCurrent: () => ++kitChecks < 3 }), '战斗池取消未传播');
+    check(kitCancelled === 2 && prepareBossMittsMeshes(kitMatch)[0] === fists && fists.count === 0, '取消泄漏或重复建立长期池');
     system.clear(); clearBossBrollyPreparation(); target.dispose(); renderer.dispose();
-    return { passed: true, phonePerformance: false, meshes: meshes.length, heldPrograms, disposalCount: disposed, cancelledDisposed, failedDisposed, worldUntouched: true, scopeIsolation: true, cacheStableCycles: 5 };
+    return { passed: true, phonePerformance: false, meshes: meshes.length, heldPrograms, disposalCount: disposed, cancelledDisposed, failedDisposed, worldUntouched: true, scopeIsolation: true, cacheStableCycles: 5, kitMeshes: kitMeshes.length, kitDisposed, kitCancelled, poolCount: fists.count };
   });
   await writeFile('releases/investigation/boss-combat-programs.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

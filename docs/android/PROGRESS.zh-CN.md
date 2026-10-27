@@ -798,3 +798,7 @@ hidden重复失效各19→0、--far132→14，位置/样式保持；方法24.553
 ## v52 Boss首用程序准备（2026-10-27）
 
 仅手机Boss持有4类技能及飞出伞面透明材质程序至清场。299JS、真实WebGL五轮缓存及取消/失败清理通过，手机尚待构建安装验证。见BOSS-PERFORMANCE-test52.zh-CN.md；v51补充方法26.08375FPS、Worker251.2ms回退，30未达标。
+
+## v53战斗池首用准备
+
+- v53源码准备：仅手机Boss按真实阵容补mitts空池、boomerang盘、waddle圈首用准备；299JS及真实WebGL五轮缓存/范围/取消清理通过。待提交后干净构建安装与方法+正式真机验证；30未稳。详见BOSS-PERFORMANCE-test53.zh-CN.md。

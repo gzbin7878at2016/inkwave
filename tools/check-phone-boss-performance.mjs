@@ -213,10 +213,15 @@ try{
     // 仅方法轮证明目标特效确实上屏；“没有新程序”必须配合实际绘制覆盖，不能把缺少武器当作命中缓存。
     if(p.match===g.match&&g.match?.state==='playing'){
      const material=args[3],object=args[4];let kind=null;
-     if(material?.name==='iw-brolly-ink'&&material.transparent){
+     if(object?.name==='mitts:fists')kind='mittsFists';
+     else if(material?.name==='iw-brolly-ink'&&material.transparent){
       let held=false;for(let node=object;node;node=node.parent)if(p.actorRoots?.has(node)){held=true;break;}
       kind=held?'heldCanopy':'launchedCanopy';
-     }else if(material?.isShaderMaterial&&material.fragmentShader.includes('uniform float uSpeed;')&&material.vertexShader.includes('uniform float uWobble;'))kind='swirl';
+     }else if(material?.isShaderMaterial){
+      if(material.fragmentShader.includes('uniform float uSpeed;')&&material.vertexShader.includes('uniform float uWobble;'))kind='swirl';
+      else if(material.fragmentShader.includes('uniform float uGrow; uniform float uLock;'))kind='waddleRing';
+      else if(material.fragmentShader.includes('uniform float uAlpha; uniform float uAng;'))kind='boomerangBlur';
+     }
      if(kind){const row=p.combatProgramDraws[kind]??={draws:0,firstActiveMs:p.activeMs,programIds:[]};row.draws++;row.lastActiveMs=p.activeMs;
       const id=this.properties.get(material).currentProgram?.id;if(id!==undefined&&!row.programIds.includes(id))row.programIds.push(id);}
     }

@@ -162,6 +162,28 @@ function makeRing(col, alpha = 1) {
   return m;
 }
 
+let bossRingPreparation = null;
+// 手机Boss加载期只准备实际标记圈配方，不建立机器人、探测目标或开启预览。
+export function prepareBossWaddleMeshes(match) {
+  if (!globalThis.inkwaveMobile || !match?.boss || match.attract) return [];
+  const actor = match.actors.find(a => a.subId === 'waddle');
+  if (!actor) return [];
+  if (bossRingPreparation?.match !== match) {
+    clearBossWaddlePreparation();
+    const mesh = makeRing(G.teamColors[actor.team]);
+    mesh.name = 'mobile-boss-waddle-program'; mesh.visible = false;
+    bossRingPreparation = { match, mesh };
+  }
+  return [bossRingPreparation.mesh];
+}
+
+// 保留一份同配方程序到清场；旧加载任务不能销毁新局引用，共享圈几何不释放。
+export function clearBossWaddlePreparation(match) {
+  if (!bossRingPreparation || (match && bossRingPreparation.match !== match)) return;
+  const held = bossRingPreparation; bossRingPreparation = null;
+  held.mesh.material.dispose();
+}
+
 // ================================================================================================= icon + sounds
 {
   const K = '#15121c', DK = '#2b2735', LT = '#e4e8ef';
@@ -754,6 +776,7 @@ SUB_KITS.waddle = {
     previewFx();
   },
   clear() {
+    clearBossWaddlePreparation();
     for (const it of items) dispose(it);
     items.length = 0;
     if (preview) { preview.parent?.remove(preview); preview.material.dispose(); preview = null; }
