@@ -1,5 +1,5 @@
 // 可序列化到既有页面的调查候选：仅静态名牌武器SVG，不改变标签、文字、位置、动画或任何产品文件。
-export async function createBossMarkerImages(root) {
+export async function createBossMarkerImages(root, { raster = false } = {}) {
   const entries = [], paint = ['color', 'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-opacity', 'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset', 'opacity', 'paint-order'];
   for (const svg of root.querySelectorAll('.iw-mk__w svg')) {
     const box = svg.getBoundingClientRect();
@@ -10,9 +10,16 @@ export async function createBossMarkerImages(root) {
     const img = new Image(); img.setAttribute('aria-hidden', 'true'); img.dataset.bossMarkerImage = 'probe';
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(clone));
     img.style.cssText = `width:100%;height:100%;display:${style.display};filter:${style.filter};vertical-align:${style.verticalAlign}`;
-    await img.decode(); entries.push({ svg, img, host: svg.parentNode });
+    await img.decode();
+    if (raster) {
+      // 190:140等于名牌1.9em:1.4em；尺寸高于手机实际显示需求，区别于仍有内部SVG文档的图像。
+      const canvas = document.createElement('canvas'); canvas.width = 190; canvas.height = 140;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      img.src = canvas.toDataURL('image/png'); await img.decode();
+    }
+    entries.push({ svg, img, host: svg.parentNode });
   }
-  const setup = { icons: entries.length, svgDescendants: entries.reduce((n, r) => n + r.svg.querySelectorAll('*').length, 0) };
+  const setup = { icons: entries.length, svgDescendants: entries.reduce((n, r) => n + r.svg.querySelectorAll('*').length, 0), format: raster ? 'png' : 'svg', logicalRasterBytes: raster ? entries.length * 190 * 140 * 4 : null };
   return {
     setup,
     toggle(images) {

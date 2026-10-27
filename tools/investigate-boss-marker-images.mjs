@@ -1,6 +1,7 @@
 // 固定真实HUD对照：仅把名牌内静态武器SVG转为隔离SVG图像；检查像素/布局与样式成本，不修改产品。
 import puppeteer from 'puppeteer-core';
 import { mkdir, writeFile } from 'node:fs/promises';
+const raster = process.env.BOSS_MARKER_IMAGE_RASTER === '1', prefix = raster ? 'marker-raster' : 'marker-images';
 await mkdir('releases/investigation', { recursive: true });
 await writeFile('releases/investigation/boss-marker-images.html', '<!doctype html><meta charset="utf-8"><script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/jsm/"}}</script><link rel="stylesheet" href="/styles/ui.css"><link rel="stylesheet" href="/styles/mobile.css"><div id="ui-root"></div>');
 const browser = await puppeteer.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true, args: ['--no-sandbox'] });
@@ -8,7 +9,7 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 778, height: 370, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await page.goto('http://localhost:8490/releases/investigation/boss-marker-images.html');
-  const setup = await page.evaluate(async () => {
+  const setup = await page.evaluate(async raster => {
     const { HUD } = await import('/src/ui/hud.js'), { G } = await import('/src/core/ctx.js');
     const ids = ['shooter', 'twins', 'spinner', 'charger', 'roller', 'brush', 'bucket', 'blaster'];
     globalThis.inkwaveMobile = {}; G.mode = 'match';
@@ -23,17 +24,17 @@ try {
     const freeze = () => { for (const a of document.getAnimations()) { a.pause(); a.currentTime = 1000; } };
     freeze();
     const { createBossMarkerImages } = await import('/tools/boss-marker-image-candidate.mjs');
-    const candidate = await createBossMarkerImages(hud.el);
+    const candidate = await createBossMarkerImages(hud.el, { raster });
     window.__imageProbe = {
       frame, toggle(on) { candidate.toggle(on); freeze(); return frame(0); },
       bench(n) { const start = performance.now(); for (let i = 0; i < n; i++) frame(i); return performance.now() - start; },
     };
     return candidate.setup;
-  });
+  }, raster);
   const baselineState = await page.evaluate(() => __imageProbe.toggle(false));
-  await page.screenshot({ path: 'releases/investigation/marker-images-original.png' });
+  await page.screenshot({ path: `releases/investigation/${prefix}-original.png` });
   const candidateState = await page.evaluate(() => __imageProbe.toggle(true));
-  await page.screenshot({ path: 'releases/investigation/marker-images-candidate.png' });
+  await page.screenshot({ path: `releases/investigation/${prefix}-candidate.png` });
   const sameState = JSON.stringify(baselineState) === JSON.stringify(candidateState);
   const client = await page.createCDPSession(); await client.send('Performance.enable');
   const metrics = async () => Object.fromEntries((await client.send('Performance.getMetrics')).metrics.map(m => [m.name, m.value]));
@@ -46,7 +47,7 @@ try {
       rows.push({ images, frames: 240, elapsedMs, styleMs: delta('RecalcStyleDuration') * 1000, styleCount: delta('RecalcStyleCount'), layoutMs: delta('LayoutDuration') * 1000 });
     }
   } finally { await page.evaluate(() => __imageProbe.toggle(false)); }
-  await page.screenshot({ path: 'releases/investigation/marker-images-restored.png' });
+  await page.screenshot({ path: `releases/investigation/${prefix}-restored.png` });
   const report = { methodOnly: true, phonePerformance: false, browserVersion: await browser.version(), setup, sameState, rows };
-  await writeFile('releases/investigation/marker-images.json', JSON.stringify(report, null, 2)); console.log(JSON.stringify(report));
+  await writeFile(`releases/investigation/${prefix}.json`, JSON.stringify(report, null, 2)); console.log(JSON.stringify(report));
 } finally { await browser.close(); }
