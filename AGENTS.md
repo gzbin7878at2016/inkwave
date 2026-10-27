@@ -2,6 +2,8 @@
 
 ## 当前接续（2026-10-27，优先于历史版本说明）
 
+- 正在准备v52，仅手机Boss加载期持有实际4类技能/透明飞出伞面程序，7代理/6自建材质，PC/普通/展示隔离；299JS与真实WebGL缓存/取消/失败释放通过。提交后干净构建安装测试；尚未证明提帧，不能用旧v51成绩验收。详见BOSS-PERFORMANCE-test52.zh-CN.md。
+
 - 仅Android Boss；先稳定30再60，固定2倍高清/SMAA/8人/原玩法及物理AI子步，PC保持。目标active，接续id=boss；USB常亮2，ADB串号A38YUT3C19022796。所有构建/手机测试句柄已终止，游戏已关闭，无授权阻塞；不得并发拥有CDP9223转发。
 - 当前安装v1.0.51/code51，干净源码80a2b9b61e5f9fc8949f9c4f61678cc00bcad7ee。仅手机真实Boss去重跳跃面板/练习按钮hidden及相同--far写入；原精度/透明度/位置/动画/物理AI/PC路径保持。真实HUD/TouchInput/installMobile重复120次及切状态基础检查、298JS通过，真机方法已确认hidden重复失效各19→0、--far132→14（19vs20游戏帧），未独立证明提帧；正式25.39416FPS/P95 66.6/P99 83.5/长帧8，Worker一次272.5ms result-age回原同步触发aborted，不能通过。USB002149-b8a2234d/002602-2a2ab958均核对80/恢复关闭。30未稳/60未开始。见BOSS-PERFORMANCE-test51.zh-CN.md。
 - v51 APK releases/INKWAVE-android-test51-80a2b9b.apk，21,159,447字节，SHA256 abe91df295fe28ce52ede7953f4ca0516b1f8a31badcf040bbb43e20f25805e5；v2证书201c792d…，398同步/396dist资产匹配，安装成功。v50上次正式25.92385FPS/P95 58.4/P99 75.1ms/长帧8，未稳30/60未开始；game分类0/mode1已识别，但CPU上限未提高，细节见test50。simpleperf本页绑定通过但Permission denied，不重试提权；改1秒CSS失效Trace成功，详见BOSS-NATIVE-STACK-INVESTIGATION。

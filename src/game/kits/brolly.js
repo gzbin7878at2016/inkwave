@@ -343,7 +343,7 @@ function addLaunched(a, pos, dir, hp, h0, ghost) {
   return c;
 }
 // 为发射盾建网格:用 canopyOpenGeo() 的墨面/白面/中枢三份几何 + makeFabric 织物材质,朝 dir 摆放后挂进场景。
-function buildLaunchedMesh(c) {
+function buildLaunchedMesh(c, attach = true) {
   const geo = canopyOpenGeo();
   const col = G.teamColors?.[c.team] || c.owner.color;
   const ink = makeFabric(col, true), cream = makeFabric(new THREE.Color(1, 1, 1), false);
@@ -353,8 +353,31 @@ function buildLaunchedMesh(c) {
   for (const m of [mi, mc, mh]) { m.castShadow = true; inner.add(m); }
   root.add(inner);
   root.rotation.y = Math.atan2(c.dir.x, c.dir.z);
-  G.scene?.add(root);
+  if (attach) G.scene?.add(root);
   c.mesh = root; c.inner = inner; c.mats = [ink, cream];
+}
+
+let bossCanopyPreparation = null;
+// 手机Boss只借真实飞出伞面工厂，准备透明织物变体；不加入LAUNCHED，不产生盾/涂地/音效。
+export function prepareBossBrollyMeshes(match) {
+  if (!globalThis.inkwaveMobile || !match?.boss || match.attract || !match.actors.some(a => a.weaponId === 'brolly')) return [];
+  if (bossCanopyPreparation?.match !== match) {
+    clearBossBrollyPreparation();
+    const actor = match.actors.find(a => a.weaponId === 'brolly');
+    const canopy = { team: actor.team, owner: actor, dir: new THREE.Vector3(0, 0, 1) };
+    buildLaunchedMesh(canopy, false);
+    const meshes = [...canopy.inner.children];
+    meshes.forEach((mesh, i) => { mesh.name = `mobile-boss-canopy-program-${i}`; mesh.visible = false; });
+    bossCanopyPreparation = { match, canopy, meshes };
+  }
+  return bossCanopyPreparation.meshes;
+}
+
+// 只销毁自建织物材质；共享伞面几何与塑料材质保持原生命周期。
+export function clearBossBrollyPreparation(match) {
+  if (!bossCanopyPreparation || (match && bossCanopyPreparation.match !== match)) return;
+  const held = bossCanopyPreparation; bossCanopyPreparation = null;
+  disposeLaunched(held.canopy);
 }
 // 卸载发射盾:从场景移除网格并 dispose 材质。
 function disposeLaunched(c) {
@@ -556,6 +579,7 @@ function tick(dt) {
 
 // 比赛重置/切图:卸载所有发射盾并清空弹丸、盾表、合并暂存。
 function clearAll() {
+  clearBossBrollyPreparation();
   for (const c of LAUNCHED) disposeLaunched(c);
   LAUNCHED.length = 0; PELLETS.length = 0; SH.length = 0; PEND.clear();
 }

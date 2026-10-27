@@ -2,12 +2,15 @@
 import { G } from '../core/ctx.js';
 import { BladeFX } from '../game/kits/blade-fx.js';
 import { prepareBossTracerMeshes, clearBossTracerPreparation } from '../game/kits/tracer.js';
+import { prepareBossBrollyMeshes, clearBossBrollyPreparation } from '../game/kits/brolly.js';
 import { createMobileWarmSession, prepareMobileMesh } from './mobileWarmup.js';
 
 export async function prepareMobileCombat(game, match, { isCurrent = () => true, onProgress, diagnostics } = {}) {
   if (!isCurrent()) return false;
   const tracerMeshes = prepareBossTracerMeshes(match);
-  const meshes = [...(G.projectiles?.mobilePreparationMeshes?.(match.actors) || []), ...tracerMeshes];
+  const specialSystem = G.specials;
+  const meshes = [...(G.projectiles?.mobilePreparationMeshes?.(match.actors) || []), ...tracerMeshes,
+    ...prepareBossBrollyMeshes(match), ...(specialSystem?.mobilePreparationMeshes?.(match) || [])];
   G.fx?.root?.traverse(object => { if (object.isMesh || object.isPoints || object.isLine) meshes.push(object); });
   if (match.actors.some(actor => actor.weapon?.kind === 'blade' || actor.weaponId === 'blade')) meshes.push(...BladeFX.mobilePreparationMeshes());
   const unique = [...new Set(meshes)];
@@ -27,7 +30,9 @@ export async function prepareMobileCombat(game, match, { isCurrent = () => true,
     if (!isCurrent()) { cancelled = true; return false; }
     failed = true; throw error;
   } finally {
-    if (cancelled || failed) clearBossTracerPreparation(match);
+    if (cancelled || failed) {
+      clearBossTracerPreparation(match); clearBossBrollyPreparation(match); specialSystem?.clearMobilePreparation?.(match);
+    }
     session.finish({ cancelled, failed });
   }
 }

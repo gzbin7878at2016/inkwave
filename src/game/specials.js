@@ -293,6 +293,29 @@ export class SpecialSystem {
   _add(...objs) { for (const o of objs) { this.scene.add(o); this.owned.add(o); } }
   _remove(...objs) { for (const o of objs) { if (!o) continue; this.scene.remove(o); this.owned.delete(o); } }
 
+  // 仅手机Boss加载期准备实际技能配方；持有材质直到清场，防止临时特效销毁后再次链接。
+  // 代理不加入场景、不触发技能、不消耗随机数，共享系统几何只借用不释放。
+  mobilePreparationMeshes(match) {
+    if (!globalThis.inkwaveMobile || !match?.boss || match.attract) return [];
+    if (this._mobileBossPrograms?.match !== match) {
+      this.clearMobilePreparation();
+      const color = new THREE.Color(1, 1, 1);
+      const meshes = [new THREE.Mesh(this.funnelGeo, swirlMat(color)), new THREE.Mesh(this.beamGeo, beamMat(color)),
+        new THREE.Mesh(this.sphereGeo, bubbleMat(color)), new THREE.Mesh(this.sphereGeo, auraMat(color))];
+      meshes.forEach((mesh, i) => { mesh.name = `mobile-boss-special-program-${i}`; mesh.visible = false; });
+      this._mobileBossPrograms = { match, meshes };
+    }
+    return this._mobileBossPrograms.meshes;
+  }
+
+  // 旧加载任务只能释放自己所属局；正常清场无参数时释放当前引用。
+  clearMobilePreparation(match) {
+    const held = this._mobileBossPrograms;
+    if (!held || (match && held.match !== match)) return;
+    this._mobileBossPrograms = null;
+    for (const mesh of held.meshes) mesh.material.dispose();
+  }
+
   // 【队色发光材质】按队伍缓存的 MeshStandardMaterial(暗色底+队色自发光),给道具的 glow 件用
   glowMat(team) {
     if (!this._glow[team]) {
@@ -304,6 +327,7 @@ export class SpecialSystem {
 
   // 【清理全场】对局结束/重开时:回收世界对象、scene 里的临时网格、护盾球与缓存材质
   clear() {
+    this.clearMobilePreparation();
     for (const w of this.world) w.dispose?.();
     this.world.length = 0;
     for (const o of this.owned) this.scene.remove(o);

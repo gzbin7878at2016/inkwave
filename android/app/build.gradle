@@ -33,8 +33,8 @@ android {
         applicationId "com.demoink.inkwave"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 51
-        versionName "1.0.51"
+        versionCode 52
+        versionName "1.0.52"
         resValue 'string', 'log_upload_url', logUploadUrl
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
