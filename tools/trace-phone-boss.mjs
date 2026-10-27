@@ -13,6 +13,13 @@ let nodeMap=[];
 const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
 const startSeconds=Number(process.env.BOSS_TRACE_START_SECONDS||0);
 const stylePhase=process.env.BOSS_TRACE_STYLE_PHASE||'';
+const markerImagePhase=process.env.BOSS_TRACE_MARKER_IMAGE_PHASE||'';
+if(markerImagePhase&&!['original','cached','restored'].includes(markerImagePhase))throw Error('图标阶段无效');
+const checkMarkerImages=(state,boundary)=>{
+ if(!markerImagePhase)return;
+ const [min,max]=({original:[5000,14500],cached:[16000,29000],restored:[31000,49000]})[markerImagePhase],s=state.markerImages;
+ if(!s||!s.icons||s.images!==(markerImagePhase==='cached')||s.imageNodes!==(s.images?s.icons:0)||state.activeMs<min||state.activeMs>max)throw Error(`${boundary}未处于${markerImagePhase}图标安全窗口`);
+};
 if(stylePhase&&!['original','removed','restored'].includes(stylePhase))throw Error('样式阶段无效');
 const checkStylePhase=(state,boundary)=>{
  if(!stylePhase)return;
@@ -83,10 +90,10 @@ try {
  if(rendering){try{await call('LayerTree.enable');layerTreeEnabled=true;}catch(error){report.layerMappingError=String(error);}}
  report.before=await snapshot();
  await call('Tracing.start',params);tracing=true;
- report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase,styleSelector:window.__bossStyleSelectorProbe?.snapshot()}})()');
+ report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase,styleSelector:window.__bossStyleSelectorProbe?.snapshot(),markerImages:window.__bossMarkerImages?.snapshot()}})()');
  await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),60000);complete=()=>{clearTimeout(timer);resolve()}});
- report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase,styleSelector:window.__bossStyleSelectorProbe?.snapshot()}})()');
+ report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase,styleSelector:window.__bossStyleSelectorProbe?.snapshot(),markerImages:window.__bossMarkerImages?.snapshot()}})()');
  ending=true;await Promise.all([call('Tracing.end'),done]);tracing=false;
  report.after=await snapshot();
  if(streamed){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
@@ -96,6 +103,7 @@ try {
  }
  checkStylePhase(report.startState,'开始');checkStylePhase(report.endState,'结束');
  if(stylePhase)report.stylePhase=stylePhase;
+ checkMarkerImages(report.startState,'开始');checkMarkerImages(report.endState,'结束');if(markerImagePhase)report.markerImagePhase=markerImagePhase;
  Object.assign(report,collector.info());
  report.markers=events.filter(e=>e.name?.startsWith('inkwave-render-')).map(e=>({name:e.name,pid:e.pid,tid:e.tid,ts:e.ts}));
  report.status='collected';
