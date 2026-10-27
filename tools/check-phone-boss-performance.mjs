@@ -79,6 +79,8 @@ if(minimapWorkerPipeline&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||m
 // 并行核心余量调查：独占一分钟方法轮，15～45秒Worker承担固定计算量，其他旁路/比较全关。
 const workerLoadMs=process.env.BOSS_WORKER_LOAD_MS?Number(process.env.BOSS_WORKER_LOAD_MS):0;
 const stageProbe=process.env.BOSS_STAGE_PROBE==='1';
+const stageDetail=process.env.BOSS_STAGE_DETAIL==='1';
+if(stageDetail&&!stageProbe)throw Error('阶段细分需要阶段方法轮');
 if(stageProbe&&(process.env.BOSS_METHOD_PROBE!=='1'||![30,60].includes(duration)||workerLoadMs||verifyWorkerRecovery||propRangeBenchmark||hiddenLodBenchmark||rayQueryBenchmark||coatBenchmark||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('细分阶段仅供独立30或60秒方法轮');
 if(workerLoadMs&&(!Number.isInteger(workerLoadMs)||workerLoadMs<1||workerLoadMs>30))throw Error('BOSS_WORKER_LOAD_MS须为1～30整数');
 if(workerLoadMs&&(process.env.BOSS_METHOD_PROBE!=='1'||duration!==60||verifyWorkerRecovery||[ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,verifyDisplayLifecycle,domAblation,layerHints,markerVars,nativePaint,minimapBenchmark,minimapWorkerBenchmark,minimapWorkerPipeline,compareSmaaClear,compareSmaaEdges].some(Boolean)))throw Error('Worker负载调查仅允许独立一分钟方法轮');
@@ -119,7 +121,7 @@ try{
   const g=__inkwave;g._setSettings({fpsCap:${fpsCap},mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
-  const stages=${stageProbe}?(${createBossStageProbe.toString()})(g,__G):null;if(stages){p.stages=stages;p.installMatchProbe=m=>stages.bind(m);restores.push(()=>stages.dispose());}
+  const stages=${stageProbe}?(${createBossStageProbe.toString()})(g,__G,{detail:${stageDetail}}):null;if(stages){p.stages=stages;p.installMatchProbe=m=>stages.bind(m);restores.push(()=>stages.dispose());}
   if(${process.env.BOSS_VERIFY_READY_STATE==='1'&&process.env.BOSS_METHOD_PROBE==='1'}){
    // 仅方法轮监听8个槽自身的class变化，不读布局、不逐帧轮询，不修改游戏状态。
    p.readyStateProbe={gains:0,losses:0,stale:0,events:[]};
