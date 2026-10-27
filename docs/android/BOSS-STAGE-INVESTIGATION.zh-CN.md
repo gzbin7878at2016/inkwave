@@ -55,3 +55,5 @@ v54-stage-definition-build-method在25.415秒真实Player/zooka发动96.6ms，�
 本轮结算getWeaponDef已经被真实大招填充，测得0ms是正确缓存命中，不是实验失败；29秒Trace未覆盖25秒发动，也没覆盖稍后异步构造标记，不能用这份Trace排除发动时的GC。USB102032-508118-80a78fbc核对2b7ed77/关闭通过。
 
 下一批只继续定位Character更新51ms与结算HUD约50ms，扩展7个角色表现入口及8个HUD入口，仍64标签固定预算，不做产品修复。主问题后续修复建议是在可取消的Boss准备期为实际阵容构建专用武器定义/实例并真实首绘；需另行实施验证，当前未做。
+
+角色/HUD细分轮USB102359-797145-f9000ff6核对2b7ed77、关闭通过，结算HUD自身61.7ms仍未被细组件解释。主HUD入口先执行minimap.update，结算会inactive整图回退；下一轮在真实match绑定时加minimap.update/_drawInk/_compose，验证是否收尾整图造成。标签上限由64增至72以保留有界预算，仍只方法轮。当前为源码线索，未宣称已证实。
