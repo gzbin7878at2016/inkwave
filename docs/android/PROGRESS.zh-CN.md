@@ -1,5 +1,7 @@
 # Android 实施进度
 
+- 2026-10-27 已拉取PR #1至d6a4fb3，新增[Opus性能修改通俗说明](OPUS-PERFORMANCE-CHANGES-EXPLAINED.zh-CN.md)：说明Boss Worker临时停用后恢复、手机实战日志延迟保存、范围/日志取舍/测试门槛和真机待验。本次仅文档核对，不重跑测试、不构建安装、不恢复Boss自动优化，目标仍paused。
+
 - 2026-10-27 用户已要求暂停Boss优化；目标保持paused，定时接续不得自动恢复测试。本次仅交付正常手动游玩v1.0.53：干净源码be143c3f84a3be44ebbb9a73287505fd440bb72a重新构建，APK21,332,692字节/SHA256 e3e42cf92ccf8444d76678a33ed3233e3b6db1619d87c105e0ce820baadcfa67，307JS/移动网络/v2签名通过，396dist与401同步文件逐字节匹配。USB覆盖安装成功，实际冷启动进入“按任意键开始”界面、无boot-error；未启动自动Director或实验、未跑新性能局，不能声称稳定30帧。手机保留开始界面供用户体验。清漆扩大取样轮USB中断，未完成、无新有效数据；用户重连后已恢复USB，原中断游戏已关闭。详见docs/android/MANUAL-PLAY-test53.zh-CN.md。
 
 
