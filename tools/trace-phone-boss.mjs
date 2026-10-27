@@ -66,7 +66,7 @@ try {
  ws.onclose=()=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('调试目标关闭'))}pending.clear()};
  let ready=false;
  for(let i=0;i<200;i++){
-  const state=await evaluate('({probe:!!window.__phonePerf?.methods,live:!!window.__phonePerf?.match&&window.__phonePerf.match===window.__inkwave?.match&&window.__inkwave?.match?.state==="playing",active:window.__phonePerf?.activeMs||0})');
+  const state=await evaluate('({probe:!!(window.__phonePerf?.methods||window.__phonePerf?.stages),live:!!window.__phonePerf?.match&&window.__phonePerf.match===window.__inkwave?.match&&window.__inkwave?.match?.state==="playing",active:window.__phonePerf?.activeMs||0})');
   if(state.probe&&state.live&&state.active>=startSeconds*1000){if(state.active>(55-seconds)*1000)throw Error('调查轮剩余时间不足');ready=true;break;}
   await new Promise(r=>setTimeout(r,500));
  }
