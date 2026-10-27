@@ -19,6 +19,9 @@ import {createBossNativePaintProbe} from './boss-native-paint-probe.mjs';
 import {compareBossSmaaEdges} from './compare-boss-smaa-edges.mjs';
 import {RGFormat,UnsignedByteType,HalfFloatType} from 'three';
 const duration=Number(process.env.BOSS_TEST_SECONDS||60),name=process.env.BOSS_TEST_NAME||'baseline';
+// 对照轮显式选择帧率上限；默认仍30，不修改产品默认值或降清晰度。
+const fpsCap=Number(process.env.BOSS_TEST_FPS||30);
+if(![30,60].includes(fpsCap))throw Error('BOSS_TEST_FPS只允许30或60');
 const testWeapon=process.env.BOSS_TEST_WEAPON||'';
 const propRangeBenchmark=process.env.BOSS_PROP_RANGE_BENCHMARK==='1';
 const hiddenLodBenchmark=process.env.BOSS_HIDDEN_LOD_BENCHMARK==='1';
@@ -84,7 +87,7 @@ if(audioReverbBypass&&(ablation||cpuAblation||uiAblation||musicAblation||pannerA
 if(verifyBossExit&&(ablation||cpuAblation||uiAblation||musicAblation||pannerAblation||audioSuspend||audioGraphBypass||audioReverbBypass||process.env.BOSS_METHOD_PROBE!=='1'||duration!==60))throw Error('退出恢复须独占无音画隔离的一分钟方法调查轮');
 if(!Number.isFinite(duration)||duration<15||duration>3600||!/^[a-z0-9-]+$/i.test(name))throw Error('采样秒数须为15～3600，名称只允许英数字和连字符');
 const c=await androidCDP(),path=`releases/investigation/phone-boss-${name}.json`;
-const report={playbackMode,methodProbe:process.env.BOSS_METHOD_PROBE==='1',nativePaint,markerVars,layerHints,domAblation,domPart,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
+const report={requestedFps:fpsCap,playbackMode,methodProbe:process.env.BOSS_METHOD_PROBE==='1',nativePaint,markerVars,layerHints,domAblation,domPart,displayLifecycleProbe:verifyDisplayLifecycle,gpuAblation:ablation,cpuAblation,uiAblation,musicAblation,pannerAblation,audioSuspend,audioGraphBypass,audioReverbBypass,testWeapon,startedAt:new Date().toISOString(),requestedSeconds:duration,status:'running',intervals:[],timeline:[],device:{}};
 await mkdir('releases/investigation',{recursive:true});
 const save=()=>writeFile(path,JSON.stringify(report,null,2));
 try{
@@ -105,7 +108,7 @@ try{
  if(report.methodProbe)report.displayBeforeBoss=await c.evaluate('inkwaveMobile.BossDisplay.getState()');
  await c.evaluate(`(()=>{
   window.__phoneCleanup?.();
-  const g=__inkwave;g._setSettings({fpsCap:30,mobileVisual:'hd',mobileDynamicResolution:false});
+  const g=__inkwave;g._setSettings({fpsCap:${fpsCap},mobileVisual:'hd',mobileDynamicResolution:false});
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
   if(${process.env.BOSS_VERIFY_READY_STATE==='1'&&process.env.BOSS_METHOD_PROBE==='1'}){
@@ -481,6 +484,7 @@ try{
  report.pannerTransitions=await c.evaluate('window.__phonePerf.pannerTransitions||null');
  report.diagnostics=await c.evaluate('inkwaveDiagnostics.report({probe:true})');
  const scene=report.diagnostics.current.scene;
+ if(scene.settings.fpsCap!==fpsCap)throw Error('实际帧率上限与测试请求不符');
  if(scene.render.antialias!=='SMAA'||report.diagnostics.current.shaderFailures.length||scene.mobileGpu?.fatal)throw Error('图形验收失败，不能将降级/错误帧当作正常性能');
  if(minimapBenchmark)report.minimapBenchmark=await c.evaluate(`(${benchmarkBossMinimapKernel.toString()})(__inkwave.minimap)`);
  if(propRangeBenchmark){if(!report.roundCompleted)throw Error('Boss必须自然结算后才运行区段副本');report.propRangeBenchmark=await runPhoneBossPropRanges(c);await save();}
