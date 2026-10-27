@@ -26,9 +26,11 @@ export async function benchmarkBossCoat(game, G) {
       if (pixelChecks.reference.max || pixelChecks.candidateRepeat.max || pixelChecks.restored.max) throw Error('固定画面或恢复不一致：' + JSON.stringify({ name, pixelChecks }));
       const countBefore = draws, trisBefore = triangles, timings = [];
       for (const candidate of [false, true, true, false, false, true, true, false]) {
-        set(candidate); draw(); gl.finish();
-        const begin = performance.now(); draw(); const submitMs = performance.now() - begin; gl.finish();
-        timings.push({ candidate, frames: 1, submitMs, completedWallMs: performance.now() - begin });
+        set(candidate); for (let i = 0; i < 3; i++) draw(); gl.finish();
+        for (let sample = 0; sample < 10; sample++) {
+          const programs = renderer.info.programs.length, begin = performance.now(); draw(); const submitMs = performance.now() - begin; gl.finish();
+          timings.push({ candidate, frames: 1, submitMs, completedWallMs: performance.now() - begin, programsAdded: renderer.info.programs.length - programs });
+        }
         await new Promise(resolve => setTimeout(resolve, 10));
       }
       views.push({ name, pixelChecks, timings, glossDraws: draws - countBefore, glossTriangles: triangles - trisBefore });
