@@ -47,7 +47,7 @@ try {
   }
   if (!ready) throw Error('没有带探针的Boss实战');
   // 以真实游戏帧数归一化样本；CPU采样窗口不是独立帧率成绩，保留起止存活/绘制量以识别混杂。
-  const snapshot = () => evaluate('({frameNumber:window.__inkwave?._frameN,activeMs:window.__phonePerf?.activeMs,state:window.__inkwave?.match?.state,alive:!!window.__inkwave?.match?.local?.alive,calls:window.__inkwave?.R?.renderer?.info?.render?.calls,triangles:window.__inkwave?.R?.renderer?.info?.render?.triangles})');
+  const snapshot = () => evaluate('(()=>{const g=window.__inkwave,a=g?.match?.actors?.find(a=>a.isLocal);return {frameNumber:g?._frameN,activeMs:window.__phonePerf?.activeMs,state:g?.match?.state,alive:a?!!a.alive:null,calls:g?.R?.renderer?.info?.render?.calls,triangles:g?.R?.renderer?.info?.render?.triangles};})()');
   report.startState = await snapshot();
   await call('Profiler.enable'); await call('Profiler.setSamplingInterval', { interval: 1000 });
   await call('Profiler.start'); profiling = true;
