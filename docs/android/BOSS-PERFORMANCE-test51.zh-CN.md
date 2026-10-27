@@ -44,3 +44,9 @@ Worker已提交729/应用727、回收727段、maxPending2/maxAgeFrames2，但一
 v51方法轮仍出现运行期新WebGL程序：约34.651秒SWIRL自定义旋涡Shader（源码对应game/specials.js SWIRL_VS/FS），约47秒iw-brolly-ink透明/顶点色3分量/非蒙皮的MeshPhysicalMaterial。新对象不在角色根内，不能把此前“角色材质已预热”泛化为所有飞出伞面或大招变体均已准备。
 
 目前未证明它们造成正式轮272.5ms Worker超时，两轮阵容/轨迹不同。下一方法轮仅补记录阵容weaponId/specialId及新程序的首绘阻塞墙钟firstDrawMs/实际gameFrameNumber，再关联长帧。firstDrawMs包含整个原renderBufferDirect提交及可能等待，不是纯编译或GPU硬件耗时。工具只在METHOD=1采集，正式轮无此计时。若证据支持，再只在Boss加载期准备缺失程序变体并保留引用；不得减少技能/角色或在实战触发假技能预热。
+
+## 首绘方法轮补充（2026-10-27）
+
+v51-program-first-draw正常一分钟：1719帧/65.9031秒=26.083750FPS，P95 58.4/P99 83.3ms，>=100ms10次。183.31米/12422.58伤害/111弱点/2次大招，阶段[1,2]。Worker最大251.2ms，result-age一次回退，未通过稳定30。退出恢复通过，真实UI USB INKWAVE-logs-20261027-003247-927904-bbc9f680.json，源码80a2b9b，关闭确认。原始报告releases/investigation/phone-boss-v51-program-first-draw.json。
+
+队伍有两名brolly、storm/booyah/zooka等大招。30.341秒透明iw-brolly-ink新程序首绘112.8ms；35.216/64.203/65.328秒SWIRL同源码新程序首绘22.4/38.6/10.7ms，后两次Shader内部ID也改变。该墙钟包含整个renderBufferDirect，不等于纯GPU编译时间。源码确认飞出伞面与手持不透明伞面不同；SpecialSystem原加载准备没有保留SWIRL引用，临时材质释放后可能再次链接。下一批只在手机Boss加载期准备这些实际配方并持有到清场，先验等价/释放，再提交构建真机；不能声称已解决持续帧率或Worker超时。
