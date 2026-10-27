@@ -1,5 +1,7 @@
 # Android 实施进度
 
+- 2026-10-27 [阶段定位十轮证据](BOSS-STAGE-INVESTIGATION.zh-CN.md)已归档：实战zooka发动96.6ms中_getWeapon93.8ms、实例0.2ms，首用共享定义为主要来源；结算HUD68.7ms中小地图重画66.5ms，inactive正常收尾而非Worker故障。十轮真实USB核对2b7ed77/恢复关闭通过，产品仍v54，未做产品优化或新正式性能对照，未稳30/60。30秒只用于定位，正式轮仍一分钟。独立USB常亮/每3分钟唤醒已设置，旧持续优化仍paused；见文内下一批建议和未解问题。
+
 - 2026-10-27 用户授权阶段定位方法轮缩至30秒，仅阶段探针开局duration=30并自然结算上传关闭；正式性能对照仍60秒，其他实验范围不放宽。首轮已启动60秒保持原参数，后续新名称30秒。产品逻辑和APK不改，持续自动优化仍paused，本批仅定位。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。
 
 

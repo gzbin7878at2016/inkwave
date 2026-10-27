@@ -1,5 +1,7 @@
 # 本仓库开发与跨电脑同步规则
 
+- 2026-10-27 有限阶段定位10轮完成（首60秒/后9轮30秒自然结算），产品仍v54/2b7ed77，持续优化仍paused。实战首次zooka整帧124.6ms，start96.6→SpecialSystem94.4→setWeapon94.1→_getWeapon93.8ms，实例0.2ms；共享定义首次生成是主要路径，非证明全部GC/GPU。结算帧98.8ms中HUD68.7/小地图67.5/_drawInk66.5，inactive完整收尾一次且fallbacks/parks=0，不得简单删掉最终整图。十轮真实USB文件均核对2b、恢复关闭；方法工具会扰动，无新正式FPS成绩，未稳30/60。建议先手机Boss加载期实际大招武器定义/实例/首绘准备，再独立处理结算整图，均尚未实施。另有Character51ms/weapon58ms未归因。手机保留v54且关闭；USB常亮2和每3分钟仅唤醒维护（本地6小时上限），不恢复旧自动优化。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。
+
 - 2026-10-27 用户授权阶段定位方法轮缩至30秒，仅阶段探针开局duration=30并自然结算上传关闭；正式性能对照仍60秒，其他实验范围不放宽。首轮已启动60秒保持原参数，后续新名称30秒。产品逻辑和APK不改，持续自动优化仍paused，本批仅定位。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。
 
 

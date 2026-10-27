@@ -1,5 +1,7 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
+- 2026-10-27 [Boss阶段定位结果](android/BOSS-STAGE-INVESTIGATION.zh-CN.md)：10轮有限真机方法测试完成，实际zooka首次共享武器定义路径约94ms、结算小地图_drawInk66.5ms分别确认；其余日常角色/浏览器压力仍待定位。十轮USB核对2b7ed77/退出恢复/关闭通过。只改工具和文档，手机仍v54，未宣称提帧；持续优化仍paused。下一批建议手机Boss加载期真实武器定义/实例/首绘准备，产品修复尚未实施。常亮维护独立于游戏测试，6小时本地上限；原始报告留本机releases，不随Git迁移。
+
 - 2026-10-27 用户授权阶段定位方法轮缩至30秒，仅阶段探针开局duration=30并自然结算上传关闭；正式性能对照仍60秒，其他实验范围不放宽。首轮已启动60秒保持原参数，后续新名称30秒。产品逻辑和APK不改，持续自动优化仍paused，本批仅定位。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。
 
 

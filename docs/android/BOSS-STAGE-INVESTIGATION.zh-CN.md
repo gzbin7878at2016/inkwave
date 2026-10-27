@@ -1,12 +1,34 @@
 # Boss阶段耗时定位（2026-10-27）
 
+## 当前结论与接续入口
+
+本批完成10轮有限真机定位：首轮60秒，随后9轮按用户要求30游戏秒自然结算。均实操游玩、真实USB上传，逐一核对电脑 `releases/logs` 文件含源码2b7ed77，离局恢复和关闭通过。产品保持v1.0.54/code54，未改产品代码、未重新打包；持续无人值守优化仍paused。下面旧“待验”段落为调查历史，以本节和文末最新证据为准。
+
+| 问题 | 已获得的证据 | 结论边界 |
+| --- | --- | --- |
+| 首次zooka大招卡顿 | 实战整帧124.6ms，发动96.6ms，SpecialSystem.start94.4ms，setWeapon94.1ms，_getWeapon93.8ms；实例生成仅0.2ms | 主要落在共享武器定义首次生成路径；不是HUD提示主导。未独立量出其中GC/抢占占比 |
+| 结算HUD停顿 | 最新轮整帧98.8ms，HUD68.7ms，小地图67.5ms，其中_drawInk66.5ms | 原inactive收尾完整重画；不是正常实战Worker超时回退，也不能拿结算成本解释整局低帧 |
+| 持续每帧压力 | 代表性方法轮渲染提交约4.56ms、角色表现自身约2.16ms、HUD约1.33ms；窄Trace还看到主线程样式/合成开销 | 数字来自不同层级/窗口，不能相加成预算；渲染提交时间不是纯GPU完成时间 |
+| GC | 一个严格3.031秒方法窗口6次MinorGC，间隔0.444～0.482秒，单次1.565～2.889ms | 不代表无探针时固定周期；未覆盖真实大招发动，不能证明它解释全部百毫秒长帧 |
+| 尚未解释 | 另有Character更新51.3ms、武器更新约58ms及提交偶发31ms | 未取得足够细的同时证据，不臆定同因；第三阶段与稳定60帧均未验收 |
+
+父层包含子层，表中调用链时间不能相加。所有计时为带探针方法证据，探针、Trace、分配和系统调度会扰动结果；本批没有正常无探针新旧性能对照，不能宣称提帧或稳定30/60。首轮60Hz、后续部分轮120Hz，热状态/阵容也不同，方法FPS不可直接比较。
+
+### 建议接下来的小批次（尚未实施）
+
+1. **优先消除首次武器定义生成的实战尖峰。** 核对真实阵容可用的大招武器，在手机Boss可取消加载队列中预建共享定义和必要实例，持有正确引用并准备真实首绘。不能仅创建无关代理材质当成准备完成。取消、加载失败、离局必须走原资源释放；PC入口保持。先验证冷缓存/命中缓存调用和像素/玩法一致，再中文提交推送，干净构建复测。约0.5～1.5工作日，具体取决于生命周期验证。
+2. **单独处理结算完整小地图重画。** 原因已明确，但现行为正确收尾；先设计如何在保留最终owner/配色/像素与清理时序下安排收尾。不能直接删除完整重画、放宽3帧/250ms保护或把inactive计为故障。候选需真实Canvas逐字节、退出/重入/暂停后台验证，再测结算长帧。约0.5～1工作日。
+3. **持续60帧仍需独立预算调查。** 上述两项主要降低尖峰，不足以承诺均值38→60。下一轮先在无Trace、低开销计数条件复核日常角色/武器更新和浏览器样式成本；仅用短窗口追特定事件，保持30秒定位。进入产品优化后按原正式一分钟门槛验收，固定实际刷新率、交错新旧与热状态，报告探针开关。约1～2工作日进一步定位，优化工期待证据再估。
+
+测试运行方式、原始本机报告和逐轮证据见下文；原始Trace/日志不入Git，跨电脑先阅读本页，不声称另一台电脑自动具有本机原始文件。
+
 用户明确授权先定位，不做产品性能修改。保持v54 APK / 2b7ed77、60帧上限、2倍/SMAA/8人和原玩法，所有其他负载、隔离与恢复实验关闭。
 
 ## 工具准备
 
-新增tools/boss-stage-probe.mjs与专用BOSS_STAGE_PROBE=1开关，只允许独立一分钟METHOD_PROBE=1；关闭旧的大量方法探针，改用分层有界计时。记录Director、gameFrame、match/controller、actors/bots/characters/weapons、bossMode/boss/brain/model/hazards、projectiles/subWeapons/specials、renderSubmit/HUD/诊断等。
+新增tools/boss-stage-probe.mjs与专用BOSS_STAGE_PROBE=1开关，允许独立30/60秒METHOD_PROBE=1；关闭旧的大量方法探针，改用分层有界计时。记录Director、gameFrame、match/controller、actors/bots/characters/weapons、bossMode/boss/brain/model/hazards、projectiles/subWeapons/specials、renderSubmit/HUD/诊断等。
 
-每个入口记录包含和自身墙钟，父层只扣除已追踪子层；墙钟含GC/抢占/驱动等待，不是纯CPU，父子不能相加。固定48标签/4096帧/64嵌套预算，最慢32帧、LoAF最多100条，结束才排序统计。通过原入口转发原参数/this/返回值/异常，finally清理。LoAF仅在支持时使用，超过50ms的帧不能覆盖全部60帧漏帧。
+每个入口记录包含和自身墙钟，父层只扣除已追踪子层；墙钟含GC/抢占/驱动等待，不是纯CPU，父子不能相加。当前固定72标签/4096帧/64嵌套预算，最慢32帧、LoAF最多100条，结束才排序统计。通过原入口转发原参数/this/返回值/异常，finally清理。LoAF仅在支持时使用，超过50ms的帧不能覆盖全部60帧漏帧。
 
 node tools/check-boss-stage-probe.mjs已通过确定性嵌套归属、返回值/异常、序列化工厂、重复绑定与恢复检查；手机工具语法检查通过。仅工具改动，不重建APK。
 
@@ -57,3 +79,13 @@ v54-stage-definition-build-method在25.415秒真实Player/zooka发动96.6ms，�
 下一批只继续定位Character更新51ms与结算HUD约50ms，扩展7个角色表现入口及8个HUD入口，仍64标签固定预算，不做产品修复。主问题后续修复建议是在可取消的Boss准备期为实际阵容构建专用武器定义/实例并真实首绘；需另行实施验证，当前未做。
 
 角色/HUD细分轮USB102359-797145-f9000ff6核对2b7ed77、关闭通过，结算HUD自身61.7ms仍未被细组件解释。主HUD入口先执行minimap.update，结算会inactive整图回退；下一轮在真实match绑定时加minimap.update/_drawInk/_compose，验证是否收尾整图造成。标签上限由64增至72以保留有界预算，仍只方法轮。当前为源码线索，未宣称已证实。
+
+## 小地图结算来源真机确认
+
+`v54-stage-minimap-end-method` 在active31.3769秒自然收尾：gameFrame98.8ms、HUD68.7ms、minimap67.5ms、minimapInk66.5ms。同帧renderSubmit7.6ms、match19.3ms（含actors9.4ms），父子不能累加。该轮minimapInk普通帧P95约0.3ms，说明主要是单次收尾尖峰。
+
+Worker状态为reason=inactive、fallbackFullDraws=1、fallbacks=0、parks=0、resyncs=0、maxAgeFrames=2、maxAgeMs197.2，没有超龄/停用故障。保留最终整图像素是现行为的一部分，不能直接取消。方法轮平均34.4202FPS、帧间隔P95 50.1ms/≥100ms间隔2次仅存档，不作无探针性能成绩；被包装的gameFrame最大98.8ms与最终帧间隔也不是同一指标。
+
+实际USB文件 `INKWAVE-logs-20261027-102608-517762-35176454.json` 已落盘并核对2b7ed77；退出恢复ok、appClosed=true。完整方法报告 `releases/investigation/phone-boss-v54-stage-minimap-end-method.json`，运行日志同目录同名 `.run.log`。本批十轮报告统一使用 `phone-boss-v54-stage-*-method.json`，其中first为60秒，其余为30秒，均status=measured/roundCompleted=true/upload.ok=true/appClosed=true，实际上传文件均存在且源码匹配。
+
+本轮结束后保留v54、游戏关闭，无采集句柄。USB供电常亮=2；独立每3分钟唤醒检查仅维护连接和常亮，本地状态 `releases/investigation/boss-phone-awake-state.json` 有6小时上限，原持续Boss优化自动化仍暂停。UE4退出后本批统一使用项目缓存SDK的ADB协议41，未改UE4环境或全局性能/热策略。
