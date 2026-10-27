@@ -20,3 +20,7 @@ v52方法轮观察到mitts:fists首次程序36.8ms，以及waddle标记圈/boome
 ## 验证计划
 
 基础检查后中文commit/push，再从干净提交构建安装v1.0.53/code53，核对签名/全部资产。先选mitts正常一分钟方法轮核对池实际绘制与程序复用，再shooter无探针正式一分钟。每轮真实UI USB回执/文件/源码核对后关闭；Worker250ms门槛保持。未覆盖副武器需据实际subId补原玩法覆盖，不以“没出现新程序”代替真实绘制证据。当前稳定30未通过，60未开始。
+
+## 构建安装
+
+干净功能提交356277bd6203b4a94e5902ce1326e0722e3996f6已推送fork。APK releases/INKWAVE-android-test53-356277b.apk，21,161,767字节，SHA256 a7cb14230b4033898306a0979e6971fc1bdf14012bdee11a68757c7df1779dae，构建trackedChanges=false。v2签名及证书201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69通过；398份Capacitor同步资产/396份dist-mobile资产与APK逐字节相符。ADB安装成功，手机versionCode53/versionName1.0.53确认。mitts方法轮已启动，尚无手机性能结论。
