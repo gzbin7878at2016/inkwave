@@ -18,3 +18,7 @@ check-mobile-boss-dom-writes.mjs在真实浏览器加载源HUD/TouchInput/instal
 实际mobile.update重复120次，Boss两个hidden均零写；普通/演示/菜单仍各120次原setter。地图开/关、外部hidden改值纠正、暂停禁用及恢复启用通过。CPU时间线裁边/嵌套不重复/跨线程/空隙/实际帧数归一单测通过；这些桌面检查不作手机FPS。
 
 按要求基础检查后先中文提交推送，再干净构建v1.0.51/code51。安装后先一分钟方法轮与同样1秒失效Trace，检查hidden重复失效消失及--far实际写入变化，保留真实操作/2倍/SMAA/8人；正常退出菜单恢复、UI USB核对关闭。再无探针正式轮，结果单独中文提交，仍未稳定30不进入60。
+
+## 干净构建与安装
+
+源码80a2b9b61e5f9fc8949f9c4f61678cc00bcad7ee，trackedChanges=false，v1.0.51/code51。APK releases/INKWAVE-android-test51-80a2b9b.apk，21,159,447字节；SHA256 abe91df295fe28ce52ede7953f4ca0516b1f8a31badcf040bbb43e20f25805e5。v2签名验证通过，证书201c792dd53554e6ea343d1850e1e009ab0c8298c0622d198be6e44836351b69；398同步资产/396dist资产逐字节匹配。ADB覆盖安装成功，正在一分钟方法轮和1秒失效Trace；尚无真机收益结论。
