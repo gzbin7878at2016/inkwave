@@ -30,3 +30,9 @@ v52方法轮观察到mitts:fists首次程序36.8ms，以及waddle标记圈/boome
 v53-kit-programs-method：1676帧/66.9594秒=25.030093FPS，P95 66.6/P99 83.3ms、>=100ms8次，44→48°C。实际240.19米、8651.47伤害、29弱点、1次大招，仅阶段1。Worker最大226.4ms，fallbacks0，结束inactive整图1次正常。退出恢复通过，UI USB INKWAVE-logs-20261027-004928-028280-35145480.json核对356277b，游戏关闭。
 
 真实阵容包括本地mitts/boomerang、槽6 bow/waddle；盘136次程序90、圈64次程序91，无新对应Shader程序。本轮只有另一个MeshBasicMaterial新程序首绘66.7ms。拳头原计数1677次包括count=0的renderBufferDirect调用，不能当作1677次真实绘制；方法工具已排除零实例/零drawRange，需补测确认非空池实际绘制。帧率与Worker数据仍有效，但属方法轮及不同武器，不能当正式成绩或独立提帧证据。原始phone-boss-v53-kit-programs-method.json保留。
+
+## 正式轮失败与下一项采集
+
+v53-kit-programs-formal：1671帧/69.7971秒=23.940823FPS，P95 75/P99 91.8ms，>=100ms15次。起始46°C；Worker最大289.4ms、result-age一次回退，原250ms门槛触发aborted/exit1，无结束温度。178.94米、15174伤害、145弱点、2次实际大招，阶段[1,2]。UI USB INKWAVE-logs-20261027-005200-905705-fe676c88.json核对356277b，已关闭。30未稳、60未开始。
+
+只修特定首用不能解决持续预算，下一方法轮补验非空拳头绘制，同时附着已有V8工具采20秒近期CPU分布。工具增加实际_frameN起止及绘制量/存活快照，支持按真实游戏帧归一化；保持方法数据性质，不把采样窗口当成绩。只附着现有9223，不重建转发，不运行Native提权/详细Skia高体积采集。

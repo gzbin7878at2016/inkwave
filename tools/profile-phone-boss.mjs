@@ -46,10 +46,16 @@ try {
     await new Promise(r => setTimeout(r, 500));
   }
   if (!ready) throw Error('没有带探针的Boss实战');
+  // 以真实游戏帧数归一化样本；CPU采样窗口不是独立帧率成绩，保留起止存活/绘制量以识别混杂。
+  const snapshot = () => evaluate('({frameNumber:window.__inkwave?._frameN,activeMs:window.__phonePerf?.activeMs,state:window.__inkwave?.match?.state,alive:!!window.__inkwave?.match?.local?.alive,calls:window.__inkwave?.R?.renderer?.info?.render?.calls,triangles:window.__inkwave?.R?.renderer?.info?.render?.triangles})');
+  report.startState = await snapshot();
   await call('Profiler.enable'); await call('Profiler.setSamplingInterval', { interval: 1000 });
   await call('Profiler.start'); profiling = true;
   await new Promise(r => setTimeout(r, seconds * 1000));
   ({ profile } = await call('Profiler.stop')); profiling = false;
+  report.endState = await snapshot();
+  const frames = report.endState.frameNumber - report.startState.frameNumber;
+  report.actualGameFrames = Number.isFinite(frames) && frames > 0 ? frames : null;
   const nodes = new Map(profile.nodes.map(n => [n.id, n])), self = new Map(), inclusive = new Map(), parents = new Map();
   for (const n of profile.nodes) for (const child of n.children || []) parents.set(child, n.id);
   for (let i = 0; i < profile.samples.length; i++) {
