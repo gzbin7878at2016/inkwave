@@ -12,6 +12,13 @@ const pending=new Map(),collector=createTraceEventCollector({limit:streamed?2000
 let nodeMap=[];
 const seconds=Number(process.env.BOSS_TRACE_SECONDS||12);
 const startSeconds=Number(process.env.BOSS_TRACE_START_SECONDS||0);
+const stylePhase=process.env.BOSS_TRACE_STYLE_PHASE||'';
+if(stylePhase&&!['original','removed','restored'].includes(stylePhase))throw Error('样式阶段无效');
+const checkStylePhase=(state,boundary)=>{
+ if(!stylePhase)return;
+ const [min,max]=({original:[5000,14500],removed:[16000,29000],restored:[31000,49000]})[stylePhase],s=state.styleSelector;
+ if(!s||s.removed!==(stylePhase==='removed')||s.matches!==0||state.activeMs<min||state.activeMs>max)throw Error(`${boundary}未处于${stylePhase}安全窗口`);
+};
 if(!Number.isFinite(startSeconds)||startSeconds<0||startSeconds+seconds>50)throw Error('Trace起点须非负且结束不晚于50秒');
 if(!Number.isFinite(seconds)||seconds<1||seconds>45)throw Error('BOSS_TRACE_SECONDS须为1～45');
 if((mainStages&&(seconds>3||rendering))||(invalidations&&(!mainStages||seconds!==1||rendering)))throw Error('主阶段最多3秒，样式失效仅独立主阶段1秒');
@@ -76,10 +83,10 @@ try {
  if(rendering){try{await call('LayerTree.enable');layerTreeEnabled=true;}catch(error){report.layerMappingError=String(error);}}
  report.before=await snapshot();
  await call('Tracing.start',params);tracing=true;
- report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase}})()');
+ report.startState=await evaluate('(()=>{performance.mark("inkwave-render-start");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase,styleSelector:window.__bossStyleSelectorProbe?.snapshot()}})()');
  await new Promise(r=>setTimeout(r,seconds*1000));
  const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Trace结束超时')),60000);complete=()=>{clearTimeout(timer);resolve()}});
- report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase}})()');
+ report.endState=await evaluate('(()=>{performance.mark("inkwave-render-end");return{frameNumber:__inkwave._frameN,activeMs:__phonePerf.activeMs,alive:__inkwave.match?.local?.alive,calls:__G.renderer.info.render.calls,triangles:__G.renderer.info.render.triangles,markerPhase:__phonePerf.markerVarProbe?.phase,nativePaintPhase:__phonePerf.nativePaintProbe?.phase,styleSelector:window.__bossStyleSelectorProbe?.snapshot()}})()');
  ending=true;await Promise.all([call('Tracing.end'),done]);tracing=false;
  report.after=await snapshot();
  if(streamed){if(!streamHandle)throw Error('Trace未返回流句柄');const raw=await readCdpTraceStream(call,streamHandle);streamHandle=null;report.streamBytes=raw.bytes;const parsed=JSON.parse(raw.data.toString('utf8'));const items=parsed.traceEvents||parsed;if(!Array.isArray(items))throw Error('Trace流格式无效');collector.add(items);}
@@ -87,6 +94,8 @@ try {
   const root=(await call('DOM.getDocument',{depth:-1,pierce:true})).root;
   const walk=n=>{const a=n.attributes||[],label=n.nodeName+(a.includes('id')?'#'+a[a.indexOf('id')+1]:'')+(a.includes('class')?'.'+a[a.indexOf('class')+1].trim().replace(/\s+/g,'.'):'');nodeMap.push({nodeId:n.nodeId,backendNodeId:n.backendNodeId,label});for(const c of n.children||[])walk(c);for(const c of n.shadowRoots||[])walk(c);if(n.contentDocument)walk(n.contentDocument);};walk(root);report.nodeMapCount=nodeMap.length;
  }
+ checkStylePhase(report.startState,'开始');checkStylePhase(report.endState,'结束');
+ if(stylePhase)report.stylePhase=stylePhase;
  Object.assign(report,collector.info());
  report.markers=events.filter(e=>e.name?.startsWith('inkwave-render-')).map(e=>({name:e.name,pid:e.pid,tid:e.tid,ts:e.ts}));
  report.status='collected';
