@@ -194,7 +194,7 @@ try{
     }};restores.push(()=>o[k]=fn);
    };
    p.installMatchProbe=m=>{
-    p.actorRoster=m.actors.map(a=>({name:a.name,weaponId:a.weaponId,specialId:a.specialId,local:!!a.isLocal}));
+    p.actorRoster=m.actors.map(a=>({name:a.name,weaponId:a.weaponId,subId:a.subId,specialId:a.specialId,local:!!a.isLocal}));
     p.actorRoots=new Set(m.actors.map(a=>a.character?.root).filter(Boolean));
     aggregate(m,'update','match');
     for(const a of m.actors){aggregate(a,'update','actor',a.name);aggregate(a.bot,'update','bot',a.name);aggregate(a.character,'update','character',a.name);aggregate(a.weaponRunner,'update','weapon',a.name);}
