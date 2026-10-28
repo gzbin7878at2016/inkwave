@@ -1,5 +1,7 @@
 # 本仓库开发与跨电脑同步规则
 
+- 2026-10-28 v55有限修复闭环：功能995558f先中文推送后干净构建，APK21,162,595B/SHA256 5e5714f13f223687d46c6b8260a1f2a7ad448e5d93a1214158b3ee1ce1b14e3d，v2签名/396dist与398同步逐字节匹配/USB覆盖安装通过。仅手机Boss按真实大招预建缓存与首绘，PC原流程检查通过。两次30秒方法轮加载本地构造42/44ms，真实zooka首次发动2.7ms、战斗_getWeapon低于计时精度/实例新建0，未宣称全局提帧；无探针一分钟31.8823FPS/P95 50.1/P99 66.7/长间隔6，42→45°C，未稳30/60，未做同温新旧均值对照。三轮真实USB核对995/关闭，两方法退出恢复通过，无Shader/GPU/Worker故障。手机保留v55且关闭，持续优化仍paused；其他三种大招自然发动和PC像素对照未验。见docs/android/BOSS-PERFORMANCE-test55.zh-CN.md。
+
 - 2026-10-28 用户授权v55有限修复：仅手机Boss加载队列按真实specialId预建四类专用武器缓存，原材质/远景/首绘/阴影准备覆盖未挂树武器；不提前发动、不改PC/普通手机/玩法画质。313JS及真实Game准备/缓存首绘身份/取消释放检查通过，APK和真机待验，不能称提帧。见docs/android/BOSS-PERFORMANCE-test55.zh-CN.md。
 
 - 2026-10-27 有限阶段定位10轮完成（首60秒/后9轮30秒自然结算），产品仍v54/2b7ed77，持续优化仍paused。实战首次zooka整帧124.6ms，start96.6→SpecialSystem94.4→setWeapon94.1→_getWeapon93.8ms，实例0.2ms；共享定义首次生成是主要路径，非证明全部GC/GPU。结算帧98.8ms中HUD68.7/小地图67.5/_drawInk66.5，inactive完整收尾一次且fallbacks/parks=0，不得简单删掉最终整图。十轮真实USB文件均核对2b、恢复关闭；方法工具会扰动，无新正式FPS成绩，未稳30/60。建议先手机Boss加载期实际大招武器定义/实例/首绘准备，再独立处理结算整图，均尚未实施。另有Character51ms/weapon58ms未归因。手机保留v54且关闭；USB常亮2和每3分钟仅唤醒维护（本地6小时上限），不恢复旧自动优化。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。
