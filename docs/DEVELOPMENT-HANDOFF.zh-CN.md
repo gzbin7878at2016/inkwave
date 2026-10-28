@@ -1,5 +1,7 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
+- 2026-10-28 v56结算小地图有限修复闭环：最终功能48b48af先中文推送再干净构建，APK21,165,887B/SHA256 796b1338ea3c33b93e2d264471519b9e9155e4862ddf18ae5e96ef07614519c3，v2签名/396dist与398同步匹配/USB安装通过。手机Boss沿用Worker异步完整快照，随后原三段刷新追赶落墨，PC原路径保持、3帧/250ms保护保持。前三轮失败已记录；最终方法同输入ink/owner/Canvas字节差0、主线程应用0.7ms/异步墙钟81.5ms、退出恢复通过。无探针一分钟33.68052FPS/P95 50/P99 66.6/长间隔3，38→41°C，正常settled应用0.6ms/墙钟72.1ms，无Worker回退；未稳30/60，非同温旧包对照、不宣称全局提帧。五轮USB源码核对/落盘关闭通过，手机留v56且关闭，持续优化仍paused；PC完整像素对照及第三阶段未验。见docs/android/BOSS-PERFORMANCE-test56.zh-CN.md。
+
 - 2026-10-28 用户授权v56结算小地图修复：仅已准备手机Boss Worker异步最终整图，等待保留完整旧图、一次上传最终图；3帧/250ms/force/配色/版本/异常同步兜底保持，PC原路径保持。真实Edge Worker/Canvas最终墨迹/flash/owner/Canvas字节一致、取消回退迟到保护与资源回收通过，313JS通过；APK与真机待验，不能称提帧。见docs/android/BOSS-PERFORMANCE-test56.zh-CN.md。
 
 - 2026-10-28 用户现场观看v55一局复测完成：无细分探针/60上限/2倍SMAA/8人，39.8137FPS/P95 49.9/P99 50.1/长间隔5，37→42°C；移动200.66m/伤害15354/弱点151/一次自然大招，覆盖[1,2]。USB013725-399647-3941d682核对995558f/关闭，无Shader/GPU/Worker故障。未改代码或APK，不以不同热状态均值证明收益，未稳30/60、第三阶段未验；持续优化仍paused，手机保留v55且关闭。见docs/android/BOSS-PERFORMANCE-test55.zh-CN.md末节。
