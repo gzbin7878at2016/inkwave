@@ -104,10 +104,49 @@ function drain(c, map) {
   }
 }
 
+// 正常结算把最后整图交给已预建Worker，结果一次性上传，等待期间保留上一张完整图。
+// 旧在途段只回收；最终计算显式同步主线程owner/像素，保持与原同步整图同一输入。
+function settle(c, map) {
+  if (!c.settlement) {
+    c.settlement = { frame: c.frame, start: performance.now(), time: map.time, version: map.paint.version };
+    for (const job of c.jobs) job.dropped = true;
+    c.stats.reason = 'settling'; c.stats.settlements = (c.stats.settlements || 0) + 1;
+    map._band = 0;
+  }
+  const end = c.settlement;
+  // 不放宽原3帧/250ms保护；换图、配色、force或异常仍由原同步路径保证正确最终图。
+  if (c.frame - end.frame > 3 || performance.now() - end.start > 250 || map.paint.version !== end.version) {
+    syncFallback(c, 'settlement-invalid'); return true;
+  }
+  if (drain(c, map)) return true;
+  if (end.result) {
+    try {
+      applyMinimapBand(map, end.result, true);
+      if (end.result.flashes) map.flashT = Math.max(0, map.time - end.time);
+      c.worker.recycle(end.result); c.stats.applied++;
+      map.version = end.version; map.timer = 0.15; map._quiet = false;
+      c.stats.settlementMs = performance.now() - end.start;
+      c.stats.settlementApplied = true;
+      release(c, 'settled'); return 'settling';
+    } catch (error) { syncFallback(c, String(error).slice(0, 180)); return true; }
+  }
+  if (!end.submitted && !c.jobs.length) {
+    end.submitted = true;
+    c.stats.submitted++; c.stats.maxPending = Math.max(c.stats.maxPending, 1);
+    c.worker.draw(map.paint.grid, 0, map.h, map._teamRGB(), {
+      sync: { owner: map.owner, ink: map.inkImg.data, flash: map.flashImg.data },
+    }).then(result => { if (owns(c)) end.result = result; }, error => { if (owns(c)) c.error = String(error).slice(0, 180); });
+  }
+  return 'settling';
+}
+
 // 每次原update调用一次；仅这里上传Canvas。回调只填job，不新增rAF或布局读取。
 export function consumeMobileBossMinimapWorker(map, force = false) {
   const c = entries.get(map); if (!c || !c.ready) return;
   c.frame++; c.stats.frames++;
+  if (c.settlement && c.error) { syncFallback(c, c.error); return true; }
+  if (realBoss(c.match) && G.mode === 'match' && ['finish', 'results'].includes(c.match.state) && !c.parked &&
+      !force && map.version !== -1 && !changed(c) && !c.error) return settle(c, map);
   if (!realBoss(c.match) || G.mode !== 'match' || !['init', 'intro', 'playing'].includes(c.match.state)) {
     syncFallback(c, 'inactive', false); return true;
   }

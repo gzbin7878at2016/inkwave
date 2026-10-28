@@ -456,6 +456,26 @@ try{
  }
  const a=report.intervals.filter(x=>Number.isFinite(x)&&x>0).sort((a,b)=>a-b),seconds=a.reduce((s,x)=>s+x,0)/1000;
  report.summary={frames:a.length,seconds,averageFps:a.length/seconds,p50:a[Math.floor(a.length*.5)],p95:a[Math.floor(a.length*.95)],p99:a[Math.floor(a.length*.99)],over100:a.filter(x=>x>=100).length};
+ if(process.env.BOSS_VERIFY_MINIMAP_SETTLEMENT==='1'){
+  if(!stageProbe||!report.methodProbe)throw Error('最终地图逐字节核对仅供独立阶段方法轮');
+  report.minimapSettlement=await c.evaluate(`(async()=>{
+   const map=__inkwave.minimap,start=performance.now();
+   while(map.bossWorkerInfo()?.reason==='settling'&&performance.now()-start<1000)await new Promise(requestAnimationFrame);
+   const info=map.bossWorkerInfo();if(!info?.settlementApplied)throw Error('结算Worker未完成：'+JSON.stringify(info));
+   const oracle=Object.assign(Object.create(Object.getPrototypeOf(map)),map);
+   for(const key of ['owner','_alpha','_tm','_tt'])oracle[key]=map[key].slice();
+   for(const [image,ctx]of [['inkImg','ictx'],['flashImg','fctx']]){
+    const canvas=document.createElement('canvas');canvas.width=map.w;canvas.height=map.h;
+    oracle[ctx]=canvas.getContext('2d');oracle[image]=oracle[ctx].createImageData(map.w,map.h);oracle[image].data.set(map[image].data);
+   }
+   oracle._drawInk(0,map.h);
+   const diff=(a,b)=>{let n=0,max=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);if(d)n++;max=Math.max(max,d);}return{differentBytes:n,maxDifference:max};};
+   const ink=diff(map.inkImg.data,oracle.inkImg.data),owner=diff(map.owner,oracle.owner);
+   const inkCanvas=diff(map.ictx.getImageData(0,0,map.w,map.h).data,oracle.ictx.getImageData(0,0,map.w,map.h).data);
+   return{info,ink,owner,inkCanvas,width:map.w,height:map.h,scope:'自然结算后原同步算法整图对照，不纳入FPS成绩'};
+  })()`);
+  if(['ink','owner','inkCanvas'].some(k=>report.minimapSettlement[k].differentBytes))throw Error('结算最终地图与同步参考不一致');
+ }
  if(!a.length||(seconds<duration&&!report.roundCompleted))throw Error('实际战斗采样时长不足');
  report.methods=await c.evaluate('window.__phonePerf.methods||null');
  report.stageProbe=await c.evaluate('window.__phonePerf.stages?.summary()||null');

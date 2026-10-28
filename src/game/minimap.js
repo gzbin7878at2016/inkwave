@@ -394,7 +394,10 @@ export class Minimap {
     const theme = G.game?.theme || G.game?.mapDef?.theme || 'day';
     if (theme !== this._theme) { const had = this._theme; this._theme = theme; if (had) this._drawBase(); }
     const BANDS = 3;
-    if (globalThis.inkwaveMobile && consumeMobileBossMinimapWorker(this, force)) force = true;
+    const workerState = globalThis.inkwaveMobile && consumeMobileBossMinimapWorker(this, force);
+    // 手机Boss结算异步整图未完成时只合成原完整底图；完成后原子上传最终墨迹，不展示分段接缝。
+    if (workerState === 'settling') { this.flashT += dt; this._compose(dt); return; }
+    if (workerState) force = true;
     // 已开始的三段刷新优先逐帧完成；一轮未完成时不会重新开启另一轮。
     if (this._band > 0) {
       const b = this._band;

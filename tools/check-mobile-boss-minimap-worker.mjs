@@ -106,12 +106,20 @@ try {
       else if (action === 'queue-limit') { map.update(0); map.update(0); map.timer = -1; map.paint.version++; map.update(0); }
       else map.update(0, action === 'force');
       restoreClock?.();
+      if (action === 'finish') {
+        for (let i = 0; i < 4 && map.bossWorkerInfo().ready; i++) { await sleep(); map.update(0); }
+        check(map.bossWorkerInfo().settlementApplied === true && map.bossWorkerInfo().fallbackFullDraws === 0, '正常结算未异步完成整图');
+      }
       const state = map.bossWorkerInfo();
       if (kept.includes(action)) check(state?.ready && state.parked && !state.fallbacks, '应停用并保留Worker：' + action);
       else check(state && !state.ready && !state.active, '失效未释放：' + action);
       check(map.inkImg.data.some(v => v !== 0), '未恢复原像素：' + action);
       same(map.inkImg.data, oracle.inkImg.data, '回退原算法墨迹：' + action);
       same(map.flashImg.data, oracle.flashImg.data, '回退原算法闪光：' + action); same(map.owner, oracle.owner, '回退原算法归属：' + action);
+      if (action === 'finish') {
+        same(map.ictx.getImageData(0, 0, map.w, map.h).data, oracle.ictx.getImageData(0, 0, map.w, map.h).data, '结算Canvas最终像素');
+        check(state.recycled === state.applied + state.dropped, '结算整图缓冲未完整回收');
+      }
       const pixels = map.inkImg.data.slice(); await sleep(); same(map.inkImg.data, pixels, '迟到覆盖：' + action);
       if (kept.includes(action)) {
         const busy = () => { const i = map.bossWorkerInfo(); return i.parked || i.applied + i.dropped < i.submitted; };
@@ -121,6 +129,22 @@ try {
         same(map.inkImg.data, pixels, '作废段写入地图：' + action); clear(match);
       }
       check(workers.size === 0 && urls.size === 0, '资源泄漏：' + action); reasons.push({ action, reason: state.reason });
+    }
+    // 结算等待中的取消/force/配色/版本变化必须保持原最终图，迟到消息不得覆盖。
+    for (const action of ['leave', 'force', 'palette', 'version', 'deadline']) {
+      const { map, match } = await setup(); map.paint.grid.fill(2); map.paint.version++;
+      match.state = 'finish'; map.update(0);
+      check(map.bossWorkerInfo().reason === 'settling', '未进入结算等待');
+      if (action === 'leave') { const before = map.inkImg.data.slice(); clear(match); await sleep(); same(map.inkImg.data, before, '离局后迟到写入'); }
+      else {
+        if (action === 'palette') { G.teamHex = G.teamHex.slice().reverse(); G.teamColors = G.teamColors.slice().reverse(); }
+        if (action === 'version') { map.paint.grid.fill(1); map.paint.version++; }
+        if (action === 'deadline') { const t = performance.now.bind(performance); performance.now = () => t() + 300; map.update(0); performance.now = t; }
+        else map.update(0, action === 'force');
+        check(!map.bossWorkerInfo().ready && map.bossWorkerInfo().fallbackFullDraws === 1, '结算失效未同步回退：' + action);
+        const snapshot = map.inkImg.data.slice(); await sleep(); same(map.inkImg.data, snapshot, '结算回退后迟到写入');
+      }
+      check(workers.size === 0 && urls.size === 0, '结算资源泄漏：' + action);
     }
     // 取消和重叠准备；原准备的catch不能覆盖新实例的ready/归属。
     const map = make(), old = { boss: {}, state: 'init' }, newer = { boss: {}, state: 'init' }, game = { minimap: map, match: old };
