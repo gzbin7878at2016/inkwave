@@ -65,3 +65,11 @@ PC warmAll分支不改，普通手机对局不传专用武器参数；没有专�
 三轮均roundCompleted=true、upload.ok=true、appClosed=true；两轮方法额外bossExit.ok=true。报告在 `releases/investigation/phone-boss-v55-special-warm-*.json`，运行日志 `v55-special-warm-*.run.log`，原始文件及APK不入Git。三轮上传文件逐一存在且包含同一干净源码995558f；画质诊断核对HD/动态降清晰度false/fpsCap60/SMAA，原游戏人数保持。非本机接续需另取得产物或从源码重建，不能假定Git同步了这些日志。
 
 手机保留v55且游戏关闭，所有本批测试进程已结束。本次仅完成用户指定的首次专用武器准备修复与有限验证，没有恢复原Boss持续自动优化。四种专用武器均有确定性缓存/首绘检查，真机自然发动实证仅覆盖zooka；PC原路径检查通过，PC逐像素比较及其他三种自然发动未做。若继续，建议先独立处理已定位的结算小地图66.5ms收尾，再处理持续角色/浏览器CPU预算，不将本批结论外推到稳定60帧。
+
+## 用户现场观看的一局复测
+
+2026-10-28用户重新连接并授权手机后，按请求运行一局Boss供现场观看。确认手机仍v55/干净源码995558f，无其他测试进程占用；恢复USB日志reverse与USB供电常亮后，通过原Director revision2实际移动、瞄准、射击、跳跃、补给和自然大招，不改资源或模拟。未修改代码、重打包或恢复持续自动优化。
+
+`v55-live-play-formal2`沿用上节无细分探针正式配置，60FPS上限/HD2倍/SMAA/8人/动态降清晰度关闭，一分钟时限自然结算，采集61.5869秒/2452帧。平均39.8137FPS，P50 16.7ms、P95 49.9ms、P99 50.1ms、≥100ms间隔5次；电池37→42°C。移动200.66m、Boss伤害15354、弱点命中151、自然大招1次、覆盖阶段1和2，最长静止1.55秒。开局较多接近60FPS的时段不能当作整局稳定60；温度和阵容与上轮不同，不能直接声称从31.88提帧至39.81。
+
+status=measured、roundCompleted=true、stable30Validated=false；Shader失败0、GPU fatal=false、Worker fallbacks/parks=0，inactive完整收尾一次保留。真实上传 `releases/logs/INKWAVE-logs-20261028-013725-399647-3941d682.json` 已核对存在且源码995558f匹配，appClosed=true。报告 `releases/investigation/phone-boss-v55-live-play-formal2.json`、运行日志 `v55-live-play-formal2.run.log`仅留本机。手机保留v55且游戏关闭；未达稳定30/60，第三阶段仍未验。
