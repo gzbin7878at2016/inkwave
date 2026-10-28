@@ -43,7 +43,7 @@ export function installMobileGpuSafety(renderer) {
         game.mobileSuspended = true;
         game.input.touch?.clear();
         const message = document.createElement('div'); message.id = 'mobile-gpu-error';
-        message.textContent = '此设备图形初始化失败，已安全暂停。请点击“导出日志”，然后重新启动游戏。';
+        message.textContent = '此设备图形初始化失败，已安全暂停。请退出后重新启动游戏。';
         document.getElementById(message.id)?.remove(); document.body.append(message);
         globalThis.inkwaveDiagnostics?.record('mobile-gpu-safe-stop', state, 'error');
         return;

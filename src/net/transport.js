@@ -49,11 +49,11 @@ export function relayURL() {
 // Debug: simulate a real connection on localhost — ?netlag=ms (extra one-way delay on everything received),
 // &netjitter=ms (random extra, delivered in order like TCP: late packets bunch up) and &netspike=p (chance per
 // message of a 250 ms Wi-Fi hiccup that holds everything behind it).
-const SIM = (() => {
+const SIM = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? (() => {
   const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
   const lag = +q.get('netlag') || 0, jit = +q.get('netjitter') || 0, spike = +q.get('netspike') || 0;
   return lag || jit || spike ? { lag, jit, spike, last: 0 } : null;
-})();
+})() : null;
 
 // 【Transport 类】一条 WebSocket 连接的薄包装:对上层只暴露「收发原始游戏对象 + 报告关闭 + 平滑 RTT」,
 //   不掺杂任何游戏语义。生命周期由 session.js 的 NetSession 持有:connect() 建连,close() 主动退出。

@@ -52,7 +52,9 @@ function gate() {
   if (p === '0') return false;
   if (p === 'force') return 'force';
   if (p === '1') return true;
-  for (const k of ['skipTitle', 'netmock', 'autostart', 'autopilot']) if (q.has(k)) return false;
+  if (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) {
+    for (const k of ['skipTitle', 'netmock', 'autostart', 'autopilot']) if (q.has(k)) return false;
+  }
   return true;
 }
 

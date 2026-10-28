@@ -602,7 +602,7 @@ export class BossHud {
   // 【控制台预览】在镜头前 16 m 造一个假 Boss，用 setTimeout 按 steps 脚本依次触发 spawn/intro/move/
   //   hit/stun/phase/defeat——无需真实对局即可审 UI。返回 { boss, stop, duration }，stop() 清定时器。
   /** Runs every boss HUD state on a fake boss 14 m in front of the camera. For UI work / audits only. */
-  demo(opts = {}) {
+  demo = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? function(opts = {}) {
     const cam = G.camera;
     const fwd = { x: 0, z: -1 };
     if (cam && cam.matrixWorld) { const e = cam.matrixWorld.elements; const l = Math.hypot(e[8], e[10]) || 1; fwd.x = -e[8] / l; fwd.z = -e[10] / l; }
@@ -627,5 +627,5 @@ export class BossHud {
       if (s === 'end') { at(t, () => { boss.hp = 0; boss.dead = true; emit('boss:hp', { hp: 0, max: boss.maxHp }); emit('boss:defeat', { by: me }); }); t += 4; }
     }
     return { boss, stop: () => T.forEach(clearTimeout), duration: t };
-  }
+  } : undefined;
 }

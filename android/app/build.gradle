@@ -1,7 +1,8 @@
 apply plugin: 'com.android.application'
 
 // 接收地址仅从本机构建环境读取，不把电脑IP硬编码进源码；未配置时禁止上传。
-def logUploadUrl = System.getenv('INKWAVE_LOG_UPLOAD_URL') ?: ''
+def manualBuild = project.hasProperty('inkwaveManual') && project.property('inkwaveManual') == 'true'
+def logUploadUrl = manualBuild ? '' : (System.getenv('INKWAVE_LOG_UPLOAD_URL') ?: '')
 def logUploadHost = ''
 if (logUploadUrl) {
     def endpoint = new URI(logUploadUrl)
@@ -16,12 +17,13 @@ if (logUploadUrl) {
 def logUploadRes = layout.buildDirectory.dir('generated/res/logUpload')
 def generateLogUploadSecurity = tasks.register('generateLogUploadSecurity') {
     inputs.property('host', logUploadHost)
+    inputs.property('manual', manualBuild)
     outputs.dir(logUploadRes)
     doLast {
         def xml = new File(logUploadRes.get().asFile, 'xml/log_upload_security.xml')
         xml.parentFile.mkdirs()
         def domain = logUploadHost ? "<domain-config cleartextTrafficPermitted=\"true\"><domain includeSubdomains=\"false\">${logUploadHost}</domain></domain-config>" : ''
-        def usbDomain = '<domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">127.0.0.1</domain></domain-config>'
+        def usbDomain = manualBuild ? '' : '<domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">127.0.0.1</domain></domain-config>'
         xml.text = "<?xml version=\"1.0\" encoding=\"utf-8\"?><network-security-config><base-config cleartextTrafficPermitted=\"false\"/>${domain}${usbDomain}</network-security-config>"
     }
 }
@@ -33,8 +35,8 @@ android {
         applicationId "com.demoink.inkwave"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 56
-        versionName "1.0.56"
+        versionCode 57
+        versionName "1.0.57"
         resValue 'string', 'log_upload_url', logUploadUrl
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -45,6 +47,8 @@ android {
     }
     buildTypes {
         release {
+            // 本地手动体验沿用现有证书，允许覆盖安装并保留存档；不是应用商店发布签名。
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

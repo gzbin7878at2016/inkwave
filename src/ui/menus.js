@@ -51,7 +51,7 @@ const WIPES = new Set(['loading>title', 'title>main', 'results>main', 'pause>mai
 // Pushes/pops between these get the light ink swipe (decorative — the swap itself is immediate).
 const LIGHT = new Set(['main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'online', 'lobby']);
 // ?netmock=1 → an offline stand-in for G.net (src/net/mock.js) so the online screens work without the relay
-const NETMOCK = typeof location !== 'undefined' && new URLSearchParams(location.search).get('netmock') === '1';
+const NETMOCK = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && typeof location !== 'undefined' && new URLSearchParams(location.search).get('netmock') === '1';
 // room codes (the session generates them from this set: no O/0, I/1)
 const CODE_ABC = 'BCEFGHJKLMNPQRTUVXYZ23456789';   // as session.js: no O/0, I/1, and no W/A/S/D (menu keys)
 const TEAM_LABEL = ['ALPHA', 'BRAVO'];

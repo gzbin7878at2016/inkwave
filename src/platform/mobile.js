@@ -25,9 +25,9 @@ export function installMobile(game) {
   };
   game.input.lastDevice = 'touch';
   const panel = document.createElement('div'); panel.id = 'mobile-panel';
-  panel.innerHTML = `<button data-mobile="practice">触屏练习</button><button data-mobile="tune">触控设置</button><button data-mobile="stats">诊断</button><button data-mobile="export">复制报告</button><span></span>`;
+  panel.innerHTML = `<button data-mobile="practice">触屏练习</button><button data-mobile="tune">触控设置</button>${(typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? '<button data-mobile="stats">诊断</button><button data-mobile="export">复制报告</button>' : ''}<span></span>`;
   document.body.append(panel);
-  for (const id of ['mobile-log-export', 'mobile-log-upload']) {
+  if (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) for (const id of ['mobile-log-export', 'mobile-log-upload']) {
     const logButton = document.getElementById(id);
     if (logButton) panel.append(logButton);
   }
@@ -35,7 +35,7 @@ export function installMobile(game) {
   document.body.append(dialog);
   const info = panel.querySelector('span');
   const state = { suspended: false, needsResume: false, lostContext: false, network: true, samples: [], clock: 0, stats: false, onlineExit: null };
-  const frameTimes = new Float32Array(240); let frameCount = 0, frameIndex = 0;
+  const frameTimes = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? new Float32Array(240) : null; let frameCount = 0, frameIndex = 0;
   const practiceButton = panel.querySelector('[data-mobile="practice"]');
   const resetInput = () => {
     touch.setEnabled(false); touch.clear(); game.input.keys.clear(); game.input.pressed.clear();
@@ -112,8 +112,8 @@ export function installMobile(game) {
     message('图形资源已丢失，需要重新启动本次游戏。', () => location.reload(), '重新加载');
   });
   panel.querySelector('[data-mobile="practice"]').onclick = () => game.startPractice();
-  panel.querySelector('[data-mobile="stats"]').onclick = () => { state.stats = !state.stats; };
-  panel.querySelector('[data-mobile="export"]').onclick = async () => {
+  if ((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__)) panel.querySelector('[data-mobile="stats"]').onclick = () => { state.stats = !state.stats; };
+  if ((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__)) panel.querySelector('[data-mobile="export"]').onclick = async () => {
     const report = JSON.stringify(window.inkwaveDiagnostics?.report({ probe: true }) || { samples: state.samples }, null, 2);
     try { await navigator.clipboard.writeText(report); info.textContent = '诊断报告已复制，可粘贴保存'; }
     catch {
@@ -131,7 +131,7 @@ export function installMobile(game) {
       <label>目标帧率 <select><option value="30">30（省电）</option><option value="60">60（更流畅）</option></select></label>
       <label>画面清晰度 <select aria-label="画面清晰度"><option value="battery">省电 · 1倍 / FXAA</option><option value="clear">清晰 · 1.5倍 / SMAA（推荐）</option><option value="hd">高清 · 2倍 / SMAA（更耗电）</option></select></label>
       <label>自动降低清晰度 <input aria-label="自动降低清晰度" type="checkbox" ${game.settings.mobileDynamicResolution ? 'checked' : ''}></label>
-      <small>默认60帧目标、2倍高清。勾选自动降低清晰度后，掉帧时允许降低分辨率；发热可切省电。</small>
+      <small>本包默认${typeof __INKWAVE_MANUAL__ !== 'undefined' && __INKWAVE_MANUAL__ ? 60 : 30}帧目标、2倍高清。勾选自动降低清晰度后，掉帧时允许降低分辨率；发热可切省电。</small>
       <button>保存并返回</button>`;
     const sliders = dialog.querySelectorAll('input');
     sliders[0].oninput = () => { game.settings.touchSensitivity = +sliders[0].value; save(); };
@@ -154,9 +154,9 @@ export function installMobile(game) {
   };
   applySize();
   game.mobile = {
-    profile: new MobileProfiler(game),
+    profile: (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? new MobileProfiler(game) : null,
     touch, state, suspend, foreground, resume, bossRasterHints, bossHudDecorations,
-    recordFrame(ms) { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); },
+    recordFrame: (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? ms => { frameTimes[frameIndex] = ms; frameIndex = (frameIndex + 1) % frameTimes.length; frameCount = Math.min(frameTimes.length, frameCount + 1); } : undefined,
     update(dt) {
       if (game.match?.paused) clearMobileBossMinimapWorkerForMatch(game.match, 'paused');
       bossRasterHints.update(game.hud?.el,game.match,G.mode,state.needsResume||state.lostContext||game.mobileSuspended);
@@ -171,7 +171,7 @@ export function installMobile(game) {
       const practiceHidden = G.mode !== 'menu';
       if (!bossDomDedupe || practiceButton.hidden !== practiceHidden) practiceButton.hidden = practiceHidden;
       state.clock += dt;
-      if (state.clock >= 1) {
+      if ((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && state.clock >= 1) {
         state.clock = 0;
         const mem = game.R.renderer.info.memory;
         const times = Array.from(frameTimes.subarray(0, frameCount)).sort((a, b) => a - b);

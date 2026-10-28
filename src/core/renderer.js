@@ -131,7 +131,7 @@ export class Renderer {
     // Shader status checks make every compile synchronous (the main thread waits on the GPU process for the link
     // result): a mid-game compile then stalls input, netcode and all. Players run without them; ?shadercheck (the
     // smoke test and dev tools) turns them back on so a broken shader still fails loudly.
-    r.debug.checkShaderErrors = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shadercheck');
+    r.debug.checkShaderErrors = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && typeof location !== 'undefined' && new URLSearchParams(location.search).has('shadercheck');
     globalThis.inkwaveDiagnostics?.attachRenderer(r); // 诊断APK在首次编译时保存原始GLSL错误，桌面入口不启用。
     if (globalThis.inkwaveMobile) this.mobileSafety = r.mobileGpu = installMobileGpuSafety(r);
     r.outputColorSpace = THREE.SRGBColorSpace;

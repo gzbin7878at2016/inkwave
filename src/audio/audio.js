@@ -47,6 +47,7 @@
 // Every builder works on any BaseAudioContext so tools/audio-test.mjs renders them through OfflineAudioContext.
 
 import { DEFAULT_SETTINGS } from '../config.js';
+import { G } from '../core/ctx.js';
 import { BossOneShotCache } from './bossOneShotCache.js';
 import { BossParamDedupe } from './mobileBossParamDedupe.js';
 import {
@@ -197,7 +198,7 @@ export class AudioEngine {
   // 【解锁与恢复】浏览器自动播放策略下 ctx 可能 suspended:
   // 任何手势、回到前台都要尝试 resume(_installUnlock 负责挂监听)。
   resume() {
-    if (globalThis.__inkwave?.mobileSuspended) return; // 前台确认按钮解除挂起后，才允许解锁音频。
+    if (G.game?.mobileSuspended) return; // 正常生命周期从游戏上下文读取，不依赖调试全局对象。
     const c = this.ctx;
     if (c && !this.offline && c.state !== 'running' && c.state !== 'closed' && c.resume) c.resume().catch(() => {});
   }

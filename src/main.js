@@ -61,7 +61,7 @@ import { setLang, t } from './i18n/strings.js';
 const params = new URLSearchParams(location.search);
 // dev-only: ?devstage lets an online-only stage (config onlineOnly — Cargo Terminal) boot as the backdrop and be walked
 // solo offline (never with bots); without it such a stage only ever loads for an online match
-const DEV_STAGE = params.has('devstage');
+const DEV_STAGE = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && params.has('devstage');
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 // 手机预热在rAF之后再排普通任务，避免Promise微任务在同一帧绘制前继续吞掉主线程。
 const nextMobileFrame = () => new Promise(resolve => document.hidden ? setTimeout(resolve, 0) : requestAnimationFrame(() => setTimeout(resolve, 0)));
@@ -106,8 +106,8 @@ class Game {
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
     // 【在进入加载条之前】:为每张地图的选关卡卡片用代码生成一张俯视 SVG 缩略图
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
-    // 手机优先稳定30帧/2倍高清；保留玩家之后手动选择60帧。
-    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'hd', mobileDynamicResolution: false, shadows: false, bloom: false, fpsCap: 30, showFps: true } : DEFAULT_SETTINGS;
+    // 本次手动包按用户要求默认60帧；普通诊断构建维持既有默认值。
+    const defaults = window.inkwaveMobile ? { ...DEFAULT_SETTINGS, lang: 'zh', quality: 'low', mobileVisual: 'hd', mobileDynamicResolution: false, shadows: false, bloom: false, fpsCap: typeof __INKWAVE_MANUAL__ !== 'undefined' && __INKWAVE_MANUAL__ ? 60 : 30, showFps: typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__ } : DEFAULT_SETTINGS;
     this.settings = G.settings = loadJSON('inkwave.settings', defaults);
     // 用户本轮优先稳定30帧，单独迁移帧率；保留既有高清和触控偏好，之后仍可手动切60。
     if (window.inkwaveMobile && this.settings.mobileDefaultsVersion !== 1) {
@@ -116,6 +116,11 @@ class Game {
     }
     if (window.inkwaveMobile && this.settings.mobilePacingVersion !== 1) {
       Object.assign(this.settings, { fpsCap: 30, mobilePacingVersion: 1 });
+      saveJSON('inkwave.settings', this.settings);
+    }
+    // 手动包首次覆盖安装只迁移本次指定项，保留档案与触控偏好，之后尊重玩家手动切30/60。
+    if (typeof __INKWAVE_MANUAL__ !== 'undefined' && __INKWAVE_MANUAL__ && window.inkwaveMobile && this.settings.manualPlayDefaultsVersion !== 1) {
+      Object.assign(this.settings, { fpsCap: 60, mobileVisual: 'hd', mobileDynamicResolution: false, showFps: false, manualPlayDefaultsVersion: 1 });
       saveJSON('inkwave.settings', this.settings);
     }
     setLang(this.settings.lang || 'en');   // before any menu renders (src/i18n/strings.js)
@@ -292,21 +297,20 @@ class Game {
     this.timer = new THREE.Timer(); this.timer.connect?.(document);
     this.fpsAcc = 0; this.fpsN = 0; this.fps = 60;
     G.mode = 'menu';
-    this.menus?.show(params.has('skipTitle') ? 'main' : 'title');
+    this.menus?.show((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && params.has('skipTitle') ? 'main' : 'title');
     // the online hub / lobby set loads in the background once the menus are idle (no arena flash on the first visit)
     // 【后台预载大厅】菜单闲置 2.5 秒后偷偷预建联机大厅场景——第一次进大厅才不闪加载条
-    if (!window.inkwaveMobile && !params.has('autostart')) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
+    if (!window.inkwaveMobile && (!(typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) || !params.has('autostart'))) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
     this._applyAudioVolumes();
     requestAnimationFrame((t) => this._loop(t));
-    if (params.has('autostart')) {
+    if ((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && params.has('autostart')) {
       const pm = params.get('mode');
       this.api.startMatch({ mapId: map.id, difficulty: params.get('difficulty') || this.settings.difficulty, duration: +params.get('autostart') || undefined, mode: pm === 'boss' || pm === 'zones' ? pm : 'turf' });
     }
     this.bootMs = Math.round(performance.now() - t0);
-    window.__inkwave = this; // debug/audit hook
-    window.__G = G;
+    if ((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__)) { window.__inkwave = this; window.__G = G; }
     diagnostics?.finishStartup();
-    this.debug = {
+    if ((typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__)) this.debug = {
       endMatch: (t = 0.5) => { if (this.match && !this.match.attract) this.match.time = t; },
       paintRandom: (n = 400) => { const v = new THREE.Vector3(); for (let i = 0; i < n; i++) { v.set((Math.random() - 0.5) * 48, 0.4, (Math.random() - 0.5) * 86); G.paint.splat(v, 0.8 + Math.random() * 1.4, Math.random() < 0.5 ? 0 : 1); } },
       // deterministic stepping for audits: freeze(), then step(ms) advances the sim at a fixed 60 Hz and renders once
@@ -946,7 +950,7 @@ class Game {
       const m = (this.match = G.match = new Match({
         attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: this.profile.weapon || 'shooter', sub: this._subFor(this.profile.weapon), special: this._specialFor(this.profile.weapon),
         playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-        autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
+        autopilot: (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
       }));
       this._updateMobilePreparation(preparation, 0.2, '创建对局');
       if (preparation) { await nextMobileFrame(); if (!this._isMobilePreparationCurrent(preparation)) return false; }
@@ -1068,7 +1072,7 @@ class Game {
       this._setPalette(this.settings.colorblind ? COLORBLIND_PALETTE : TEAM_PALETTES[cfg.palette] || TEAM_PALETTES[0]);
       const m = (this.match = G.match = new Match({
         attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-        roster: cfg.roster, myId: G.net.myId, host: G.net.isHost, autopilot: params.has('autopilot'),
+        roster: cfg.roster, myId: G.net.myId, host: G.net.isHost, autopilot: (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) && params.has('autopilot'),
       }));
       this._updateMobilePreparation(preparation, 0.2, '创建对局');
       if (preparation) { await nextMobileFrame(); if (!this._isMobilePreparationCurrent(preparation)) return false; }
@@ -1406,7 +1410,7 @@ class Game {
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
     this.mobile?.profile?.recordInterval?.(dt * 1000);
-    this.mobile?.recordFrame(dt * 1000); // 记录钳制前的实际帧间隔，不能把掉帧隐藏在 dt 上限内。
+    this.mobile?.recordFrame?.(dt * 1000); // 仅诊断构建记录实际帧间隔。
     dt = Math.min(dt, 1 / 24);
     this._frame(dt);
   }
@@ -1780,7 +1784,7 @@ class Game {
 // 【发动机点火】整个游戏从这里启动:浏览器加载完本模块就执行这两行。
 // boot() 失败(比如 WebGL 不可用)不会白屏——抓住异常,显示 index.html 里预留的红底 #boot-error 框。
 const game = new Game();
-game.boot().catch((e) => {
+export const bootReady = game.boot().then(() => game).catch((e) => {
   console.error(e);
   const el = document.getElementById('boot-error');
   if (el) { el.textContent = t('Something went wrong while loading') + ': ' + e.message; el.style.display = 'block'; }

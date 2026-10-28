@@ -1132,7 +1132,7 @@ export class ScreenFX {
 
   // ---------------------------------------------------------------------------------------------- debug / audit
   // __inkwave.screenfx.test('splat') etc. Works in a match; outside one it keeps effects alive for ~8 s.
-  test(name, o = {}) {
+  test = (typeof __INKWAVE_MANUAL__ === 'undefined' || !__INKWAVE_MANUAL__) ? function(name, o = {}) {
     const s = this.s, a = this._local || this.G.match?.local || null;
     this.debugHold = o.hold ?? 8;
     const team = a ? a.team : 0;
@@ -1161,7 +1161,7 @@ export class ScreenFX {
       default: console.warn('[screenfx] unknown test', name);
     }
     return name;
-  }
+  } : undefined;
 
   dispose() { this.lens.dispose(); this.mat.dispose(); }
 }
