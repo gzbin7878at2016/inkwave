@@ -1111,7 +1111,8 @@ class Game {
             0.3 + (end - 0.3) * (index + Math.min(1, completed / Math.max(1, total))) / m.actors.length, label);
           report();
           const done = diagnostics?.beginStage('match-character-warm', { actor: index, weapon: actor.weaponId });
-          try { await actor.character?.warmAll?.(G.renderer, G.camera, G.scene, { onProgress: report }); }
+          // 仅手机Boss按真实阵容准备大招手持武器；PC和普通对局不增加模型构造。
+          try { await actor.character?.warmAll?.(G.renderer, G.camera, G.scene, { onProgress: report, bossSpecialId: m.boss ? actor.specialId : null }); }
           finally { done?.(); }
           if (!current()) return false;
           report({ completed: 1, total: 1 });

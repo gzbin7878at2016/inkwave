@@ -1314,6 +1314,13 @@ export class Character {
     const progress = (completed, phase) => options.onProgress?.({ completed, total: 100, phase });
     progress(0, '角色网格');
     const done = queueMobileCharacterWarm(async step => {
+      // 大招首次换装会同步构造共享几何，须在可取消的手机Boss加载队列中预付。
+      // 只取真实缓存实例，不setWeapon、不发动技能；实例私有材质仍由角色dispose统一释放。
+      const specialKind = ({ zooka: 'sp_zooka', blower: 'sp_blower', jetpack: 'sp_jetgun', stamp: 'sp_stamp' })[options.bossSpecialId];
+      let specialWeapon;
+      if (specialKind) await step('mobile-boss-special-weapon-build', () => {
+        specialWeapon = this._getWeapon(specialKind);
+      }, { special: options.bossSpecialId, weapon: specialKind });
       for (let tier = 0; tier < 3; tier++) {
         await step('mobile-character-tier-build', () => this._tierSet(tier), { tier: TIERS[tier] }); progress((tier + 1) * 5, '角色网格');
       }
@@ -1328,6 +1335,12 @@ export class Character {
       progress(20, '角色材质与首绘');
       const meshes = [];
       this.root.traverse(object => { if (object.isMesh) meshes.push(object); });
+      // 未换装的专用武器不在角色树上，显式首绘其真实近/远件，不能用无关材质替身代替。
+      for (let weapon = specialWeapon; weapon; weapon = weapon.left) {
+        for (const root of [weapon.pivot, weapon.pivotL]) root?.traverse(object => {
+          if (object.isMesh && !meshes.includes(object)) meshes.push(object);
+        });
+      }
       const compile = (mesh, material) => prepareMobileMesh(renderer, mesh, camera, target, { material, isCurrent: current, beforeFirstUse: step.beforeFirstUse, renderTarget: G.post?.composer?.readBuffer });
       const compileTotal = meshes.length + this.lodSets.reduce((sum, set) => sum + set.list.length * 2, 0);
       let compileDone = 0;

@@ -1,5 +1,7 @@
 # 本仓库开发与跨电脑同步规则
 
+- 2026-10-28 用户授权v55有限修复：仅手机Boss加载队列按真实specialId预建四类专用武器缓存，原材质/远景/首绘/阴影准备覆盖未挂树武器；不提前发动、不改PC/普通手机/玩法画质。313JS及真实Game准备/缓存首绘身份/取消释放检查通过，APK和真机待验，不能称提帧。见docs/android/BOSS-PERFORMANCE-test55.zh-CN.md。
+
 - 2026-10-27 有限阶段定位10轮完成（首60秒/后9轮30秒自然结算），产品仍v54/2b7ed77，持续优化仍paused。实战首次zooka整帧124.6ms，start96.6→SpecialSystem94.4→setWeapon94.1→_getWeapon93.8ms，实例0.2ms；共享定义首次生成是主要路径，非证明全部GC/GPU。结算帧98.8ms中HUD68.7/小地图67.5/_drawInk66.5，inactive完整收尾一次且fallbacks/parks=0，不得简单删掉最终整图。十轮真实USB文件均核对2b、恢复关闭；方法工具会扰动，无新正式FPS成绩，未稳30/60。建议先手机Boss加载期实际大招武器定义/实例/首绘准备，再独立处理结算整图，均尚未实施。另有Character51ms/weapon58ms未归因。手机保留v54且关闭；USB常亮2和每3分钟仅唤醒维护（本地6小时上限），不恢复旧自动优化。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。
 
 - 2026-10-27 用户授权阶段定位方法轮缩至30秒，仅阶段探针开局duration=30并自然结算上传关闭；正式性能对照仍60秒，其他实验范围不放宽。首轮已启动60秒保持原参数，后续新名称30秒。产品逻辑和APK不改，持续自动优化仍paused，本批仅定位。见docs/android/BOSS-STAGE-INVESTIGATION.zh-CN.md。

@@ -152,3 +152,29 @@ for (const root of Object.values(survivor.weapons)) for (let weapon = root, hand
 assert.equal(survivor.weapons.brolly.bs.local, false); assert.equal(survivor.weapons.brolly.bs.inkMat.transparent, false);
 survivor.dispose(); assert.equal(sharedDisposals, 0);
 console.log('通过：成功/取消加载真实私有材质各dispose一次，不释放其他角色共享塑料/墨水，保留本地伞布透明变体');
+
+// 大招准备必须复用真实角色缓存，覆盖未挂树的近/远网格，且不改变当前手持装备或模拟时间。
+for (const [special, kind] of Object.entries({ zooka: 'sp_zooka', blower: 'sp_blower', jetpack: 'sp_jetgun', stamp: 'sp_stamp' })) {
+  const actor = lifecycleOwner(); actor.weaponKind = 'mitts';
+  const heldChildren = [...actor.kid.children], begin = rendered.length;
+  assert.equal(await actor.warmAll(renderer, G.camera, G.scene, { bossSpecialId: special }), 'high');
+  const weapon = actor.weapons[kind]; assert.ok(weapon);
+  assert.equal(actor._getWeapon(kind), weapon); assert.equal(weapon.pivot.parent, null);
+  assert.equal(actor.weaponKind, 'mitts'); assert.deepEqual(actor.kid.children, heldChildren);
+  assert.equal(weapon._mobileMaterialsReady, true);
+  for (const mesh of [weapon.body, weapon.ink, weapon.bodyFar, weapon.inkFar]) {
+    assert.ok(rendered.slice(begin).some(draw => draw.geometry === mesh.geometry && draw.material === mesh.material), `${special}真实网格已提交首绘`);
+  }
+  assert.deepEqual(Object.keys(actor.weapons).filter(key => key.startsWith('sp_')), [kind]);
+  let releases = 0; for (const mat of weapon.lamps) mat.addEventListener('dispose', () => releases++);
+  actor.dispose(); actor.dispose(); assert.equal(releases, weapon.lamps.length);
+}
+const ordinary = lifecycleOwner();
+await ordinary.warmAll(renderer, G.camera, G.scene);
+assert.equal(Object.keys(ordinary.weapons).some(key => key.startsWith('sp_')), false); ordinary.dispose();
+const obsolete = lifecycleOwner();
+const pendingSpecial = obsolete.warmAll(renderer, G.camera, G.scene, { bossSpecialId: 'zooka' });
+obsolete.root.removeFromParent();
+assert.equal(await pendingSpecial, false); assert.equal(obsolete.weapons.sp_zooka, undefined); obsolete.dispose();
+assert.equal(G.time, 123.25); assert.equal(effects, 0);
+console.log('通过：四类真实大招缓存/近远首绘/不换装/专属释放，普通手机不扩建，取消旧局不构造，无玩法副作用');

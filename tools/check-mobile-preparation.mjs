@@ -369,7 +369,8 @@ console.log('通过：主控向Boss准备传递取消/session身份检查，按�
 const originalCombat = sandbox.prepareMobileCombat, originalBoss = sandbox.prepareMobileBoss;
 for (const boss of [false, true]) {
   const { game } = gameFixture();
-  const match = { actors: Array.from({ length: 2 }, () => ({ character: { warmAll(_renderer, _camera, _scene, { onProgress }) {
+  const match = { actors: Array.from({ length: 2 }, () => ({ specialId: 'zooka', character: { warmAll(_renderer, _camera, _scene, { onProgress, bossSpecialId }) {
+    assert.equal(bossSpecialId, boss ? 'zooka' : null, '只有手机Boss传递真实大招准备参数');
     for (const completed of [0, 25, 100]) onProgress({ completed, total: 100 }); return Promise.resolve();
   } } })), ...(boss ? { boss: {} } : {}) };
   sandbox.prepareMobileCombat = async (_game, _match, { onProgress }) => { for (const completed of [0, 1, 2]) onProgress({ completed, total: 2, label: '战斗效果检查' }); };
