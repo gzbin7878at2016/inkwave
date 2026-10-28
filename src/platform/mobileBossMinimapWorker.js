@@ -124,19 +124,14 @@ function settle(c, map) {
   if (drain(c, map)) return true;
   if (end.result) {
     try {
-      // 结算后仍可能有已飞出的墨弹落地。旧快照不当成最终图，最多重取两次最新版本。
-      if (map.paint.version !== end.version) {
-        c.worker.recycle(end.result); c.stats.dropped++;
-        const retries = (end.retries || 0) + 1;
-        if (retries > 2) { syncFallback(c, 'settlement-version'); return true; }
-        c.settlement = { frame: c.frame, start: performance.now(), time: map.time, version: map.paint.version, retries };
-        return 'settling';
-      }
+      const applyStart = performance.now();
       applyMinimapBand(map, end.result, true);
       if (end.result.flashes) map.flashT = Math.max(0, map.time - end.time);
       c.worker.recycle(end.result); c.stats.applied++;
-      map.version = end.version; map.timer = 0.15; map._quiet = false;
+      // 先展示请求时刻的完整快照；后续墨弹落地按原三段路径追赶，不能反复丢弃整图而饿死显示。
+      map.version = end.version; map.timer = map.paint.version === end.version ? 0.15 : 0; map._quiet = false;
       c.stats.settlementMs = performance.now() - end.start;
+      c.stats.settlementApplyMs = performance.now() - applyStart;
       c.stats.settlementApplied = true;
       release(c, 'settled'); return 'settling';
     } catch (error) { syncFallback(c, String(error).slice(0, 180)); return true; }
@@ -145,6 +140,7 @@ function settle(c, map) {
     end.submitted = true;
     // 排空旧段不算新请求的在途帧龄；每个已提交请求仍独立执行原3帧/250ms保护。
     end.frame = c.frame; end.start = performance.now(); end.time = map.time; end.version = map.paint.version;
+    c.stats.settlementVersion = end.version; c.stats.settlementSubmitted = true;
     c.stats.submitted++; c.stats.maxPending = Math.max(c.stats.maxPending, 1);
     c.worker.draw(map.paint.grid, 0, map.h, map._teamRGB(), {
       sync: { owner: map.owner, ink: map.inkImg.data, flash: map.flashImg.data },

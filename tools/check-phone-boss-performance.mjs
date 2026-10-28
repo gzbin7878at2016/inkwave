@@ -130,10 +130,13 @@ try{
    p.installMatchProbe=m=>{
     bind?.(m);const map=g.minimap,compose=map._compose;
     map._compose=function(...args){
+     const info=map.bossWorkerInfo();
+     if(!p.settlementGrid&&info?.settlementSubmitted){p.settlementGrid=map.paint.grid.slice();p.settlementGridVersion=info.settlementVersion;}
      if(!p.settlementMap&&map.bossWorkerInfo()?.settlementApplied){
       // 在最终整图应用的同一帧固定网格和像素，不能拿数帧后落墨版本充当参考输入。
       const saved=Object.assign(Object.create(Object.getPrototypeOf(map)),map);
-      saved.paint={...map.paint,grid:map.paint.grid.slice()};
+      if(!p.settlementGrid)throw Error('缺少结算请求同帧网格');
+      saved.paint={...map.paint,grid:p.settlementGrid,version:p.settlementGridVersion};
       for(const key of ['owner','_alpha','_tm','_tt'])saved[key]=map[key].slice();
       saved.inkImg=new ImageData(map.inkImg.data.slice(),map.w,map.h);
       saved.flashImg=new ImageData(map.flashImg.data.slice(),map.w,map.h);
