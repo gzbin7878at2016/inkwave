@@ -125,6 +125,25 @@ try{
   const p=window.__phonePerf={intervals:[],activeMs:0,lastPlaying:false,rounds:0,actions:{move:0,fire:0,jump:0,sub:0,special:0,squid:0}};
   const record=g.mobile.recordFrame,frame=g._frame,restores=[];
   const stages=${stageProbe}?(${createBossStageProbe.toString()})(g,__G,{detail:${stageDetail}}):null;if(stages){p.stages=stages;p.installMatchProbe=m=>stages.bind(m);restores.push(()=>stages.dispose());}
+  if(${process.env.BOSS_VERIFY_MINIMAP_SETTLEMENT==='1'}){
+   const bind=p.installMatchProbe;
+   p.installMatchProbe=m=>{
+    bind?.(m);const map=g.minimap,compose=map._compose;
+    map._compose=function(...args){
+     if(!p.settlementMap&&map.bossWorkerInfo()?.settlementApplied){
+      // 在最终整图应用的同一帧固定网格和像素，不能拿数帧后落墨版本充当参考输入。
+      const saved=Object.assign(Object.create(Object.getPrototypeOf(map)),map);
+      saved.paint={...map.paint,grid:map.paint.grid.slice()};
+      for(const key of ['owner','_alpha','_tm','_tt'])saved[key]=map[key].slice();
+      saved.inkImg=new ImageData(map.inkImg.data.slice(),map.w,map.h);
+      saved.flashImg=new ImageData(map.flashImg.data.slice(),map.w,map.h);
+      p.settlementCanvas=map.ictx.getImageData(0,0,map.w,map.h).data;
+      p.settlementMap=saved;p.settlementInfo=map.bossWorkerInfo();
+     }
+     return compose.apply(this,args);
+    };restores.push(()=>map._compose=compose);
+   };
+  }
   if(${process.env.BOSS_VERIFY_READY_STATE==='1'&&process.env.BOSS_METHOD_PROBE==='1'}){
    // 仅方法轮监听8个槽自身的class变化，不读布局、不逐帧轮询，不修改游戏状态。
    p.readyStateProbe={gains:0,losses:0,stale:0,events:[]};
@@ -462,17 +481,18 @@ try{
    const map=__inkwave.minimap,start=performance.now();
    while(map.bossWorkerInfo()?.reason==='settling'&&performance.now()-start<1000)await new Promise(requestAnimationFrame);
    const info=map.bossWorkerInfo();if(!info?.settlementApplied)throw Error('结算Worker未完成：'+JSON.stringify(info));
-   const oracle=Object.assign(Object.create(Object.getPrototypeOf(map)),map);
-   for(const key of ['owner','_alpha','_tm','_tt'])oracle[key]=map[key].slice();
+   const saved=__phonePerf.settlementMap;if(!saved)throw Error('缺少结算应用同帧快照');
+   const oracle=Object.assign(Object.create(Object.getPrototypeOf(saved)),saved);
+   for(const key of ['owner','_alpha','_tm','_tt'])oracle[key]=saved[key].slice();
    for(const [image,ctx]of [['inkImg','ictx'],['flashImg','fctx']]){
     const canvas=document.createElement('canvas');canvas.width=map.w;canvas.height=map.h;
-    oracle[ctx]=canvas.getContext('2d');oracle[image]=oracle[ctx].createImageData(map.w,map.h);oracle[image].data.set(map[image].data);
+    oracle[ctx]=canvas.getContext('2d');oracle[image]=oracle[ctx].createImageData(map.w,map.h);oracle[image].data.set(saved[image].data);
    }
    oracle._drawInk(0,map.h);
    const diff=(a,b)=>{let n=0,max=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);if(d)n++;max=Math.max(max,d);}return{differentBytes:n,maxDifference:max};};
-   const ink=diff(map.inkImg.data,oracle.inkImg.data),owner=diff(map.owner,oracle.owner);
-   const inkCanvas=diff(map.ictx.getImageData(0,0,map.w,map.h).data,oracle.ictx.getImageData(0,0,map.w,map.h).data);
-   return{info,ink,owner,inkCanvas,width:map.w,height:map.h,scope:'自然结算后原同步算法整图对照，不纳入FPS成绩'};
+   const ink=diff(saved.inkImg.data,oracle.inkImg.data),owner=diff(saved.owner,oracle.owner);
+   const inkCanvas=diff(__phonePerf.settlementCanvas,oracle.ictx.getImageData(0,0,map.w,map.h).data);
+   return{info,ink,owner,inkCanvas,width:map.w,height:map.h,snapshotVersion:saved.paint.version,currentVersion:map.paint.version,scope:'结算应用同帧固定输入同步整图对照，不纳入FPS成绩'};
   })()`);
   if(['ink','owner','inkCanvas'].some(k=>report.minimapSettlement[k].differentBytes))throw Error('结算最终地图与同步参考不一致');
  }
