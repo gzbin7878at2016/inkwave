@@ -141,7 +141,11 @@ try {
         if (action === 'version') { map.paint.grid.fill(1); map.paint.version++; }
         if (action === 'deadline') { const t = performance.now.bind(performance); performance.now = () => t() + 300; map.update(0); performance.now = t; }
         else map.update(0, action === 'force');
-        check(!map.bossWorkerInfo().ready && map.bossWorkerInfo().fallbackFullDraws === 1, '结算失效未同步回退：' + action);
+        if (action === 'version') {
+          for (let i = 0; i < 10 && map.bossWorkerInfo().ready; i++) { await sleep(); map.update(0); }
+          check(map.bossWorkerInfo().settlementApplied && !map.bossWorkerInfo().fallbackFullDraws, '最新版本未完成异步整图');
+          const actual = map.inkImg.data.slice(); map._drawInk(0, map.h); same(map.inkImg.data, actual, '结算后墨弹版本未保留');
+        } else check(!map.bossWorkerInfo().ready && map.bossWorkerInfo().fallbackFullDraws === 1, '结算失效未同步回退：' + action);
         const snapshot = map.inkImg.data.slice(); await sleep(); same(map.inkImg.data, snapshot, '结算回退后迟到写入');
       }
       check(workers.size === 0 && urls.size === 0, '结算资源泄漏：' + action);

@@ -115,12 +115,23 @@ function settle(c, map) {
   }
   const end = c.settlement;
   // 不放宽原3帧/250ms保护；换图、配色、force或异常仍由原同步路径保证正确最终图。
-  if (c.frame - end.frame > 3 || performance.now() - end.start > 250 || map.paint.version !== end.version) {
-    syncFallback(c, 'settlement-invalid'); return true;
+  const oldest = end.submitted ? end : c.jobs[0];
+  if (oldest && (c.frame - oldest.frame > 3 || performance.now() - oldest.start > 250)) {
+    c.stats.settlementAgeFrames = c.frame - oldest.frame;
+    c.stats.settlementAgeMs = performance.now() - oldest.start;
+    syncFallback(c, 'settlement-age'); return true;
   }
   if (drain(c, map)) return true;
   if (end.result) {
     try {
+      // 结算后仍可能有已飞出的墨弹落地。旧快照不当成最终图，最多重取两次最新版本。
+      if (map.paint.version !== end.version) {
+        c.worker.recycle(end.result); c.stats.dropped++;
+        const retries = (end.retries || 0) + 1;
+        if (retries > 2) { syncFallback(c, 'settlement-version'); return true; }
+        c.settlement = { frame: c.frame, start: performance.now(), time: map.time, version: map.paint.version, retries };
+        return 'settling';
+      }
       applyMinimapBand(map, end.result, true);
       if (end.result.flashes) map.flashT = Math.max(0, map.time - end.time);
       c.worker.recycle(end.result); c.stats.applied++;
@@ -132,6 +143,8 @@ function settle(c, map) {
   }
   if (!end.submitted && !c.jobs.length) {
     end.submitted = true;
+    // 排空旧段不算新请求的在途帧龄；每个已提交请求仍独立执行原3帧/250ms保护。
+    end.frame = c.frame; end.start = performance.now(); end.time = map.time; end.version = map.paint.version;
     c.stats.submitted++; c.stats.maxPending = Math.max(c.stats.maxPending, 1);
     c.worker.draw(map.paint.grid, 0, map.h, map._teamRGB(), {
       sync: { owner: map.owner, ink: map.inkImg.data, flash: map.flashImg.data },
