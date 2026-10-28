@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="535" viewBox="0 0 1040 535" role="img" aria-labelledby="title desc">
+<title id="title">图4 网络快照少一些 画面仍可连续</title><desc id="desc">20Hz快照与30/60FPS画面是两个不同节拍；数字为示意。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="535" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图4 网络快照少一些 画面仍可连续</text>
+<text x="32" y="72" font-size="16" class="note">20Hz快照与30/60FPS画面是两个不同节拍；数字为示意。</text>
+<text x="45" y="132" font-size="19" class="note">小明发出的状态</text>
+<rect x="245" y="105" width="128" height="70" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="263" y="136" font-size="20" font-weight="700" style="fill:#2463b8">0 ms</text>
+<polyline class="line" points="373,140 394,140"/>
+<rect x="395" y="105" width="128" height="70" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="413" y="136" font-size="20" font-weight="700" style="fill:#2463b8">50 ms</text>
+<polyline class="line" points="523,140 544,140"/>
+<rect x="545" y="105" width="128" height="70" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="563" y="136" font-size="20" font-weight="700" style="fill:#2463b8">100 ms</text>
+<polyline class="line" points="673,140 694,140"/>
+<rect x="695" y="105" width="128" height="70" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="713" y="136" font-size="20" font-weight="700" style="fill:#2463b8">150 ms</text>
+<polyline class="line" points="823,140 844,140"/>
+<rect x="845" y="105" width="128" height="70" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="863" y="136" font-size="20" font-weight="700" style="fill:#2463b8">200 ms</text>
+<text x="45" y="251" font-size="19" class="note">小红画出的角色</text>
+<circle cx="245" cy="245" r="9" fill="#167357"/>
+<circle cx="293" cy="245" r="9" fill="#167357"/>
+<circle cx="341" cy="245" r="9" fill="#167357"/>
+<circle cx="389" cy="245" r="9" fill="#167357"/>
+<circle cx="437" cy="245" r="9" fill="#167357"/>
+<circle cx="485" cy="245" r="9" fill="#167357"/>
+<circle cx="533" cy="245" r="9" fill="#167357"/>
+<circle cx="581" cy="245" r="9" fill="#167357"/>
+<circle cx="629" cy="245" r="9" fill="#167357"/>
+<circle cx="677" cy="245" r="9" fill="#167357"/>
+<circle cx="725" cy="245" r="9" fill="#167357"/>
+<circle cx="773" cy="245" r="9" fill="#167357"/>
+<circle cx="821" cy="245" r="9" fill="#167357"/>
+<text x="245" y="286" font-size="16" class="note">已知样本之间补出位置与动画，不是只在收包时画一帧。</text>
+<rect x="45" y="340" width="450" height="130" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="63" y="371" font-size="20" font-weight="700" style="fill:#167357">缓冲后再播放</text>
+<text x="63" y="399" font-size="16">初始约100ms，当前自适应70～300ms</text>
+<text x="63" y="423" font-size="16">多等一点样本，减少网络抖动</text>
+<rect x="535" y="340" width="450" height="130" rx="12" fill="#fff4df" stroke="#986010" stroke-width="1.5"/>
+<text x="553" y="371" font-size="20" font-weight="700" style="fill:#986010">暂时没新消息</text>
+<text x="553" y="399" font-size="16">最多180ms有限外推，然后停住</text>
+<text x="553" y="423" font-size="16">恢复后用平滑纠偏减少跳动</text>
+<text x="32" y="515" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

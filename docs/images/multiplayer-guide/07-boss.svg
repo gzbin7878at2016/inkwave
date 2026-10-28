@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="530" viewBox="0 0 1040 530" role="img" aria-labelledby="title desc">
+<title id="title">图7 多人Boss是一支队伍合作</title><desc id="desc">Boss及小蟹由房主模拟，客机发送命中请求并回放状态。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="530" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图7 多人Boss是一支队伍合作</text>
+<text x="32" y="72" font-size="16" class="note">Boss及小蟹由房主模拟，客机发送命中请求并回放状态。</text>
+<rect x="35" y="130" width="280" height="230" rx="12" fill="#f1ebff" stroke="#7045ad" stroke-width="1.5"/>
+<text x="53" y="161" font-size="20" font-weight="700" style="fill:#7045ad">小红  客机</text>
+<text x="53" y="189" font-size="16">本地计算自身角色</text>
+<text x="53" y="213" font-size="16">本地判断打中Boss</text>
+<text x="53" y="237" font-size="16">发送 bhit</text>
+<text x="53" y="261" font-size="16">接收Boss状态与招式</text>
+<rect x="715" y="130" width="285" height="230" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="733" y="161" font-size="20" font-weight="700" style="fill:#2463b8">小明  房主</text>
+<text x="733" y="189" font-size="16">BossBrain决策与行动</text>
+<text x="733" y="213" font-size="16">施加Boss命中伤害</text>
+<text x="733" y="237" font-size="16">模拟Bot与比赛规则</text>
+<text x="733" y="261" font-size="16">广播Boss血量和招式</text>
+<rect x="390" y="170" width="245" height="120" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="408" y="201" font-size="20" font-weight="700" style="fill:#167357">房间中继</text>
+<text x="408" y="229" font-size="16">转发，不模拟Boss</text>
+<polyline class="line" points="315,155 715,155"/>
+<rect x="442.0" y="113" width="146" height="24" rx="5" fill="#f8fafc"/>
+<text x="515" y="130" text-anchor="middle" font-size="16">bhit经中继到房主</text>
+<polyline class="line" points="715,333 315,333"/>
+<rect x="410.0" y="342" width="210" height="24" rx="5" fill="#f8fafc"/>
+<text x="515" y="359" text-anchor="middle" font-size="16">Boss快照与招式经中继返回</text>
+<text x="60" y="430" font-size="18" class="note">把中继换成Go，Boss仍在房主设备；迁移Boss模拟后才可能卸载这部分工作。</text>
+<text x="32" y="510" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

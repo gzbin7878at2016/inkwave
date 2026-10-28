@@ -1,5 +1,7 @@
 # DemoInk / INKWAVE 开发进度与跨电脑接续指南
 
+- 2026-10-28 用户明确停止性能优化，不再推进，持续优化保持paused。本批仅[多人游玩机制与Go服务器改造入门](MULTIPLAYER-BEGINNER-GO-DOCKER.zh-CN.md)和14张SVG配图：按当前源码区分玩家所有权/房主裁判/云端中继，解释开赛、插值、命中、墨水、Boss与迁移；指出原NET文档缓冲/静默阈值已过时，提出Go兼容中继→权威游戏服及Docker方案。未实现服务器、未部署、未跑多人或手机测试，手机保持v56关闭；后续架构实施另按用户指令开展。
+
 - 2026-10-28 v56结算小地图有限修复闭环：最终功能48b48af先中文推送再干净构建，APK21,165,887B/SHA256 796b1338ea3c33b93e2d264471519b9e9155e4862ddf18ae5e96ef07614519c3，v2签名/396dist与398同步匹配/USB安装通过。手机Boss沿用Worker异步完整快照，随后原三段刷新追赶落墨，PC原路径保持、3帧/250ms保护保持。前三轮失败已记录；最终方法同输入ink/owner/Canvas字节差0、主线程应用0.7ms/异步墙钟81.5ms、退出恢复通过。无探针一分钟33.68052FPS/P95 50/P99 66.6/长间隔3，38→41°C，正常settled应用0.6ms/墙钟72.1ms，无Worker回退；未稳30/60，非同温旧包对照、不宣称全局提帧。五轮USB源码核对/落盘关闭通过，手机留v56且关闭，持续优化仍paused；PC完整像素对照及第三阶段未验。见docs/android/BOSS-PERFORMANCE-test56.zh-CN.md。
 
 - 2026-10-28 用户授权v56结算小地图修复：仅已准备手机Boss Worker异步最终整图，等待保留完整旧图、一次上传最终图；3帧/250ms/force/配色/版本/异常同步兜底保持，PC原路径保持。真实Edge Worker/Canvas最终墨迹/flash/owner/Canvas字节一致、取消回退迟到保护与资源回收通过，313JS通过；APK与真机待验，不能称提帧。见docs/android/BOSS-PERFORMANCE-test56.zh-CN.md。

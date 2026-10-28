@@ -78,6 +78,8 @@ Android 移植规划见：[Capacitor + WebView 详细方案与执行计划](docs
 消息：每名玩家模拟自己的乌贼小子并广播状态，其他人则通过同一套动画系统在约 0.1 秒延迟的平滑时间线上绘制。
 具体原理以及用于测量它的工具见 [`docs/NET.md`](docs/NET.md)。
 
+新手可先读[多人游玩机制与Go服务器改造入门](docs/MULTIPLAYER-BEGINNER-GO-DOCKER.zh-CN.md)：14张图解释房间、角色所有权、移动/命中/墨水同步、Boss与房主迁移，并区分Go中继、权威游戏服及Docker部署方案。
+
 要在自己的网络上联机，把中继和游戏一起运行：
 
 ```bash

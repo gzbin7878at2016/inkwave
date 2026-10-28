@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="550" viewBox="0 0 1040 550" role="img" aria-labelledby="title desc">
+<title id="title">图11 拆开玩法计算与画面显示</title><desc id="desc">目标是改变谁计算玩法，同时保留原PC材质、模型、动画与效果。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="550" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图11 拆开玩法计算与画面显示</text>
+<text x="32" y="72" font-size="16" class="note">目标是改变谁计算玩法，同时保留原PC材质、模型、动画与效果。</text>
+<rect x="40" y="115" width="425" height="260" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="58" y="146" font-size="20" font-weight="700" style="fill:#167357">Go  纯玩法核心</text>
+<text x="58" y="174" font-size="16">地图碰撞数据 / 导航数据</text>
+<text x="58" y="198" font-size="16">移动、武器、伤害、资源</text>
+<text x="58" y="222" font-size="16">CPU涂地网格与落墨顺序</text>
+<text x="58" y="246" font-size="16">Bot、Boss、比赛规则和结果</text>
+<rect x="575" y="115" width="425" height="260" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="593" y="146" font-size="20" font-weight="700" style="fill:#2463b8">客户端  交互与表现</text>
+<text x="593" y="174" font-size="16">输入采集与本地预测</text>
+<text x="593" y="198" font-size="16">角色插值、镜头与动画</text>
+<text x="593" y="222" font-size="16">GPU墨水图集、材质、光照</text>
+<text x="593" y="246" font-size="16">声音、HUD与视觉特效</text>
+<polyline class="line" points="465,205 575,205"/>
+<rect x="495.0" y="168" width="50" height="24" rx="5" fill="#f8fafc"/>
+<text x="520" y="185" text-anchor="middle" font-size="16">快照</text>
+<polyline class="line" points="575,292 465,292"/>
+<rect x="495.0" y="310" width="50" height="24" rx="5" fill="#f8fafc"/>
+<text x="520" y="327" text-anchor="middle" font-size="16">输入</text>
+<rect x="130" y="425" width="780" height="80" rx="12" fill="#edf1f5" stroke="#526477" stroke-width="1.5"/>
+<text x="148" y="456" font-size="20" font-weight="700" style="fill:#526477">两端共同遵循版本约定</text>
+<text x="148" y="484" font-size="16">同地图碰撞、同武器参数、同种子算法、同数值规则；逐项对照。</text>
+<text x="32" y="530" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="565" viewBox="0 0 1040 565" role="img" aria-labelledby="title desc">
+<title id="title">图1 当前联机是一间云端消息房</title><desc id="desc">蓝色是玩家设备；绿色中继只分发消息，不运行Boss或Bot。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="565" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图1 当前联机是一间云端消息房</text>
+<text x="32" y="72" font-size="16" class="note">蓝色是玩家设备；绿色中继只分发消息，不运行Boss或Bot。</text>
+<rect x="40" y="110" width="280" height="170" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="58" y="141" font-size="20" font-weight="700" style="fill:#2463b8">小明的设备  房主</text>
+<text x="58" y="169" font-size="16">计算自己</text>
+<text x="58" y="193" font-size="16">额外计算Bot、Boss与比赛规则</text>
+<text x="58" y="217" font-size="16">绘制本机画面</text>
+<rect x="40" y="340" width="280" height="145" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="58" y="371" font-size="20" font-weight="700" style="fill:#2463b8">小红的设备  客机</text>
+<text x="58" y="399" font-size="16">计算自己</text>
+<text x="58" y="423" font-size="16">接收并绘制其他角色</text>
+<rect x="510" y="180" width="450" height="170" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="528" y="211" font-size="20" font-weight="700" style="fill:#167357">云端房间中继</text>
+<text x="528" y="239" font-size="16">Cloudflare Worker + Durable Object</text>
+<text x="528" y="263" font-size="16">连接名单 / 房主选举 / 锁房</text>
+<text x="528" y="287" font-size="16">转发位置、事件与命中消息</text>
+<polyline class="line" points="320,175 510,230"/>
+<rect x="366.0" y="157" width="90" height="24" rx="5" fill="#f8fafc"/>
+<text x="411" y="174" text-anchor="middle" font-size="16">WebSocket</text>
+<polyline class="line" points="510,270 320,247"/>
+<polyline class="line" points="320,393 510,309"/>
+<rect x="370.0" y="370" width="90" height="24" rx="5" fill="#f8fafc"/>
+<text x="415" y="387" text-anchor="middle" font-size="16">WebSocket</text>
+<polyline class="line" points="510,330 440,432 320,432"/>
+<rect x="510" y="405" width="450" height="90" rx="12" fill="#edf1f5" stroke="#526477" stroke-width="1.5"/>
+<text x="528" y="436" font-size="20" font-weight="700" style="fill:#526477">资源服务 / APK内置资源</text>
+<text x="528" y="464" font-size="16">提供游戏程序与素材，不负责裁判</text>
+<text x="32" y="545" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

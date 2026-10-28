@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="500" viewBox="0 0 1040 500" role="img" aria-labelledby="title desc">
+<title id="title">图2 谁真正推进哪一份状态</title><desc id="desc">例：两位真人 + 六个Bot的普通4对4房间。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="500" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图2 谁真正推进哪一份状态</text>
+<text x="32" y="72" font-size="16" class="note">例：两位真人 + 六个Bot的普通4对4房间。</text>
+<rect x="30" y="115" width="310" height="280" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="48" y="146" font-size="20" font-weight="700" style="fill:#2463b8">小明  房主</text>
+<text x="48" y="174" font-size="16">自己的角色：移动、射击</text>
+<text x="48" y="198" font-size="16">6个Bot：行动与武器</text>
+<text x="48" y="222" font-size="16">比赛时钟与最终结果</text>
+<text x="48" y="246" font-size="16">Boss模式还负责Boss</text>
+<rect x="365" y="115" width="310" height="280" rx="12" fill="#f1ebff" stroke="#7045ad" stroke-width="1.5"/>
+<text x="383" y="146" font-size="20" font-weight="700" style="fill:#7045ad">小红  客机</text>
+<text x="383" y="174" font-size="16">自己的角色：移动、射击</text>
+<text x="383" y="198" font-size="16">收到请求后施加自身伤害</text>
+<text x="383" y="222" font-size="16">其他角色：插值与动画</text>
+<text x="383" y="246" font-size="16">本地仍负责画面</text>
+<rect x="700" y="115" width="310" height="280" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="718" y="146" font-size="20" font-weight="700" style="fill:#167357">云端  中继</text>
+<text x="718" y="174" font-size="16">谁连接着</text>
+<text x="718" y="198" font-size="16">谁是房主</text>
+<text x="718" y="222" font-size="16">房间是否锁定</text>
+<text x="718" y="246" font-size="16">将消息送到其他人</text>
+<text x="40" y="442" font-size="19" class="note">画面上有8个角色，不等于每台设备都独立运行8个角色的决策。</text>
+<text x="32" y="480" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

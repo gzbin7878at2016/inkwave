@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="575" viewBox="0 0 1040 575" role="img" aria-labelledby="title desc">
+<title id="title">图14 建议逐步交付与验收</title><desc id="desc">每阶段能独立验证、能回退，再进入下一阶段。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="575" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图14 建议逐步交付与验收</text>
+<text x="32" y="72" font-size="16" class="note">每阶段能独立验证、能回退，再进入下一阶段。</text>
+<rect x="30" y="115" width="290" height="140" rx="12" fill="#edf1f5" stroke="#526477" stroke-width="1.5"/>
+<text x="48" y="146" font-size="20" font-weight="700" style="fill:#526477">0 固定协议现状</text>
+<text x="48" y="174" font-size="16">读懂责任与消息</text>
+<text x="48" y="198" font-size="16">保存地图和规则版本</text>
+<rect x="375" y="115" width="290" height="140" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="393" y="146" font-size="20" font-weight="700" style="fill:#167357">1 Go中继 + Docker</text>
+<text x="393" y="174" font-size="16">保持旧协议兼容</text>
+<text x="393" y="198" font-size="16">真实多人进出局验证</text>
+<rect x="720" y="115" width="290" height="140" rx="12" fill="#fff4df" stroke="#986010" stroke-width="1.5"/>
+<text x="738" y="146" font-size="20" font-weight="700" style="fill:#986010">2 拆出玩法边界</text>
+<text x="738" y="174" font-size="16">地图导出 / 输入协议</text>
+<text x="738" y="198" font-size="16">JS与Go固定样例对照</text>
+<rect x="720" y="345" width="290" height="140" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="738" y="376" font-size="20" font-weight="700" style="fill:#2463b8">3 最小权威对局</text>
+<text x="738" y="404" font-size="16">基础移动与一种武器</text>
+<text x="738" y="428" font-size="16">预测、命中和结算</text>
+<rect x="375" y="345" width="290" height="140" rx="12" fill="#f1ebff" stroke="#7045ad" stroke-width="1.5"/>
+<text x="393" y="376" font-size="20" font-weight="700" style="fill:#7045ad">4 补齐原玩法</text>
+<text x="393" y="404" font-size="16">全武器 / Bot / Boss</text>
+<text x="393" y="428" font-size="16">PC视觉与原玩法保持</text>
+<rect x="30" y="345" width="290" height="140" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="48" y="376" font-size="20" font-weight="700" style="fill:#167357">5 重连与扩容</text>
+<text x="48" y="404" font-size="16">快照、鉴权、监控</text>
+<text x="48" y="428" font-size="16">同房路由与发布排空</text>
+<polyline class="line" points="320,185 375,185"/>
+<polyline class="line" points="665,185 720,185"/>
+<polyline class="line" points="865,255 865,345"/>
+<polyline class="line" points="720,415 665,415"/>
+<polyline class="line" points="375,415 320,415"/>
+<text x="32" y="555" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

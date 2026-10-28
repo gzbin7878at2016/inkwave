@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="590" viewBox="0 0 1040 590" role="img" aria-labelledby="title desc">
+<title id="title">图12 Go里一间房按顺序处理状态</title><desc id="desc">网络并发收发；同一房间只由自己的事件循环修改状态。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="590" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图12 Go里一间房按顺序处理状态</text>
+<text x="32" y="72" font-size="16" class="note">网络并发收发；同一房间只由自己的事件循环修改状态。</text>
+<rect x="30" y="110" width="285" height="120" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="48" y="141" font-size="20" font-weight="700" style="fill:#2463b8">连接读取任务</text>
+<text x="48" y="169" font-size="16">小明 / 小红等连接</text>
+<text x="48" y="193" font-size="16">解析、限制大小、投递消息</text>
+<rect x="390" y="110" width="285" height="120" rx="12" fill="#fff4df" stroke="#986010" stroke-width="1.5"/>
+<text x="408" y="141" font-size="20" font-weight="700" style="fill:#986010">房间有界输入队列</text>
+<text x="408" y="169" font-size="16">入房 / 退房 / 输入</text>
+<text x="408" y="193" font-size="16">避免无界积压</text>
+<rect x="750" y="110" width="255" height="120" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="768" y="141" font-size="20" font-weight="700" style="fill:#167357">房间事件循环</text>
+<text x="768" y="169" font-size="16">串行更新房间状态</text>
+<text x="768" y="193" font-size="16">权威阶段再推进模拟</text>
+<polyline class="line" points="315,170 390,170"/>
+<polyline class="line" points="675,170 750,170"/>
+<rect x="390" y="355" width="285" height="130" rx="12" fill="#fff4df" stroke="#986010" stroke-width="1.5"/>
+<text x="408" y="386" font-size="20" font-weight="700" style="fill:#986010">每连接独立发送队列</text>
+<text x="408" y="414" font-size="16">慢连接不阻塞全房</text>
+<text x="408" y="438" font-size="16">可靠事件不静默丢弃</text>
+<rect x="30" y="355" width="285" height="130" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="48" y="386" font-size="20" font-weight="700" style="fill:#2463b8">连接写入任务</text>
+<text x="48" y="414" font-size="16">有序写出WebSocket</text>
+<text x="48" y="438" font-size="16">按策略断开失控连接</text>
+<polyline class="line" points="875,230 875,420 675,420"/>
+<rect x="740.0" y="298" width="170" height="24" rx="5" fill="#f8fafc"/>
+<text x="825" y="315" text-anchor="middle" font-size="16">输出状态 / 转发消息</text>
+<polyline class="line" points="390,420 315,420"/>
+<text x="40" y="535" font-size="18" class="note">初版：一个进程管理多个房间；goroutine是并发任务，不等于独占CPU核心。</text>
+<text x="32" y="570" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

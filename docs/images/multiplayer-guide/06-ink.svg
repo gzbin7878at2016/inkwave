@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="635" viewBox="0 0 1040 635" role="img" aria-labelledby="title desc">
+<title id="title">图6 发的是落墨配方 不是地面截图</title><desc id="desc">位置 + 半径 + 队伍 + 种子 + 形状；所有客户端重放同类操作。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="635" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图6 发的是落墨配方 不是地面截图</text>
+<text x="32" y="72" font-size="16" class="note">位置 + 半径 + 队伍 + 种子 + 形状；所有客户端重放同类操作。</text>
+<rect x="310" y="105" width="420" height="100" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="328" y="136" font-size="20" font-weight="700" style="fill:#2463b8">小明的一次真实落墨</text>
+<text x="328" y="164" font-size="16">paint.splat：记录参数和随机种子</text>
+<rect x="35" y="295" width="285" height="160" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="53" y="326" font-size="20" font-weight="700" style="fill:#167357">CPU玩法网格</text>
+<text x="53" y="354" font-size="16">脚下是谁的墨</text>
+<text x="53" y="378" font-size="16">面积与覆盖率</text>
+<text x="53" y="402" font-size="16">服务器迁移需等价实现</text>
+<rect x="378" y="295" width="285" height="160" rx="12" fill="#f1ebff" stroke="#7045ad" stroke-width="1.5"/>
+<text x="396" y="326" font-size="20" font-weight="700" style="fill:#7045ad">GPU视觉图集</text>
+<text x="396" y="354" font-size="16">画出墨水细节与光泽</text>
+<text x="396" y="378" font-size="16">留在客户端</text>
+<text x="396" y="402" font-size="16">Go不需要绘制</text>
+<rect x="720" y="295" width="285" height="160" rx="12" fill="#fff4df" stroke="#986010" stroke-width="1.5"/>
+<text x="738" y="326" font-size="20" font-weight="700" style="fill:#986010">网络事件</text>
+<text x="738" y="354" font-size="16">经中继发给别人</text>
+<text x="738" y="378" font-size="16">按参数重放</text>
+<text x="738" y="402" font-size="16">视觉弹体不重复涂墨</text>
+<polyline class="line" points="410,205 177,295"/>
+<rect x="183.0" y="227" width="82" height="24" rx="5" fill="#f8fafc"/>
+<text x="224" y="244" text-anchor="middle" font-size="16">玩法更新</text>
+<polyline class="line" points="520,205 520,295"/>
+<rect x="479.0" y="227" width="82" height="24" rx="5" fill="#f8fafc"/>
+<text x="520" y="244" text-anchor="middle" font-size="16">视觉更新</text>
+<polyline class="line" points="635,205 862,295"/>
+<rect x="773.0" y="227" width="82" height="24" rx="5" fill="#f8fafc"/>
+<text x="814" y="244" text-anchor="middle" font-size="16">记录事件</text>
+<rect x="110" y="505" width="820" height="78" rx="12" fill="#edf1f5" stroke="#526477" stroke-width="1.5"/>
+<text x="128" y="536" font-size="20" font-weight="700" style="fill:#526477">未来严格一致性</text>
+<text x="128" y="564" font-size="16">统一事件顺序 + 玩法快照 + 校验补差；同种子本身不等于全局一致。</text>
+<text x="32" y="615" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>

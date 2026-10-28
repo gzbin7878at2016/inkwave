@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="650" viewBox="0 0 1040 650" role="img" aria-labelledby="title desc">
+<title id="title">图13 Go服务器部署到Docker</title><desc id="desc">外部使用公网域名；容器内部按Compose服务名通信。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#657a92"/></marker></defs>
+<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;fill:#182c43} .note{fill:#50657e} .line{stroke:#657a92;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+<rect width="1040" height="650" rx="18" fill="#f8fafc"/>
+<text x="32" y="42" font-size="25" font-weight="700">图13 Go服务器部署到Docker</text>
+<text x="32" y="72" font-size="16" class="note">外部使用公网域名；容器内部按Compose服务名通信。</text>
+<rect x="35" y="110" width="300" height="145" rx="12" fill="#eaf2ff" stroke="#2463b8" stroke-width="1.5"/>
+<text x="53" y="141" font-size="20" font-weight="700" style="fill:#2463b8">玩家设备</text>
+<text x="53" y="169" font-size="16">浏览器 / APK / 桌面端</text>
+<text x="53" y="193" font-size="16">仍在本机绘制画面</text>
+<rect x="510" y="110" width="480" height="145" rx="12" fill="#f1ebff" stroke="#7045ad" stroke-width="1.5"/>
+<text x="528" y="141" font-size="20" font-weight="700" style="fill:#7045ad">TLS反向代理容器</text>
+<text x="528" y="169" font-size="16">net.example.com 的公网入口</text>
+<text x="528" y="193" font-size="16">发布80/443；支持WebSocket升级</text>
+<polyline class="line" points="335,182 510,182"/>
+<rect x="389.0" y="148" width="66" height="24" rx="5" fill="#f8fafc"/>
+<text x="422" y="165" text-anchor="middle" font-size="16">wss://</text>
+<rect x="510" y="365" width="480" height="145" rx="12" fill="#e6f6f0" stroke="#167357" stroke-width="1.5"/>
+<text x="528" y="396" font-size="20" font-weight="700" style="fill:#167357">Go容器  game</text>
+<text x="528" y="424" font-size="16">容器内监听 0.0.0.0:8080</text>
+<text x="528" y="448" font-size="16">一进程管理多个房间</text>
+<text x="528" y="472" font-size="16">初期中继，后续权威模拟</text>
+<polyline class="line" points="750,255 750,365"/>
+<rect x="657.0" y="299" width="186" height="24" rx="5" fill="#f8fafc"/>
+<text x="750" y="316" text-anchor="middle" font-size="16">Compose内网 game:8080</text>
+<rect x="35" y="365" width="300" height="145" rx="12" fill="#fff4df" stroke="#986010" stroke-width="1.5"/>
+<text x="53" y="396" font-size="20" font-weight="700" style="fill:#986010">持久化与运维</text>
+<text x="53" y="424" font-size="16">证书 / 日志 / 后续快照</text>
+<text x="53" y="448" font-size="16">按需要配置卷和监控</text>
+<text x="53" y="472" font-size="16">容器重启不自动恢复对局</text>
+<text x="50" y="575" font-size="18" class="note">手机localhost = 手机；容器localhost = 当前容器；都不是另一台服务器。</text>
+<text x="32" y="630" font-size="14" class="note">INKWAVE · 现状与方案分开阅读 · 2026-10-28</text>
+</svg>
